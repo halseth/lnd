@@ -254,6 +254,7 @@ func main() {
 		unlockCommand,
 		changePasswordCommand,
 		newAddressCommand,
+		estimateFeeCommand,
 		sendManyCommand,
 		sendCoinsCommand,
 		connectCommand,

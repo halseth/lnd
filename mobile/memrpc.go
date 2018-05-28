@@ -12,7 +12,8 @@ import (
 )
 
 var (
-	lis = bufconn.Listen(100)
+	lightningLis = bufconn.Listen(100)
+	unlockerLis  = bufconn.Listen(100)
 )
 
 // Callback is an interface that is passed in by callers of the library, and
@@ -41,12 +42,18 @@ type SendStream interface {
 	Stop() error
 }
 
-// sendStream is an internal struct that satisifies the SendStream interface.
+// sendStream is an internal struct that satisfies the SendStream interface.
 // We use it to wrap customizable send and stop methods, that can be tuned to
 // the specific RPC call in question.
 type sendStream struct {
 	send func([]byte) error
 	stop func() error
+}
+
+// rpcClient is an interface
+type rpcClient interface {
+	lnrpc.LightningClient
+	lnrpc.WalletUnlockerClient
 }
 
 // Send sends the serialized protobuf request to the server.
@@ -80,9 +87,9 @@ type sender struct {
 	close func() error
 }
 
-// getClient returns a client connection to the server listening on lis.
-func getClient() (lnrpc.LightningClient, context.Context, func(), error) {
-	conn, err := lis.Dial()
+// getLightningClient returns a client connection to the server listening on lightningLis.
+func getLightningClient() (lnrpc.LightningClient, context.Context, func(), error) {
+	conn, err := lightningLis.Dial()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -98,13 +105,95 @@ func getClient() (lnrpc.LightningClient, context.Context, func(), error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	client := lnrpc.NewLightningClient(clientConn)
+	lightningClient := lnrpc.NewLightningClient(clientConn)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	return client, ctx, cancel, nil
+	return lightningClient, ctx, cancel, nil
 }
 
-// onceHandler is a struct used to call the daemon's RPC interface on methods
-// where only one request and one response is expected.
+// getUnlockerClient returns a client connection to the server listening on unlockerLis.
+func getUnlockerClient() (lnrpc.WalletUnlockerClient, context.Context, func(), error) {
+	conn, err := unlockerLis.Dial()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	clientConn, err := grpc.Dial("",
+		grpc.WithDialer(func(target string,
+			timeout time.Duration) (net.Conn, error) {
+			return conn, nil
+		}),
+		grpc.WithInsecure(),
+		grpc.WithBackoffMaxDelay(10*time.Second),
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	unlockerClient := lnrpc.NewWalletUnlockerClient(clientConn)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	return unlockerClient, ctx, cancel, nil
+}
+
+// unlockOnceHandler is a struct used to call the daemon's RPC interface on
+// WalletUnlocker methods where only one request and one response is expected.
+type unlockOnceHandler struct {
+	// newProto returns an empty struct for the desired grpc request.
+	newProto func() proto.Message
+
+	// getSync calls the desired method on the given client in a
+	// blocking matter.
+	getSync func(context.Context, lnrpc.WalletUnlockerClient,
+		proto.Message) (proto.Message, error)
+}
+
+// start executes the RPC call specified by this onceHandler using the
+// specified serialized msg request.
+func (s *unlockOnceHandler) start(msg []byte, callback Callback) {
+	// We must make a copy of the passed byte slice, as there is no
+	// guarantee the contents won't be changed while the go routine is
+	// executing.
+	data := make([]byte, len(msg))
+	copy(data[:], msg[:])
+
+	go func() {
+		// Get an empty proto of the desired type, and deserialize msg
+		// as this proto type.
+		req := s.newProto()
+		err := proto.Unmarshal(data, req)
+		if err != nil {
+			callback.OnError(err)
+			return
+		}
+
+		// Get the gRPC client.
+		client, ctx, cancel, err := getUnlockerClient()
+		if err != nil {
+			callback.OnError(err)
+			return
+		}
+		defer cancel()
+
+		// Now execute the RPC call.
+		resp, err := s.getSync(ctx, client, req)
+		if err != nil {
+			callback.OnError(err)
+			return
+		}
+
+		// We serialize the response before returning it to the caller.
+		b, err := proto.Marshal(resp)
+		if err != nil {
+			callback.OnError(err)
+			return
+		}
+
+		callback.OnResponse(b)
+	}()
+}
+
+// onceHandler is a struct used to call the daemon's RPC interface on Lightning
+// Services methods where only one request and one response is expected.
 type onceHandler struct {
 	// newProto returns an empty struct for the desired grpc request.
 	newProto func() proto.Message
@@ -135,7 +224,7 @@ func (s *onceHandler) start(msg []byte, callback Callback) {
 		}
 
 		// Get the gRPC client.
-		client, ctx, cancel, err := getClient()
+		client, ctx, cancel, err := getLightningClient()
 		if err != nil {
 			callback.OnError(err)
 			return
@@ -193,7 +282,7 @@ func (s *readStreamHandler) start(msg []byte, callback Callback) {
 		}
 
 		// Get the client.
-		client, ctx, cancel, err := getClient()
+		client, ctx, cancel, err := getLightningClient()
 		if err != nil {
 			callback.OnError(err)
 			return
@@ -248,7 +337,7 @@ type biStreamHandler struct {
 // messages coming from the returned SendStream.
 func (b *biStreamHandler) start(callback Callback) (SendStream, error) {
 	// Get the client connection.
-	client, ctx, cancel, err := getClient()
+	client, ctx, cancel, err := getLightningClient()
 	if err != nil {
 		return nil, err
 	}

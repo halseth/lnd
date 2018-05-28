@@ -136,19 +136,8 @@ func main() {
 	}
 
 	for _, s := range services {
-		if s.GetName() != "Lightning" {
-			continue
-		}
+
 		for _, m := range s.Methods {
-			if m.GetName() == "GetInfo" {
-				continue
-			}
-			if m.GetName() == "SubscribeInvoices" {
-				continue
-			}
-			if m.GetName() == "SendPayment" {
-				continue
-			}
 
 			name := m.GetName()
 			clientStream := false
@@ -162,7 +151,20 @@ func main() {
 			}
 
 			switch {
+			case s.GetName() == "WalletUnlocker":
+
+				p := rpcParams{
+					MethodName:  m.GetName(),
+					RequestType: m.GetInputType()[1:],
+					Comment:     godoc[name],
+				}
+
+				if err := unlockOnceTemplate.Execute(wr, p); err != nil {
+					fmt.Println(err)
+					return
+				}
 			case !clientStream && !serverStream:
+
 				p := rpcParams{
 					MethodName:  m.GetName(),
 					RequestType: m.GetInputType()[1:],
@@ -174,6 +176,7 @@ func main() {
 					return
 				}
 			case !clientStream && serverStream:
+
 				p := rpcParams{
 					MethodName:  m.GetName(),
 					RequestType: m.GetInputType()[1:],
@@ -185,6 +188,7 @@ func main() {
 					return
 				}
 			case clientStream && serverStream:
+
 				p := rpcParams{
 					MethodName:  m.GetName(),
 					RequestType: m.GetInputType()[1:],
@@ -218,6 +222,26 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/lightningnetwork/lnd/lnrpc"
 )
+`))
+
+	unlockOnceTemplate = template.Must(template.New("once").Parse(`
+{{.Comment}}
+//
+// NOTE: This method produces a single result or error, and the callback
+// will be called only once.
+func {{.MethodName}}(msg []byte, callback Callback) {
+	s := &unlockOnceHandler{
+		newProto: func() proto.Message {
+			return &{{.RequestType}}{}
+		},
+		getSync: func(ctx context.Context, client lnrpc.WalletUnlockerClient,
+			req proto.Message) (proto.Message, error) {
+			r := req.(*{{.RequestType}})
+			return client.{{.MethodName}}(ctx, r)
+		},
+	}
+	s.start(msg, callback)
+}
 `))
 
 	onceTemplate = template.Must(template.New("once").Parse(`

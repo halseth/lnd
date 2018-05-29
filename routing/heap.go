@@ -1,7 +1,6 @@
 package routing
 
 import (
-	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -14,7 +13,7 @@ type nodeWithDist struct {
 
 	// node is the vertex itself. This pointer can be used to explore all
 	// the outgoing edges (channels) emanating from a node.
-	node *channeldb.LightningNode
+	node Vertex
 
 	// amountToReceive is the amount that should be received by this node.
 	// Either as final payment to the final node or as an intermediate

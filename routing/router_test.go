@@ -1679,8 +1679,8 @@ func TestFindPathFeeWeighting(t *testing.T) {
 		t.Fatalf("unable to fetch source node: %v", err)
 	}
 
-	ignoreVertex := make(map[Vertex]struct{})
 	ignoreEdge := make(map[uint64]struct{})
+	ignoreVertex := make(map[Vertex]struct{})
 
 	amt := lnwire.MilliSatoshi(100)
 
@@ -1688,13 +1688,23 @@ func TestFindPathFeeWeighting(t *testing.T) {
 	if target == nil {
 		t.Fatalf("unable to find target node")
 	}
+	mc := newMissionControl(
+		ctx.graph, sourceNode,
+		func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {
+			return lnwire.NewMSatFromSatoshis(edge.Capacity)
+		},
+	)
 
+	r, err := mc.NewPaymentSession(nil, target)
+	if err != nil {
+		t.Fatalf("unable to create session: %v", err)
+	}
 	// We'll now attempt a path finding attempt using this set up. Due to
 	// the edge weighting, we should select the direct path over the 2 hop
 	// path even though the direct path has a higher potential time lock.
-	path, err := findPath(
-		nil, ctx.graph, nil, sourceNode, target, ignoreVertex,
-		ignoreEdge, amt, noFeeLimit, nil,
+	path, err := findPath(r,
+		sourceNode, target, ignoreVertex,
+		ignoreEdge, amt, noFeeLimit,
 	)
 	if err != nil {
 		t.Fatalf("unable to find path: %v", err)

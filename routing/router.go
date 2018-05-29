@@ -1367,25 +1367,25 @@ func (r *ChannelRouter) FindRoutes(target *btcec.PublicKey,
 	// Before we open the db transaction below, we'll attempt to obtain a
 	// set of bandwidth hints that can help us eliminate certain routes
 	// early on in the path finding process.
-	bandwidthHints, err := generateBandwidthHints(
-		r.selfNode, r.cfg.QueryBandwidth,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := r.cfg.Graph.Database().Begin(false)
 	if err != nil {
 		tx.Rollback()
 		return nil, err
 	}
+	mc := newMissionControl(
+		r.cfg.Graph, r.selfNode,
+		r.cfg.QueryBandwidth,
+	)
 
+	rm, err := mc.NewPaymentSession(nil, target)
+	if err != nil {
+		return nil, err
+	}
 	// Now that we know the destination is reachable within the graph,
 	// we'll execute our KSP algorithm to find the k-shortest paths from
 	// our source to the destination.
-	shortestPaths, err := findPaths(
-		tx, r.cfg.Graph, r.selfNode, target, amt, feeLimit, numPaths,
-		bandwidthHints,
+	shortestPaths, err := findPaths(rm,
+		r.selfNode, target, amt, feeLimit, numPaths,
 	)
 	if err != nil {
 		tx.Rollback()
@@ -1559,8 +1559,57 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 	// Before starting the HTLC routing attempt, we'll create a fresh
 	// payment session which will report our errors back to mission
 	// control.
+
+	// Traverse through all of the available hop hints and include them in
+	// our edges map, indexed by the public key of the channel's starting
+	// node.
+	edges := make(map[Vertex][]*edgePolicyWithSource)
+	for _, routeHint := range payment.RouteHints {
+		// If multiple hop hints are provided within a single route
+		// hint, we'll assume they must be chained together and sorted
+		// in forward order in order to reach the target successfully.
+		for i, hopHint := range routeHint {
+			// In order to determine the end node of this hint,
+			// we'll need to look at the next hint's start node. If
+			// we've reached the end of the hints list, we can
+			// assume we've reached the destination.
+			endNode := &channeldb.LightningNode{}
+			if i != len(routeHint)-1 {
+				endNode.AddPubKey(routeHint[i+1].NodeID)
+			} else {
+				endNode.AddPubKey(payment.Target)
+			}
+
+			// Finally, create the channel edge from the hop hint
+			// and add it to list of edges corresponding to the node
+			// at the start of the channel.
+			edge := &channeldb.ChannelEdgePolicy{
+				Node:      endNode,
+				ChannelID: hopHint.ChannelID,
+				FeeBaseMSat: lnwire.MilliSatoshi(
+					hopHint.FeeBaseMSat,
+				),
+				FeeProportionalMillionths: lnwire.MilliSatoshi(
+					hopHint.FeeProportionalMillionths,
+				),
+				TimeLockDelta: hopHint.CLTVExpiryDelta,
+			}
+
+			from := NewVertex(hopHint.NodeID)
+			to := Vertex(endNode.PubKeyBytes)
+
+			edges[to] = append(edges[to], &edgePolicyWithSource{
+				sourceNode: from,
+				edge:       edge,
+				bandwidth:  payment.Amount,
+			},
+			)
+
+		}
+	}
+
 	paySession, err := r.missionControl.NewPaymentSession(
-		payment.RouteHints, payment.Target,
+		edges, payment.Target,
 	)
 	if err != nil {
 		return [32]byte{}, nil, err
@@ -1594,7 +1643,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
 func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession *paymentSession) ([32]byte, *Route, error) {
+	paySession PaymentSession) ([32]byte, *Route, error) {
 
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
@@ -1671,7 +1720,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// are expiring.
 		}
 
-		route, err := paySession.RequestRoute(
+		route, err := RequestRoute(paySession,
 			payment, uint32(currentHeight), finalCLTVDelta,
 		)
 		if err != nil {
@@ -1950,7 +1999,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 // pruneVertexFailure will attempt to prune a vertex from the current available
 // vertexes of the target payment session in response to an encountered routing
 // error.
-func pruneVertexFailure(paySession *paymentSession, route *Route,
+func pruneVertexFailure(paySession PaymentSession, route *Route,
 	errSource *btcec.PublicKey, nextNode bool) {
 
 	// By default, we'll try to prune the node that actually sent us the
@@ -1976,7 +2025,7 @@ func pruneVertexFailure(paySession *paymentSession, route *Route,
 // pruneEdgeFailure will attempts to prune an edge from the current available
 // edges of the target payment session in response to an encountered routing
 // error.
-func pruneEdgeFailure(paySession *paymentSession, route *Route,
+func pruneEdgeFailure(paySession PaymentSession, route *Route,
 	errSource *btcec.PublicKey) {
 
 	// As this error indicates that the target channel was unable to carry
@@ -2000,7 +2049,7 @@ func pruneEdgeFailure(paySession *paymentSession, route *Route,
 
 	// If the channel was found, then we'll inform mission control of this
 	// failure so future attempts avoid this link temporarily.
-	paySession.ReportChannelFailure(badChan.ChannelID)
+	paySession.ReportChannelFailure(badChan)
 }
 
 // applyChannelUpdate applies a channel update directly to the database,

@@ -2,6 +2,7 @@ package routing
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -28,9 +29,24 @@ const (
 	//
 	// TODO(roasbeef): instead use random delay on each?
 	edgeDecay = time.Duration(time.Second * 5)
+
+	// riskFactorBillionths controls the influence of time lock delta
+	// of a channel on route selection. It is expressed as billionths
+	// of msat per msat sent through the channel per time lock delta
+	// block. See EdgeWeight function below for more details.
+	// The chosen value is based on the previous incorrect weight function
+	// 1 + timelock + fee * fee. In this function, the fee penalty
+	// diminishes the time lock penalty for all but the smallest amounts.
+	// To not change the behaviour of path finding too drastically, a
+	// relatively small value is chosen which is still big enough to give
+	// some effect with smaller time lock values. The value may need
+	// tweaking and/or be made configurable in the future.
+	riskFactorBillionths = 15
 )
 
-// missionControl contains state which summarizes the past attempts of HTLC
+// missionControl is an implementation of the MissionControl interface.
+//
+// It contains state which summarizes the past attempts of HTLC
 // routing by external callers when sending payments throughout the network.
 // missionControl remembers the outcome of these past routing attempts (success
 // and failure), and is able to provide hints/guidance to future HTLC routing
@@ -82,6 +98,16 @@ func newMissionControl(g *channeldb.ChannelGraph, selfNode *channeldb.LightningN
 		queryBandwidth: qb,
 		graph:          g,
 	}
+}
+
+// CommitDecay is used to tell the MissionControl instance that some time have
+// passed, either in clock time or in blocks. This should be used by the
+// implementation to update its current state of the graph in response to the
+// passed time.
+//
+// NOTE: Part of the MissionControl interface.
+func (m *missionControl) CommitDecay(_ time.Time, _ uint32) error {
+	return nil
 }
 
 // graphPruneView is a filter of sorts that path finding routines should
@@ -149,7 +175,11 @@ func (m *missionControl) GraphPruneView() graphPruneView {
 	}
 }
 
-// paymentSession is used during an HTLC routings session to prune the local
+// staticPaymentSession is an implementation of the PaymentSession interface
+// that uses the current snapshot of the graph to create routes using a
+// "cheapest first" approach.
+//
+// It used during an HTLC routings session to prune the local
 // chain view in response to failures, and also report those failures back to
 // missionControl. The snapshot copied for this session will only ever grow,
 // and will now be pruned after a decay like the main view within mission
@@ -157,7 +187,7 @@ func (m *missionControl) GraphPruneView() graphPruneView {
 // bad edge or route multiple times in a session. This can lead to an infinite
 // loop if payment attempts take long enough. An additional set of edges can
 // also be provided to assist in reaching the payment's destination.
-type paymentSession struct {
+type staticPaymentSession struct {
 	pruneViewSnapshot graphPruneView
 
 	additionalEdges map[Vertex][]*edgePolicyWithSource
@@ -171,60 +201,15 @@ type paymentSession struct {
 }
 
 // NewPaymentSession creates a new payment session backed by the latest prune
-// view from Mission Control. An optional set of routing hints can be provided
+// view from missionControl. An optional set of routing hints can be provided
 // in order to populate additional edges to explore when finding a path to the
 // payment's destination.
-func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
-	target *btcec.PublicKey) (*paymentSession, error) {
+//
+// NOTE: Part of the MissionControl interface.
+func (m *missionControl) NewPaymentSession(additionalEdges map[Vertex][]*edgePolicyWithSource,
+	target *btcec.PublicKey) (PaymentSession, error) {
 
 	viewSnapshot := m.GraphPruneView()
-
-	edges := make(map[Vertex][]*edgePolicyWithSource)
-
-	// Traverse through all of the available hop hints and include them in
-	// our edges map, indexed by the public key of the channel's starting
-	// node.
-	for _, routeHint := range routeHints {
-		// If multiple hop hints are provided within a single route
-		// hint, we'll assume they must be chained together and sorted
-		// in forward order in order to reach the target successfully.
-		for i, hopHint := range routeHint {
-			// In order to determine the end node of this hint,
-			// we'll need to look at the next hint's start node. If
-			// we've reached the end of the hints list, we can
-			// assume we've reached the destination.
-			endNode := &channeldb.LightningNode{}
-			if i != len(routeHint)-1 {
-				endNode.AddPubKey(routeHint[i+1].NodeID)
-			} else {
-				endNode.AddPubKey(target)
-			}
-
-			// Finally, create the channel edge from the hop hint
-			// and add it to list of edges corresponding to the node
-			// at the start of the channel.
-			edge := &channeldb.ChannelEdgePolicy{
-				Node:      endNode,
-				ChannelID: hopHint.ChannelID,
-				FeeBaseMSat: lnwire.MilliSatoshi(
-					hopHint.FeeBaseMSat,
-				),
-				FeeProportionalMillionths: lnwire.MilliSatoshi(
-					hopHint.FeeProportionalMillionths,
-				),
-				TimeLockDelta: hopHint.CLTVExpiryDelta,
-			}
-
-			from := NewVertex(hopHint.NodeID)
-			to := Vertex(endNode.PubKeyBytes)
-
-			fromNode := &channeldb.LightningNode{PubKeyBytes: from}
-			edges[to] = append(edges[to], &edgePolicyWithSource{
-				sourceNode: fromNode,
-				edge:       edge,
-			})
-		}
-	}
 
 	// We'll also obtain a set of bandwidthHints from the lower layer for
 	// each of our outbound channels. This will allow the path finding to
@@ -241,9 +226,9 @@ func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
 		return nil, err
 	}
 
-	return &paymentSession{
+	return &staticPaymentSession{
 		pruneViewSnapshot: viewSnapshot,
-		additionalEdges:   edges,
+		additionalEdges:   additionalEdges,
 		bandwidthHints:    bandwidthHints,
 		mc:                m,
 	}, nil
@@ -253,8 +238,8 @@ func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
 // skip all path finding, and will instead utilize a set of pre-built routes.
 // This constructor allows callers to specify their own routes which can be
 // used for things like channel rebalancing, and swaps.
-func (m *missionControl) NewPaymentSessionFromRoutes(routes []*Route) *paymentSession {
-	return &paymentSession{
+func (m *missionControl) NewPaymentSessionFromRoutes(routes []*Route) PaymentSession {
+	return &staticPaymentSession{
 		pruneViewSnapshot: m.GraphPruneView(),
 		haveRoutes:        true,
 		preBuiltRoutes:    routes,
@@ -302,7 +287,9 @@ func generateBandwidthHints(sourceNode *channeldb.LightningNode,
 // added is noted, as it'll be pruned from the shared view after a period of
 // vertexDecay. However, the vertex will remain pruned for the *local* session.
 // This ensures we don't retry this vertex during the payment attempt.
-func (p *paymentSession) ReportVertexFailure(v Vertex) {
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *staticPaymentSession) ReportVertexFailure(v Vertex) error {
 	log.Debugf("Reporting vertex %v failure to Mission Control", v)
 
 	// First, we'll add the failed vertex to our local prune view snapshot.
@@ -314,6 +301,7 @@ func (p *paymentSession) ReportVertexFailure(v Vertex) {
 	p.mc.Lock()
 	p.mc.failedVertexes[v] = time.Now()
 	p.mc.Unlock()
+	return nil
 }
 
 // ReportChannelFailure adds a channel to the graph prune view. The time the
@@ -322,8 +310,10 @@ func (p *paymentSession) ReportVertexFailure(v Vertex) {
 // of the *local* session. This ensures that we don't flap by continually
 // retrying an edge after its pruning has expired.
 //
+// NOTE: Part of the PaymentSession interface.
 // TODO(roasbeef): also add value attempted to send and capacity of channel
-func (p *paymentSession) ReportChannelFailure(e uint64) {
+func (p *staticPaymentSession) ReportChannelFailure(hop *ChannelHop) error {
+	e := hop.ChannelID
 	log.Debugf("Reporting edge %v failure to Mission Control", e)
 
 	// First, we'll add the failed edge to our local prune view snapshot.
@@ -335,6 +325,15 @@ func (p *paymentSession) ReportChannelFailure(e uint64) {
 	p.mc.Lock()
 	p.mc.failedEdges[e] = time.Now()
 	p.mc.Unlock()
+	return nil
+}
+
+// ReportRouteSuccess is used to tell the PaymentSession that the provided
+// route successfully carried a payment.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *staticPaymentSession) ReportRouteSuccess(route Route) error {
+	return nil
 }
 
 // RequestRoute returns a route which is likely to be capable for successfully
@@ -345,8 +344,10 @@ func (p *paymentSession) ReportChannelFailure(e uint64) {
 // will be explored, which feeds into the recommendations made for routing.
 //
 // NOTE: This function is safe for concurrent access.
-func (p *paymentSession) RequestRoute(payment *LightningPayment,
+func RequestRoute(r PaymentSession, payment *LightningPayment,
 	height uint32, finalCltvDelta uint16) (*Route, error) {
+
+	p := r.(*staticPaymentSession)
 
 	switch {
 	// If we have a set of pre-built routes, then we'll just pop off the
@@ -378,10 +379,10 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	// Taking into account this prune view, we'll attempt to locate a path
 	// to our destination, respecting the recommendations from
 	// missionControl.
-	path, err := findPath(
-		nil, p.mc.graph, p.additionalEdges, p.mc.selfNode,
+	path, err := findPath(r,
+		p.mc.selfNode,
 		payment.Target, pruneView.vertexes, pruneView.edges,
-		payment.Amount, payment.FeeLimit, p.bandwidthHints,
+		payment.Amount, payment.FeeLimit,
 	)
 	if err != nil {
 		return nil, err
@@ -403,6 +404,35 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	return route, err
 }
 
+// EdgeWeight computes the weight of an edge. This value is used when searching
+// for the shortest path within the channel graph between two nodes. Weight is
+// is the fee itself plus a time lock penalty added to it. This benefits
+// channels with shorter time lock deltas and shorter (hops) routes in general.
+// RiskFactor controls the influence of time lock on route selection. This is
+// currently a fixed value, but might be configurable in the future.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *staticPaymentSession) EdgeWeight(amt lnwire.MilliSatoshi,
+	e *channeldb.ChannelEdgePolicy) (int64, error) {
+	// If the edge is in the prune view, return max score to ensure it will
+	// be ignored.
+	if _, ok := p.pruneViewSnapshot.edges[e.ChannelID]; ok {
+		return math.MaxInt64, nil
+	}
+
+	fee := computeFee(amt, e)
+	timeLockDelta := e.TimeLockDelta
+
+	// timeLockPenalty is the penalty for the time lock delta of this channel.
+	// It is controlled by RiskFactorBillionths and scales proportional
+	// to the amount that will pass through channel. Rationale is that it if
+	// a twice as large amount gets locked up, it is twice as bad.
+	timeLockPenalty := int64(amt) * int64(timeLockDelta) *
+		riskFactorBillionths / 1000000000
+
+	return int64(fee) + timeLockPenalty, nil
+}
+
 // ResetHistory resets the history of missionControl returning it to a state as
 // if no payment attempts have been made.
 func (m *missionControl) ResetHistory() {
@@ -411,3 +441,124 @@ func (m *missionControl) ResetHistory() {
 	m.failedVertexes = make(map[Vertex]time.Time)
 	m.Unlock()
 }
+
+// ForEachNode calls the provided function with the nodes in the current
+// channel graph.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *staticPaymentSession) ForEachNode(f func(Vertex) error) error {
+	tx, err := p.mc.graph.Database().Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	seen := make(map[Vertex]struct{})
+
+	err = p.mc.graph.ForEachNode(
+		tx,
+		func(_ *bolt.Tx, node *channeldb.LightningNode) error {
+			v := Vertex(node.PubKeyBytes)
+			seen[v] = struct{}{}
+			return f(v)
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	var addVertexes []Vertex
+	for v, edges := range p.additionalEdges {
+		addVertexes = append(addVertexes, v)
+		for _, e := range edges {
+			addVertexes = append(addVertexes, e.sourceNode)
+		}
+	}
+
+	for _, v := range addVertexes {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			if err := f(v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ForEachChannel calls the provided function with the channels found towards
+// the given node in the current channel graph.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *staticPaymentSession) ForEachChannel(toNode Vertex,
+	f func(Vertex, *channeldb.ChannelEdgePolicy, lnwire.MilliSatoshi) error) error {
+
+	tx, err := p.mc.graph.Database().Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	returnWithBandwidth := func(fromNode Vertex,
+		e *channeldb.ChannelEdgePolicy,
+		capacity lnwire.MilliSatoshi) (Vertex,
+		*channeldb.ChannelEdgePolicy, lnwire.MilliSatoshi) {
+
+		edgeBandwidth, ok := p.bandwidthHints[e.ChannelID]
+		if !ok {
+			// If we don't have a hint for this edge, then
+			// we'll just use the known Capacity as the
+			// available bandwidth.
+			edgeBandwidth = capacity
+		}
+
+		return fromNode, e, edgeBandwidth
+	}
+
+	for _, e := range p.additionalEdges[toNode] {
+		err := f(returnWithBandwidth(e.sourceNode, e.edge, e.bandwidth))
+		if err != nil {
+			return err
+		}
+	}
+
+	pubKey, err := btcec.ParsePubKey(toNode[:], btcec.S256())
+	if err != nil {
+		return err
+	}
+
+	node, err := p.mc.graph.FetchLightningNode(pubKey)
+	if err != nil && err != channeldb.ErrGraphNodeNotFound {
+		return err
+	} else if err == channeldb.ErrGraphNodeNotFound {
+		return nil
+	}
+
+	// TODO: make ForEachChannel just take pubkey instead?
+	err = node.ForEachChannel(
+		tx,
+		func(_ *bolt.Tx, edgeInfo *channeldb.ChannelEdgeInfo,
+			_, inEdge *channeldb.ChannelEdgePolicy) error {
+			fromNode, err := edgeInfo.FetchOtherNode(
+				tx, toNode[:],
+			)
+			if err != nil {
+				return err
+			}
+
+			return f(
+				returnWithBandwidth(
+					fromNode.PubKeyBytes, inEdge, lnwire.NewMSatFromSatoshis(edgeInfo.Capacity),
+				),
+			)
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+var _ MissionControl = (*missionControl)(nil)
+var _ PaymentSession = (*staticPaymentSession)(nil)

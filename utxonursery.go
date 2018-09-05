@@ -343,7 +343,8 @@ func (u *utxoNursery) Stop() error {
 func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 	commitResolution *lnwallet.CommitOutputResolution,
 	outgoingHtlcs []lnwallet.OutgoingHtlcResolution,
-	incomingHtlcs []lnwallet.IncomingHtlcResolution) error {
+	incomingHtlcs []lnwallet.IncomingHtlcResolution,
+	broadcastHeight uint32) error {
 
 	numHtlcs := len(incomingHtlcs) + len(outgoingHtlcs)
 	var (
@@ -370,7 +371,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 			commitResolution.MaturityDelay,
 			lnwallet.CommitmentTimeLock,
 			&commitResolution.SelfOutputSignDesc,
-			0,
+			0, broadcastHeight,
 		)
 
 		// We'll skip any zero valued outputs as this indicates we
@@ -390,7 +391,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 		htlcOutput := makeKidOutput(
 			&htlcRes.ClaimOutpoint, &chanPoint, htlcRes.CsvDelay,
 			lnwallet.HtlcAcceptedSuccessSecondLevel,
-			&htlcRes.SweepSignDesc, 0,
+			&htlcRes.SweepSignDesc, 0, broadcastHeight,
 		)
 
 		if htlcOutput.Amount() > 0 {
@@ -407,7 +408,9 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 		// a baby output as we need to go to the second level to sweep
 		// it.
 		if htlcRes.SignedTimeoutTx != nil {
-			htlcOutput := makeBabyOutput(&chanPoint, &htlcRes)
+			htlcOutput := makeBabyOutput(
+				&chanPoint, &htlcRes, broadcastHeight,
+			)
 
 			if htlcOutput.Amount() > 0 {
 				babyOutputs = append(babyOutputs, htlcOutput)
@@ -423,6 +426,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 			&htlcRes.ClaimOutpoint, &chanPoint, 0,
 			lnwallet.HtlcOfferedRemoteTimeout,
 			&htlcRes.SweepSignDesc, htlcRes.Expiry,
+			broadcastHeight,
 		)
 		kidOutputs = append(kidOutputs, htlcOutput)
 	}
@@ -1664,7 +1668,8 @@ type babyOutput struct {
 // provided sign descriptors and witness types will be used once the output
 // reaches the delay and claim stage.
 func makeBabyOutput(chanPoint *wire.OutPoint,
-	htlcResolution *lnwallet.OutgoingHtlcResolution) babyOutput {
+	htlcResolution *lnwallet.OutgoingHtlcResolution,
+	broadcastHeight uint32) babyOutput {
 
 	htlcOutpoint := htlcResolution.ClaimOutpoint
 	blocksToMaturity := htlcResolution.CsvDelay
@@ -1672,7 +1677,7 @@ func makeBabyOutput(chanPoint *wire.OutPoint,
 
 	kid := makeKidOutput(
 		&htlcOutpoint, chanPoint, blocksToMaturity, witnessType,
-		&htlcResolution.SweepSignDesc, 0,
+		&htlcResolution.SweepSignDesc, 0, broadcastHeight,
 	)
 
 	return babyOutput{
@@ -1755,7 +1760,7 @@ type kidOutput struct {
 func makeKidOutput(outpoint, originChanPoint *wire.OutPoint,
 	blocksToMaturity uint32, witnessType lnwallet.WitnessType,
 	signDescriptor *lnwallet.SignDescriptor,
-	absoluteMaturity uint32) kidOutput {
+	absoluteMaturity, broadcastHeight uint32) kidOutput {
 
 	// This is an HTLC either if it's an incoming HTLC on our commitment
 	// transaction, or is an outgoing HTLC on the commitment transaction of
@@ -1771,6 +1776,7 @@ func makeKidOutput(outpoint, originChanPoint *wire.OutPoint,
 		originChanPoint:  *originChanPoint,
 		blocksToMaturity: blocksToMaturity,
 		absoluteMaturity: absoluteMaturity,
+		broadcastHeight:  broadcastHeight,
 	}
 }
 

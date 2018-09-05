@@ -647,6 +647,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 
 			return s.utxoNursery.IncubateOutputs(
 				chanPoint, commitRes, outRes, inRes,
+				broadcastHeight,
 			)
 		},
 		PreimageDB:   s.witnessBeacon,

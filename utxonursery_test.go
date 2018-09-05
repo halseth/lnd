@@ -202,6 +202,7 @@ var (
 			},
 			originChanPoint:  outPoints[0],
 			blocksToMaturity: uint32(42),
+			broadcastHeight:  uint32(900),
 			confHeight:       uint32(1000),
 		},
 
@@ -213,6 +214,7 @@ var (
 			},
 			originChanPoint:  outPoints[0],
 			blocksToMaturity: uint32(42),
+			broadcastHeight:  uint32(0),
 			confHeight:       uint32(1000),
 		},
 
@@ -224,6 +226,7 @@ var (
 			},
 			originChanPoint:  outPoints[0],
 			blocksToMaturity: uint32(28),
+			broadcastHeight:  uint32(0),
 			confHeight:       uint32(500),
 		},
 
@@ -235,6 +238,7 @@ var (
 			},
 			originChanPoint:  outPoints[0],
 			blocksToMaturity: uint32(28),
+			broadcastHeight:  uint32(500),
 			confHeight:       uint32(500),
 		},
 	}
@@ -335,6 +339,8 @@ func init() {
 	initIncubateTests()
 }
 
+// TestKidOutputSerialization tests that encoding and decoding a kidOutput
+// works as expected, including deserialization of old database formats.
 func TestKidOutputSerialization(t *testing.T) {
 	for i, kid := range kidOutputs {
 		var b bytes.Buffer
@@ -355,6 +361,38 @@ func TestKidOutputSerialization(t *testing.T) {
 				i, kid, deserializedKid)
 		}
 	}
+
+	// Now check that we can properly deserialize the old format.
+	for i, kid := range kidOutputs {
+		var b bytes.Buffer
+		if err := kid.Encode(&b); err != nil {
+			t.Fatalf("Encode #%d: unable to serialize "+
+				"kid output: %v", i, err)
+		}
+
+		// Before the broadcast height was added to the struct, the
+		// serialized kid would miss the last 4 bytes. Make sure we
+		// can still deserialize that format.
+		snip := b.Bytes()
+		snip = snip[:len(snip)-4]
+		r := bytes.NewReader(snip)
+
+		var deserializedKid kidOutput
+		if err := deserializedKid.Decode(r); err != nil {
+			t.Fatalf("Decode #%d: unable to deserialize "+
+				"kid output: %v", i, err)
+		}
+
+		// The broadcast height should always be set to 0 for these
+		// deserializations.
+		kid.broadcastHeight = 0
+		if !reflect.DeepEqual(kid, deserializedKid) {
+			t.Fatalf("DeepEqual #%d: unexpected kidOutput, "+
+				"want %+v, got %+v",
+				i, kid, deserializedKid)
+		}
+	}
+
 }
 
 func TestBabyOutputSerialization(t *testing.T) {

@@ -473,7 +473,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 	// kindergarten bucket.
 	if len(kidOutputs) != 0 {
 		for _, kidOutput := range kidOutputs {
-			err := u.registerPreschoolConf(&kidOutput, u.bestHeight)
+			err := u.registerPreschoolConf(&kidOutput)
 			if err != nil {
 				return err
 			}
@@ -622,28 +622,7 @@ func (u *utxoNursery) reloadPreschool() error {
 	// hint from which to start our range for spend notifications.
 	for i := range psclOutputs {
 		kid := &psclOutputs[i]
-		chanPoint := kid.OriginChanPoint()
-
-		// Load the close summary for this output's channel point.
-		closeSummary, err := u.cfg.DB.FetchClosedChannel(chanPoint)
-		if err == channeldb.ErrClosedChannelNotFound {
-			// This should never happen since the close summary
-			// should only be removed after the channel has been
-			// swept completely.
-			utxnLog.Warnf("Close summary not found for "+
-				"chan_point=%v, can't determine height hint"+
-				"to sweep commit txn", chanPoint)
-			continue
-
-		} else if err != nil {
-			return err
-		}
-
-		// Use the close height from the channel summary as our height
-		// hint to drive our spend notifications, with our confirmation
-		// depth as a buffer for reorgs.
-		heightHint := closeSummary.CloseHeight - u.cfg.ConfDepth
-		err = u.registerPreschoolConf(kid, heightHint)
+		err = u.registerPreschoolConf(kid)
 		if err != nil {
 			return err
 		}
@@ -1317,7 +1296,7 @@ func (u *utxoNursery) waitForTimeoutConf(baby *babyOutput,
 // HTLC on our commitment transaction.. If successful, the provided preschool
 // output will be moved persistently into the kindergarten state within the
 // nursery store.
-func (u *utxoNursery) registerPreschoolConf(kid *kidOutput, heightHint uint32) error {
+func (u *utxoNursery) registerPreschoolConf(kid *kidOutput) error {
 	txID := kid.OutPoint().Hash
 
 	// TODO(roasbeef): ensure we don't already have one waiting, need to
@@ -1326,7 +1305,7 @@ func (u *utxoNursery) registerPreschoolConf(kid *kidOutput, heightHint uint32) e
 
 	pkScript := kid.signDesc.Output.PkScript
 	confChan, err := u.cfg.Notifier.RegisterConfirmationsNtfn(
-		&txID, pkScript, u.cfg.ConfDepth, heightHint,
+		&txID, pkScript, u.cfg.ConfDepth, kid.broadcastHeight,
 	)
 	if err != nil {
 		return err

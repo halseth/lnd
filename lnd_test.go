@@ -841,8 +841,8 @@ func testBasicChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
 }
 
-// testUnconfirmedChannelFunding tests that unconfirmed outputs that pay to us
-// can be used to fund channels.
+// testUnconfirmedChannelFunding tests that our unconfirmed change outputs can
+// be used to fund channels.
 func testUnconfirmedChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	ctxb := context.Background()
 
@@ -858,33 +858,29 @@ func testUnconfirmedChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 	defer shutdownAndAssert(net, t, carol)
 
-	// We'll send her some funds that should not confirm.
+	// We'll send her some confirmed funds. We send her enough funds to
+	// create two channels, but not enough for three.
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = net.SendCoinsUnconfirmed(ctxt, 2*chanAmt, carol)
+	err = net.SendCoins(ctxt, 5*chanAmt/2, carol)
 	if err != nil {
 		t.Fatalf("unable to send coins to carol: %v", err)
 	}
 
-	// Make sure the unconfirmed tx is seen in the mempool.
-	_, err = waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
-	if err != nil {
-		t.Fatalf("failed to find tx in miner mempool: %v", err)
-	}
-
 	// Now, we'll connect her to Alice so that they can open a channel
-	// together. The funding flow should select Carol's unconfirmed output
-	// as she doesn't have any other funds since it's a new node.
+	// together.
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	if err := net.ConnectNodes(ctxt, carol, net.Alice); err != nil {
-		t.Fatalf("unable to connect dave to alice: %v", err)
+		t.Fatalf("unable to connect carol to alice: %v", err)
 	}
+
+	// We open a channel with ALice, but we don't mine the funding
+	// transaction just yet.
 	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
-	chanOpenUpdate, err := net.OpenChannel(
+	chanOpenUpdateAlice, err := net.OpenChannel(
 		ctxt, carol, net.Alice,
 		lntest.OpenChannelParams{
-			Amt:              chanAmt,
-			PushAmt:          pushAmt,
-			SpendUnconfirmed: true,
+			Amt:     chanAmt,
+			PushAmt: pushAmt,
 		},
 	)
 	if err != nil {
@@ -892,41 +888,95 @@ func testUnconfirmedChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 			err)
 	}
 
-	// Confirm the channel and wait for it to be recognized by both
-	// parties. Two transactions should be mined, the unconfirmed spend and
-	// the funding tx.
-	mineBlocks(t, net, 6, 2)
+	// The unconfirmed funding tx should now be in the miner mempool.
+	_, err = waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+	if err != nil {
+		t.Fatalf("unable to find funding tx in mempool: %v", err)
+	}
+
+	// Now open a channel to Bob. The funding flow should select Carol's
+	// unconfirmed change output from the previous funding tx as she
+	// doesn't have any other funds since it's a new node.
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	chanPoint, err := net.WaitForChannelOpen(ctxt, chanOpenUpdate)
+	if err := net.ConnectNodes(ctxt, carol, net.Bob); err != nil {
+		t.Fatalf("unable to connect carol to bob: %v", err)
+	}
+	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+	chanOpenUpdateBob, err := net.OpenChannel(
+		ctxt, carol, net.Bob,
+		lntest.OpenChannelParams{
+			Amt:              chanAmt,
+			PushAmt:          pushAmt,
+			SpendUnconfirmed: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unable to open channel between carol and bob: %v",
+			err)
+	}
+
+	// Both funding transactions should be in the mempool.
+	_, err = waitForNTxsInMempool(net.Miner.Node, 2, minerMempoolTimeout)
+	if err != nil {
+		t.Fatalf("unable to find funding txns in mempool: %v", err)
+	}
+
+	// Confirm the channels  and wait for them to be recognized by both
+	// parties.
+	mineBlocks(t, net, 6, 2)
+
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	chanPointAlice, err := net.WaitForChannelOpen(ctxt, chanOpenUpdateAlice)
 	if err != nil {
 		t.Fatalf("error while waiting for channel open: %v", err)
 	}
 
-	// With the channel open, we'll check the balances on each side of the
-	// channel as a sanity check to ensure things worked out as intended.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	chanPointBob, err := net.WaitForChannelOpen(ctxt, chanOpenUpdateBob)
+	if err != nil {
+		t.Fatalf("error while waiting for channel open: %v", err)
+	}
+
+	// With the channels open, we'll check the balances on each side of the
+	// channels as a sanity check to ensure things worked out as intended.
 	balReq := &lnrpc.ChannelBalanceRequest{}
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	carolBal, err := carol.ChannelBalance(ctxt, balReq)
 	if err != nil {
 		t.Fatalf("unable to get carol's balance: %v", err)
 	}
+	expectedBalCarol := 2 * int64(chanAmt-pushAmt-calcStaticFee(0))
+	if carolBal.Balance != expectedBalCarol {
+		t.Fatalf("carol's balance is incorrect: expected %v got %v",
+			expectedBalCarol, carolBal)
+	}
+
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	aliceBal, err := net.Alice.ChannelBalance(ctxt, balReq)
 	if err != nil {
 		t.Fatalf("unable to get alice's balance: %v", err)
-	}
-	if carolBal.Balance != int64(chanAmt-pushAmt-calcStaticFee(0)) {
-		t.Fatalf("carol's balance is incorrect: expected %v got %v",
-			chanAmt-pushAmt-calcStaticFee(0), carolBal)
 	}
 	if aliceBal.Balance != int64(pushAmt) {
 		t.Fatalf("alice's balance is incorrect: expected %v got %v",
 			pushAmt, aliceBal.Balance)
 	}
 
-	// Now that we're done with the test, the channel can be closed.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	bobBal, err := net.Bob.ChannelBalance(ctxt, balReq)
+	if err != nil {
+		t.Fatalf("unable to get bob's balance: %v", err)
+	}
+	if bobBal.Balance != int64(pushAmt) {
+		t.Fatalf("bob's balance is incorrect: expected %v got %v",
+			pushAmt, bobBal.Balance)
+	}
+	// Now that we're done with the test, the channels can be closed.
 	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, carol, chanPoint, false)
+	closeChannelAndAssert(ctxt, t, net, carol, chanPointAlice, false)
+
+	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
+	closeChannelAndAssert(ctxt, t, net, carol, chanPointBob, false)
+
 }
 
 // txStr returns the string representation of the channel's funding transaction.

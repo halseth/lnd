@@ -1745,6 +1745,10 @@ type kidOutput struct {
 	// transaction of the remote party.
 	absoluteMaturity uint32
 
+	// broadcastHeight is the earliest height at which this output could
+	// have been confirmed at.
+	broadcastHeight uint32
+
 	confHeight uint32
 }
 
@@ -1828,7 +1832,16 @@ func (k *kidOutput) Encode(w io.Writer) error {
 		return err
 	}
 
-	return lnwallet.WriteSignDescriptor(w, k.SignDesc())
+	if err := lnwallet.WriteSignDescriptor(w, k.SignDesc()); err != nil {
+		return err
+	}
+
+	byteOrder.PutUint32(scratch[:4], k.broadcastHeight)
+	if _, err := w.Write(scratch[:4]); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Decode takes a byte array representation of a kidOutput and converts it to an
@@ -1875,7 +1888,22 @@ func (k *kidOutput) Decode(r io.Reader) error {
 	}
 	k.witnessType = lnwallet.WitnessType(byteOrder.Uint16(scratch[:2]))
 
-	return lnwallet.ReadSignDescriptor(r, &k.signDesc)
+	if err := lnwallet.ReadSignDescriptor(r, &k.signDesc); err != nil {
+		return err
+	}
+
+	_, err = r.Read(scratch[:4])
+	switch {
+	case err == io.EOF:
+		// Old format, nothing more to read.
+		return nil
+	case err != nil:
+		return err
+	}
+
+	k.broadcastHeight = byteOrder.Uint32(scratch[:4])
+
+	return nil
 }
 
 // TODO(bvu): copied from channeldb, remove repetition

@@ -342,6 +342,8 @@ func init() {
 // TestKidOutputSerialization tests that encoding and decoding a kidOutput
 // works as expected, including deserialization of old database formats.
 func TestKidOutputSerialization(t *testing.T) {
+	t.Parallel()
+
 	for i, kid := range kidOutputs {
 		var b bytes.Buffer
 		if err := kid.Encode(&b); err != nil {
@@ -396,6 +398,8 @@ func TestKidOutputSerialization(t *testing.T) {
 }
 
 func TestBabyOutputSerialization(t *testing.T) {
+	t.Parallel()
+
 	for i, baby := range babyOutputs {
 		var b bytes.Buffer
 		if err := baby.Encode(&b); err != nil {

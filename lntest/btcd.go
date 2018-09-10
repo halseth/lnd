@@ -1,3 +1,5 @@
+// +build btcd
+
 package lntest
 
 import (
@@ -43,9 +45,9 @@ func (b BtcdBackendConfig) P2PAddr() string {
 	return b.p2pAddress
 }
 
-// NewBtcdBackend starts a new rpctest.Harness and returns a BtcdBackendConfig
-// for that node.
-func NewBtcdBackend() (*BtcdBackendConfig, func(), error) {
+// NewBackend starts a new rpctest.Harness and returns a BtcdBackendConfig for
+// that node.
+func NewBackend() (*BtcdBackendConfig, func(), error) {
 	args := []string{
 		"--rejectnonstd",
 		"--txindex",

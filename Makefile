@@ -113,8 +113,8 @@ scratch: build
 check: unit itest
 
 itest-only:
-	@$(call print, "Running integration tests.")
-	$(ITEST)
+	@$(call print, "Running integration tests with btcd backend.")
+	$(ITEST_BTCD)
 
 itest: btcd build-itest itest-only
 
@@ -143,8 +143,8 @@ travis-cover: btcd lint unit-cover goveralls
 # =============
 
 flakehunter: build-itest
-	@$(call print, "Flake hunting integration tests.")
-	while [ $$? -eq 0 ]; do $(ITEST); done
+	@$(call print, "Flake hunting btcd integration tests.")
+	while [ $$? -eq 0 ]; do $(ITEST_BTCD); done
 
 flake-unit:
 	@$(call print, "Flake hunting unit tests.")

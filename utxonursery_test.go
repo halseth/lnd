@@ -394,7 +394,6 @@ func TestKidOutputSerialization(t *testing.T) {
 				i, kid, deserializedKid)
 		}
 	}
-
 }
 
 func TestBabyOutputSerialization(t *testing.T) {

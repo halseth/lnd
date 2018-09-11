@@ -408,9 +408,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 		// a baby output as we need to go to the second level to sweep
 		// it.
 		if htlcRes.SignedTimeoutTx != nil {
-			htlcOutput := makeBabyOutput(
-				&chanPoint, &htlcRes, broadcastHeight,
-			)
+			htlcOutput := makeBabyOutput(&chanPoint, &htlcRes)
 
 			if htlcOutput.Amount() > 0 {
 				babyOutputs = append(babyOutputs, htlcOutput)
@@ -1647,16 +1645,17 @@ type babyOutput struct {
 // provided sign descriptors and witness types will be used once the output
 // reaches the delay and claim stage.
 func makeBabyOutput(chanPoint *wire.OutPoint,
-	htlcResolution *lnwallet.OutgoingHtlcResolution,
-	broadcastHeight uint32) babyOutput {
+	htlcResolution *lnwallet.OutgoingHtlcResolution) babyOutput {
 
 	htlcOutpoint := htlcResolution.ClaimOutpoint
 	blocksToMaturity := htlcResolution.CsvDelay
 	witnessType := lnwallet.HtlcOfferedTimeoutSecondLevel
 
+	// For the embedded kidOutput we set the broadcast height to be the
+	// htlc expiry, as it is the lowest height it will be valid at.
 	kid := makeKidOutput(
 		&htlcOutpoint, chanPoint, blocksToMaturity, witnessType,
-		&htlcResolution.SweepSignDesc, 0, broadcastHeight,
+		&htlcResolution.SweepSignDesc, 0, htlcResolution.Expiry,
 	)
 
 	return babyOutput{

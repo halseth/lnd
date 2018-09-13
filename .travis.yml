@@ -1,4 +1,14 @@
 language: go
+cache:
+  directories:
+    - vendor/
+    - $GOCACHE
+    - $GOPATH/src/github.com/btcsuite
+    - $GOPATH/src/github.com/golang
+    - $GOPATH/src/gopkg.in/alecthomas
+env:
+  global:
+    - GOCACHE=$HOME/.go-build
 matrix:
   include:
   - go: "1.11"

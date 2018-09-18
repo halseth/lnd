@@ -6839,12 +6839,6 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 	defer shutdownAndAssert(net, t, dave)
 
-	// We must let Dave communicate with Carol before they are able to open
-	// channel, so we connect them.
-	if err := net.ConnectNodes(ctxb, carol, dave); err != nil {
-		t.Fatalf("unable to connect dave to carol: %v", err)
-	}
-
 	// Before we make a channel, we'll load up Carol with some coins sent
 	// directly from the miner.
 	err = net.SendCoins(ctxb, btcutil.SatoshiPerBitcoin, carol)
@@ -6852,14 +6846,204 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 		t.Fatalf("unable to send coins to carol: %v", err)
 	}
 
-	// We'll first open up a channel between them with a 0.5 BTC value.
-	ctxt, _ := context.WithTimeout(ctxb, timeout)
-	chanPoint := openChannelAndAssert(
-		ctxt, t, net, carol, dave,
-		lntest.OpenChannelParams{
-			Amt: chanAmt,
-		},
-	)
+	// We create a helper method that will create a slice of payment
+	// requests for us. The incrementing invoiceIndex will ensure they are
+	// unique.
+	invoiceIndex := 0
+	createPayReqs := func(node *lntest.HarnessNode,
+		numInvoices int) ([]string, error) {
+		payReqs := make([]string, numInvoices)
+		for i := 0; i < numInvoices; i++ {
+			preimage := bytes.Repeat(
+				[]byte{byte(17 - invoiceIndex)}, 32,
+			)
+			invoiceIndex++
+			invoice := &lnrpc.Invoice{
+				Memo:      "testing",
+				RPreimage: preimage,
+				Value:     paymentAmt,
+			}
+			resp, err := node.AddInvoice(ctxb, invoice)
+			if err != nil {
+				return nil, fmt.Errorf("unable to "+
+					"add invoice: %v", err)
+			}
+
+			payReqs[i] = resp.PaymentRequest
+		}
+		return payReqs, nil
+	}
+
+	// As we'll be querying the state of a node's channels frequently we'll
+	// create a closure helper function for the purpose.
+	getNodeChanInfo := func(node *lntest.HarnessNode) (*lnrpc.Channel,
+		error) {
+		req := &lnrpc.ListChannelsRequest{}
+		channelInfo, err := node.ListChannels(ctxb, req)
+		if err != nil {
+			return nil, err
+		}
+		if len(channelInfo.Channels) != 1 {
+			t.Fatalf("node should only have a single channel, "+
+				"instead he has %v",
+				len(channelInfo.Channels))
+		}
+
+		return channelInfo.Channels[0], nil
+	}
+
+	// timeTravel is a method that will make Carol open a channel to the
+	// passed node, settle a series of payments, then reset the node back
+	// to the state before the payments happened. When this method returns
+	// the node will be unaware of the new state updates. The returned
+	// function can be used to restart the node in this state.
+	timeTravel := func(node *lntest.HarnessNode) (func() error,
+		*lnrpc.ChannelPoint, int64, error) {
+
+		// We must let the node communicate with Carol before they are
+		// able to open channel, so we connect them.
+		if err := net.EnsureConnected(ctxb, carol, node); err != nil {
+			t.Fatalf("unable to connect %v to carol: %v",
+				node.Name(), err)
+		}
+
+		// We'll first open up a channel between them with a 0.5 BTC
+		// value.
+		ctxt, _ := context.WithTimeout(ctxb, timeout)
+		chanPoint := openChannelAndAssert(
+			ctxt, t, net, carol, node,
+			lntest.OpenChannelParams{
+				Amt: chanAmt,
+			},
+		)
+
+		// With the channel open, we'll create a few invoices for the
+		// node that Carol will pay to in order to advance the state of
+		// the channel.
+		// TODO(halseth): have dangling HTLCs on the commitment, able to
+		// retrive funds?
+		payReqs, err := createPayReqs(node, numInvoices)
+		if err != nil {
+			t.Fatalf("unable to create pay reqs: %v", err)
+		}
+
+		// Wait for Carol to receive the channel edge from the funding
+		// manager.
+		ctxt, _ = context.WithTimeout(ctxb, timeout)
+		err = carol.WaitForNetworkChannelOpen(ctxt, chanPoint)
+		if err != nil {
+			t.Fatalf("carol didn't see the carol->%s channel before "+
+				"timeout: %v", node.Name, err)
+		}
+
+		// Send payments from Carol using 3 of the payment hashes
+		// generated above.
+		ctxt, _ = context.WithTimeout(ctxb, timeout)
+		err = completePaymentRequests(ctxt, carol,
+			payReqs[:numInvoices/2], true)
+		if err != nil {
+			t.Fatalf("unable to send payments: %v", err)
+		}
+
+		// Next query for the node's channel state, as we sent 3
+		// payments of 10k satoshis each, it should now see his balance
+		// as being 30k satoshis.
+		var nodeChan *lnrpc.Channel
+		var predErr error
+		err = lntest.WaitPredicate(func() bool {
+			bChan, err := getNodeChanInfo(node)
+			if err != nil {
+				t.Fatalf("unable to get channel info: %v", err)
+			}
+			if bChan.LocalBalance != 30000 {
+				predErr = fmt.Errorf("balance is incorrect, "+
+					"got %v, expected %v",
+					bChan.LocalBalance, 30000)
+				return false
+			}
+
+			nodeChan = bChan
+			return true
+		}, time.Second*15)
+		if err != nil {
+			t.Fatalf("%v", predErr)
+		}
+
+		// Grab the current commitment height (update number), we'll
+		// later revert him to this state after additional updates to
+		// revoke this state.
+		stateNumPreCopy := nodeChan.NumUpdates
+
+		// Create a temporary file to house the database state at this
+		// particular point in history.
+		tempDbPath, err := ioutil.TempDir("", node.Name()+"-past-state")
+		if err != nil {
+			t.Fatalf("unable to create temp db folder: %v", err)
+		}
+		tempDbFile := filepath.Join(tempDbPath, "channel.db")
+		defer os.Remove(tempDbPath)
+
+		// With the temporary file created, copy the current state into
+		// the temporary file we created above. Later after more
+		// updates, we'll restore this state.
+		if err := copyFile(tempDbFile, node.DBPath()); err != nil {
+			t.Fatalf("unable to copy database files: %v", err)
+		}
+
+		// Finally, send more payments from , using the remaining
+		// payment hashes.
+		ctxt, _ = context.WithTimeout(ctxb, timeout)
+		err = completePaymentRequests(ctxt, carol,
+			payReqs[numInvoices/2:], true)
+		if err != nil {
+			t.Fatalf("unable to send payments: %v", err)
+		}
+
+		nodeChan, err = getNodeChanInfo(node)
+		if err != nil {
+			t.Fatalf("unable to get dave chan info: %v", err)
+		}
+
+		// Now we shutdown the node, copying over the its temporary
+		// database state which has the *prior* channel state over his
+		// current most up to date state. With this, we essentially
+		// force the node to travel back in time within the channel's
+		// history.
+		if err = net.RestartNode(node, func() error {
+			return os.Rename(tempDbFile, node.DBPath())
+		}); err != nil {
+			t.Fatalf("unable to restart node: %v", err)
+		}
+
+		// Now query for the channel state, it should show that it's at
+		// a state number in the past, not the *latest* state.
+		nodeChan, err = getNodeChanInfo(node)
+		if err != nil {
+			t.Fatalf("unable to get dave chan info: %v", err)
+		}
+		if nodeChan.NumUpdates != stateNumPreCopy {
+			t.Fatalf("db copy failed: %v", nodeChan.NumUpdates)
+		}
+		assertNodeNumChannels(t, ctxb, node, 1)
+
+		balReq := &lnrpc.WalletBalanceRequest{}
+		balResp, err := node.WalletBalance(ctxb, balReq)
+		if err != nil {
+			t.Fatalf("unable to get dave's balance: %v", err)
+		}
+
+		restart, err := net.SuspendNode(node)
+		if err != nil {
+			t.Fatalf("unable to suspend node: %v", err)
+		}
+		return restart, chanPoint, balResp.ConfirmedBalance, nil
+	}
+
+	// Reset Dave to a state where he has an outdated channel state.
+	restartDave, _, daveStartingBalance, err := timeTravel(dave)
+	if err != nil {
+		t.Fatalf("unable to time travel dave: %v", err)
+	}
 
 	// We a´make a note of the nodes' current on-chain balances, to make
 	// sure they are able to retrieve the channel funds eventually,
@@ -6870,152 +7054,14 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 	carolStartingBalance := carolBalResp.ConfirmedBalance
 
-	daveBalResp, err := dave.WalletBalance(ctxb, balReq)
-	if err != nil {
-		t.Fatalf("unable to get dave's balance: %v", err)
+	// Restart Dave to trigger a channel resync.
+	if err := restartDave(); err != nil {
+		t.Fatalf("unable to restart dave: %v", err)
 	}
-	daveStartingBalance := daveBalResp.ConfirmedBalance
-
-	// With the channel open, we'll create a few invoices for Dave that
-	// Carol will pay to in order to advance the state of the channel.
-	// TODO(halseth): have dangling HTLCs on the commitment, able to
-	// retrive funds?
-	davePayReqs := make([]string, numInvoices)
-	for i := 0; i < numInvoices; i++ {
-		preimage := bytes.Repeat([]byte{byte(17 - i)}, 32)
-		invoice := &lnrpc.Invoice{
-			Memo:      "testing",
-			RPreimage: preimage,
-			Value:     paymentAmt,
-		}
-		resp, err := dave.AddInvoice(ctxb, invoice)
-		if err != nil {
-			t.Fatalf("unable to add invoice: %v", err)
-		}
-
-		davePayReqs[i] = resp.PaymentRequest
-	}
-
-	// As we'll be querying the state of Dave's channels frequently we'll
-	// create a closure helper function for the purpose.
-	getDaveChanInfo := func() (*lnrpc.Channel, error) {
-		req := &lnrpc.ListChannelsRequest{}
-		daveChannelInfo, err := dave.ListChannels(ctxb, req)
-		if err != nil {
-			return nil, err
-		}
-		if len(daveChannelInfo.Channels) != 1 {
-			t.Fatalf("dave should only have a single channel, "+
-				"instead he has %v",
-				len(daveChannelInfo.Channels))
-		}
-
-		return daveChannelInfo.Channels[0], nil
-	}
-
-	// Wait for Carol to receive the channel edge from the funding manager.
-	ctxt, _ = context.WithTimeout(ctxb, timeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPoint)
-	if err != nil {
-		t.Fatalf("carol didn't see the carol->dave channel before "+
-			"timeout: %v", err)
-	}
-
-	// Send payments from Carol to Dave using 3 of Dave's payment hashes
-	// generated above.
-	ctxt, _ = context.WithTimeout(ctxb, timeout)
-	err = completePaymentRequests(ctxt, carol, davePayReqs[:numInvoices/2],
-		true)
-	if err != nil {
-		t.Fatalf("unable to send payments: %v", err)
-	}
-
-	// Next query for Dave's channel state, as we sent 3 payments of 10k
-	// satoshis each, Dave should now see his balance as being 30k satoshis.
-	var daveChan *lnrpc.Channel
-	var predErr error
-	err = lntest.WaitPredicate(func() bool {
-		bChan, err := getDaveChanInfo()
-		if err != nil {
-			t.Fatalf("unable to get dave's channel info: %v", err)
-		}
-		if bChan.LocalBalance != 30000 {
-			predErr = fmt.Errorf("dave's balance is incorrect, "+
-				"got %v, expected %v", bChan.LocalBalance,
-				30000)
-			return false
-		}
-
-		daveChan = bChan
-		return true
-	}, time.Second*15)
-	if err != nil {
-		t.Fatalf("%v", predErr)
-	}
-
-	// Grab Dave's current commitment height (update number), we'll later
-	// revert him to this state after additional updates to revoke this
-	// state.
-	daveStateNumPreCopy := daveChan.NumUpdates
-
-	// Create a temporary file to house Dave's database state at this
-	// particular point in history.
-	daveTempDbPath, err := ioutil.TempDir("", "dave-past-state")
-	if err != nil {
-		t.Fatalf("unable to create temp db folder: %v", err)
-	}
-	daveTempDbFile := filepath.Join(daveTempDbPath, "channel.db")
-	defer os.Remove(daveTempDbPath)
-
-	// With the temporary file created, copy Dave's current state into the
-	// temporary file we created above. Later after more updates, we'll
-	// restore this state.
-	if err := copyFile(daveTempDbFile, dave.DBPath()); err != nil {
-		t.Fatalf("unable to copy database files: %v", err)
-	}
-
-	// Finally, send payments from Carol to Dave, consuming Dave's remaining
-	// payment hashes.
-	ctxt, _ = context.WithTimeout(ctxb, timeout)
-	err = completePaymentRequests(ctxt, carol, davePayReqs[numInvoices/2:],
-		true)
-	if err != nil {
-		t.Fatalf("unable to send payments: %v", err)
-	}
-
-	daveChan, err = getDaveChanInfo()
-	if err != nil {
-		t.Fatalf("unable to get dave chan info: %v", err)
-	}
-
-	// Now we shutdown Dave, copying over the his temporary database state
-	// which has the *prior* channel state over his current most up to date
-	// state. With this, we essentially force Dave to travel back in time
-	// within the channel's history.
-	if err = net.RestartNode(dave, func() error {
-		return os.Rename(daveTempDbFile, dave.DBPath())
-	}); err != nil {
-		t.Fatalf("unable to restart node: %v", err)
-	}
-
-	// Now query for Dave's channel state, it should show that he's at a
-	// state number in the past, not the *latest* state.
-	daveChan, err = getDaveChanInfo()
-	if err != nil {
-		t.Fatalf("unable to get dave chan info: %v", err)
-	}
-	if daveChan.NumUpdates != daveStateNumPreCopy {
-		t.Fatalf("db copy failed: %v", daveChan.NumUpdates)
-	}
-	assertNodeNumChannels(t, ctxb, dave, 1)
 
 	// Upon reconnection, the nodes should detect that Dave is out of sync.
-	if err := net.ConnectNodes(ctxb, carol, dave); err != nil {
-		t.Fatalf("unable to connect dave to carol: %v", err)
-	}
-
 	// Carol should force close the channel using her latest commitment.
-	forceClose, err := waitForTxInMempool(net.Miner.Node, 5*time.Second)
+	forceClose, err := waitForTxInMempool(net.Miner.Node, 15*time.Second)
 	if err != nil {
 		t.Fatalf("unable to find Carol's force close tx in mempool: %v",
 			err)
@@ -7063,10 +7109,11 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 	// We query Dave's balance to make sure it increased after the channel
 	// closed. This checks that he was able to sweep the funds he had in
 	// the channel.
-	daveBalResp, err = dave.WalletBalance(ctxb, balReq)
+	daveBalResp, err := dave.WalletBalance(ctxb, balReq)
 	if err != nil {
 		t.Fatalf("unable to get dave's balance: %v", err)
 	}
+
 	daveBalance := daveBalResp.ConfirmedBalance
 	if daveBalance <= daveStartingBalance {
 		t.Fatalf("expected dave to have balance above %d, intead had %v",
@@ -7075,7 +7122,7 @@ func testDataLossProtection(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// After the Carol's output matures, she should also reclaim her funds.
 	mineBlocks(t, net, defaultCSV-1)
-	carolSweep, err := waitForTxInMempool(net.Miner.Node, 5*time.Second)
+	carolSweep, err := waitForTxInMempool(net.Miner.Node, 15*time.Second)
 	if err != nil {
 		t.Fatalf("unable to find Carol's sweep tx in mempool: %v", err)
 	}

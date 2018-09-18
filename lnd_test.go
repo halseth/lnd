@@ -276,6 +276,58 @@ func closeChannelAndAssert(ctx context.Context, t *harnessTest,
 	return closingTxid
 }
 
+// waitForChannelPendingForceClose waits for the node to report that the
+// channel is pending force close, and that the UTXO nursery is aware of it.
+func waitForChannelPendingForceClose(ctx context.Context,
+	node *lntest.HarnessNode, fundingChanPoint *lnrpc.ChannelPoint) error {
+	txidHash, err := getChanPointFundingTxid(fundingChanPoint)
+	if err != nil {
+		return err
+	}
+
+	txid, err := chainhash.NewHash(txidHash)
+	if err != nil {
+		return err
+	}
+
+	op := wire.OutPoint{
+		Hash:  *txid,
+		Index: fundingChanPoint.OutputIndex,
+	}
+
+	var predErr error
+	err = lntest.WaitPredicate(func() bool {
+		pendingChansRequest := &lnrpc.PendingChannelsRequest{}
+		pendingChanResp, err := node.PendingChannels(
+			ctx, pendingChansRequest,
+		)
+		if err != nil {
+			predErr = fmt.Errorf("unable to get pending "+
+				"channels: %v", err)
+			return false
+		}
+
+		forceClose, err := findForceClosedChannel(pendingChanResp, &op)
+		if err != nil {
+			predErr = err
+			return false
+		}
+
+		// We must wait until the UTXO nursery has received the channel
+		// and is aware of its maturity height.
+		if forceClose.MaturityHeight == 0 {
+			predErr = fmt.Errorf("channel had maturity height of 0")
+			return false
+		}
+		return true
+	}, time.Second*15)
+	if err != nil {
+		return predErr
+	}
+
+	return nil
+}
+
 // numOpenChannelsPending sends an RPC request to a node to get a count of the
 // node's channels that are currently in a pending state (with a broadcast, but
 // not confirmed funding transaction).

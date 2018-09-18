@@ -2107,12 +2107,25 @@ func serializeChannelCloseSummary(w io.Writer, cs *ChannelCloseSummary) error {
 
 	// We'll write this field last, as it's possible for a channel to be
 	// closed before we learn of the next unrevoked revocation point for
-	// the remote party.
+	// the remote party. Write a boolen indicating whether this field is
+	// present or not.
 	if cs.RemoteNextRevocation == nil {
-		return nil
+		if err := WriteElements(w, false); err != nil {
+			return err
+		}
+	} else {
+		// Field is present, write a true value before writing the
+		// actual field.
+		if err := WriteElements(w, true); err != nil {
+			return err
+		}
+		err := WriteElements(w, cs.RemoteNextRevocation)
+		if err != nil {
+			return err
+		}
 	}
 
-	return WriteElements(w, cs.RemoteNextRevocation)
+	return nil
 }
 
 func fetchChannelCloseSummary(tx *bolt.Tx,
@@ -2164,17 +2177,70 @@ func deserializeCloseChannelSummary(r io.Reader) (*ChannelCloseSummary, error) {
 
 	// Finally, we'll attempt to read the next unrevoked commitment point
 	// for the remote party. If we closed the channel before receiving a
-	// funding locked message, then this can be nil. As a result, we'll use
-	// the same technique to read the field, only if there's still data
-	// left in the buffer.
-	err = ReadElements(r, &c.RemoteNextRevocation)
-	if err != nil && err != io.EOF {
-		// If we got a non-eof error, then we know there's an actually
-		// issue. Otherwise, it may have been the case that this
-		// summary didn't have the set of optional fields.
+	// funding locked message then this might not be present.
+	//
+	// In the old format this was represented by ending writing at this
+	// point, while a public key was written in case it was present. If the
+	// new format was used then a boolean indicating whether the field
+	// is present will come first. We now handle these possible cases.
+	var b [btcec.PubKeyBytesLenCompressed]byte
+	_, err = io.ReadFull(r, b[:])
+	switch {
+
+	// If we get EOF no bytes were left, and it means the old format was
+	// used, and RemoteNextRevocation was not present.
+	case err == io.EOF:
+		return c, nil
+
+	// We read some bytes, but not the full length. This means the new
+	// format was used, and it will be handled below.
+	case err == io.ErrUnexpectedEOF:
+		break
+
+	// If we got a non-eof error, then we know there's an actual issue.
+	case err != nil:
 		return nil, err
 	}
 
+	// Read one extra byte to determine if the new format was used.
+	var extra [1]byte
+	_, err = io.ReadFull(r, extra[:])
+	switch {
+
+	// No more bytes read, so we know the old format was used, as we read
+	// exactly the pubkey length above.
+	case err == io.EOF:
+		reader := bytes.NewReader(b[:])
+		err := ReadElements(reader, &c.RemoteNextRevocation)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+
+	// Any other error indicates something was wrong.
+	case err != nil:
+		return nil, err
+	}
+
+	// Now we know we are dealing with the new format, so interpret the
+	// read data accordingly.
+	reader := bytes.NewReader(append(b[:], extra[0]))
+	var hasRemoteNextRevocation bool
+	err = ReadElements(reader, &hasRemoteNextRevocation)
+	if err != nil {
+		return nil, err
+	}
+
+	// If this field was not written, we can return.
+	if !hasRemoteNextRevocation {
+		return c, nil
+	}
+
+	// Otherwise the field should be present.
+	err = ReadElements(reader, &c.RemoteNextRevocation)
+	if err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 

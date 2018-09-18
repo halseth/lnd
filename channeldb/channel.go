@@ -1873,6 +1873,8 @@ type ChannelCloseSummary struct {
 
 	// LastChanSyncMsg is the ChannelReestablish message for this channel
 	// for the state at the point where it was closed.
+	// TODO: test for deserialization, more logging, must increase db
+	// version/ensure compatible in both directions?
 	LastChanSyncMsg *lnwire.ChannelReestablish
 }
 

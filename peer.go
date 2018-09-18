@@ -853,6 +853,8 @@ func newChanMsgStream(p *peer, cid lnwire.ChannelID) *msgStream {
 					// to deliver the message.
 					return
 				}
+			} else {
+				peerLog.Infof("johan got chan sync message")
 			}
 
 			// In order to avoid unnecessarily delivering message
@@ -868,6 +870,28 @@ func newChanMsgStream(p *peer, cid lnwire.ChannelID) *msgStream {
 			// active goroutine dedicated to this channel.
 			if chanLink == nil {
 				link, err := p.server.htlcSwitch.GetLink(cid)
+				// If we failed to find thie link in question,
+				// and the message received was a channel sync
+				// message, then this might be a peer trying to
+				// resync closed channel. In this case we'll
+				// try to resend our last channel sync message,
+				// such that the peer can recover funds from
+				// the closes channel.
+				if err != nil && isChanSyncMsg {
+					peerLog.Infof("johan unable to find "+
+						"link(%v) to handle channel "+
+						"sync, attempting to resend "+
+						"last ChanSync message", cid)
+					err := p.resendChanSyncMsg(cid)
+					if err != nil {
+						peerLog.Errorf(
+							"resend failed: %v",
+							err,
+						)
+						return
+					}
+					return
+				}
 				if err != nil {
 					peerLog.Errorf("recv'd update for "+
 						"unknown channel %v from %v: "+
@@ -875,6 +899,8 @@ func newChanMsgStream(p *peer, cid lnwire.ChannelID) *msgStream {
 					return
 				}
 				chanLink = link
+
+				// check if we have a chan sync message written, and if so respond with itiut
 			}
 
 			// In order to avoid unnecessarily delivering message
@@ -903,6 +929,39 @@ func newDiscMsgStream(p *peer) *msgStream {
 			p.server.authGossiper.ProcessRemoteAnnouncement(msg, p)
 		},
 	)
+}
+
+func (p *peer) resendChanSyncMsg(cid lnwire.ChannelID) error {
+	// Check if we have any channel sync messages stored for this channel.
+	closedChannels, err := p.server.chanDB.FetchClosedChannels(false)
+	if err != nil {
+		return fmt.Errorf("unable to fetch channel sync messages for "+
+			"peer %v: %v", p, err)
+	}
+
+	for _, c := range closedChannels {
+		if !cid.IsChanPoint(&c.ChanPoint) {
+			continue
+		}
+
+		if c.LastChanSyncMsg == nil {
+			// TODO: error/watndin?
+			// TODO: send error to peer
+			continue
+		}
+
+		err := p.SendMessage(true, c.LastChanSyncMsg)
+		if err != nil {
+			return fmt.Errorf("Failed resending channel sync "+
+				"message to peer %v: %v", p, err)
+		}
+
+		peerLog.Infof("johan Re-sent channel sync message for channel %v "+
+			"to peer %v", cid, p)
+		break
+	}
+
+	return nil
 }
 
 // readHandler is responsible for reading messages off the wire in series, then

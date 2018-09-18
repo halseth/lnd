@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -311,6 +312,10 @@ func (c *chainWatcher) closeObserver(spendNtfn *chainntnfs.SpendEvent) {
 		isOurCommitment := commitSpend.SpenderTxHash.IsEqual(
 			&commitmentHash,
 		)
+
+		// Here we should store our latest chan sync message such that
+		// 1. If we detect a remote close that is beyond what we know, we can resend i
+		// 2. If the remote has lost state, we can resend it
 		if isOurCommitment {
 			if err := c.dispatchLocalForceClose(
 				commitSpend, *localCommit,
@@ -406,14 +411,82 @@ func (c *chainWatcher) closeObserver(spendNtfn *chainntnfs.SpendEvent) {
 			// can sweep our funds.
 			// TODO(halseth): must handle the case where we haven't
 			// yet processed the chan sync message.
-			commitPoint, err := c.cfg.chanState.DataLossCommitPoint()
-			if err != nil {
-				log.Errorf("Unable to retrieve commitment "+
-					"point for channel(%v) with lost "+
-					"state: %v",
-					c.cfg.chanState.FundingOutpoint, err)
-				return
+			// TODO: more logging.
+			var commitPoint *btcec.PublicKey
+			for {
+				commitPoint, err = c.cfg.chanState.DataLossCommitPoint()
+				if err != nil {
+					log.Errorf("Unable to retrieve commitment "+
+						"point for channel(%v) with lost "+
+						"state: %v",
+						c.cfg.chanState.FundingOutpoint, err)
+
+					select {
+					case <-time.After(1 * time.Second):
+						// TODO: backoff
+					case <-c.quit:
+						return
+					}
+					continue
+				}
+				break
 			}
+
+			// We were unable to retrieve the
+			// commit pointfrom the database. Try
+			// to fetch our latest channel sync
+			// message and attempt to get the point
+			// from the remote peer, if online.
+			// OR: just wait here. When trying to load a
+			// channel, we should be getting the commit
+			// point eventually, so it will be added to the
+			// db.
+			// notify when peer is online, send chan sync
+			// message, and wait for answer. How to wait
+			// for answer? Either just pipe the anwer back
+			// here somehow, or continuously check the db.
+			// Must also figure out how to store to the DB,
+			// as currently it is stored if channel desync
+			// is detected. Could also trigger a regular
+			// channel sync from here.
+			//
+			// Maybe this covers all situations:
+			// When detecting close that can be handled,
+			// save chan sync message as part of close
+			// summary.
+			//
+			// When detecting close that cannot be handled,
+			// resend chan sync to peer such that can
+			// respond with its stored chan sync.
+			// Here we must actually start the link, such
+			// that the chan sync method is properly
+			// handled. One way to do this could be to
+			// connect the peer, as that should trigger
+			// loading the link (we still think it is
+			// active). As long as the peer resends the
+			// chan sync message for closed channels we
+			// should be fine. Just need to wait here until
+			// that is done.
+			//
+			// Peer might not be online when this happens.
+			//
+			// Race: before close is detected on-chain
+			// (mayne long rescan on startup), will attempt
+			// to sync up with peer, but peer has already
+			// closed channel. Peer should check if this
+			// chan sync message is for a closed channel,
+			// in in that case resend the last chan sync
+			// message.
+
+			// Maybe better:
+			// in case commit point is not found, just
+			// return. Assumption is that the moment we
+			// re-connect the the peer we will attempt to
+			// resync the channel, and we'll get the chan
+			// sync message.
+			// race, we connect to the peer and same time
+			// get the close event, can stop here, and
+			// poll.
 
 			log.Infof("Recovered commit point(%x) for "+
 				"channel(%v)! Now attempting to use it to "+

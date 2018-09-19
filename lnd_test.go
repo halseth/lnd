@@ -284,7 +284,6 @@ func closeChannelAndAssert(ctx context.Context, t *harnessTest,
 // channel is pending force close, and that the UTXO nursery is aware of it.
 func waitForChannelPendingForceClose(ctx context.Context,
 	node *lntest.HarnessNode, fundingChanPoint *lnrpc.ChannelPoint) error {
-
 	txidHash, err := getChanPointFundingTxid(fundingChanPoint)
 	if err != nil {
 		return err

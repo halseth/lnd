@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -403,16 +404,41 @@ func (c *chainWatcher) closeObserver(spendNtfn *chainntnfs.SpendEvent) {
 
 			// If we are lucky, the remote peer sent us the correct
 			// commitment point during channel sync, such that we
-			// can sweep our funds.
-			// TODO(halseth): must handle the case where we haven't
-			// yet processed the chan sync message.
-			commitPoint, err := c.cfg.chanState.DataLossCommitPoint()
-			if err != nil {
-				log.Errorf("Unable to retrieve commitment "+
-					"point for channel(%v) with lost "+
-					"state: %v",
-					c.cfg.chanState.FundingOutpoint, err)
-				return
+			// can sweep our funds. If we cannot find the commit
+			// point, there's not much we can do other than wait
+			// for us to retrieve it. We will attempt to retrieve
+			// it from the peer each time we connect to it.
+			// TODO(halseth): actively initiate re-connection to
+			// the peer?
+			var commitPoint *btcec.PublicKey
+			backoff := time.Second
+			maxBackoff := time.Hour
+			for {
+				commitPoint, err = c.cfg.chanState.DataLossCommitPoint()
+				if err != nil {
+					log.Errorf("Unable to retrieve "+
+						"commitment point for "+
+						"channel(%v) with lost "+
+						"state: %v. Retrying in %v.",
+						c.cfg.chanState.FundingOutpoint,
+						err, backoff)
+
+					select {
+
+					// Wait before retrying, with an
+					// exponential backoff.
+					case <-time.After(backoff):
+						backoff = 2 * backoff
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+						}
+
+					case <-c.quit:
+						return
+					}
+					continue
+				}
+				break
 			}
 
 			log.Infof("Recovered commit point(%x) for "+

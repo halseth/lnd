@@ -2,6 +2,8 @@ package autopilot
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -120,6 +122,49 @@ func (r *RPCServer) Enable(ctx context.Context,
 	}
 
 	return &lnrpc.EnableResponse{}, err
+}
+
+// SetNodeScores gives a new set of node scores to the autopilot agent, if the
+// scoring based heuristic is enabled.
+//
+// NOTE: Part of the AutopilotServer interface.
+func (r *RPCServer) SetNodeScores(ctx context.Context,
+	in *lnrpc.SetNodeScoresRequest) (*lnrpc.SetNodeScoresResponse, error) {
+	r.Lock()
+	defer r.Unlock()
+
+	// Check if the agent is acitve.
+	if r.pilot == nil {
+		return nil, fmt.Errorf("autopilot not enabled")
+	}
+
+	// Find the score attachement heuristic.
+	for _, h := range r.pilot.cfg.Heuristics {
+		scoreAtt, ok := h.(*ScoreAttachment)
+		if !ok {
+			continue
+		}
+
+		// With the heuristic found, parse the publicj keys from the
+		// rpc parameters and hand them with scores to the
+		// ScoreAttachemnt.
+		scores := make(map[NodeID]uint32)
+		for pubkeyStr, score := range in.Scores {
+			pubkeyBytes, err := hex.DecodeString(pubkeyStr)
+			if err != nil {
+				return nil, err
+			}
+			var nodeID NodeID
+			copy(nodeID[:], pubkeyBytes)
+
+			scores[nodeID] = score
+		}
+
+		scoreAtt.SetNodeScores(scores)
+		return &lnrpc.SetNodeScoresResponse{}, nil
+	}
+
+	return nil, fmt.Errorf("Scoring based heuristic not active")
 }
 
 // StartAgent creates and starts an autopilot agent from the RPCServer's

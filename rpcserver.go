@@ -335,6 +335,10 @@ var (
 			Entity: "offchain",
 			Action: "write",
 		}},
+		"/autopilot.Autopilot/SetNodeScores": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
 	}
 )
 

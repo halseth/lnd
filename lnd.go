@@ -333,6 +333,19 @@ func lndMain() error {
 	grpcServer := grpc.NewServer(serverOpts...)
 	lnrpc.RegisterLightningServer(grpcServer, rpcServer)
 
+	// Set up the autopilot service, that will administer the autopilot
+	// agent.
+	autopilotRpcServer, err := initAutoPilot(server, cfg.Autopilot)
+	if err != nil {
+		ltndLog.Errorf("unable to create autopilot service: %v", err)
+		return err
+	}
+	if err := autopilotRpcServer.Start(); err != nil {
+		ltndLog.Errorf("unable to start autopilot service: %v", err)
+		return err
+	}
+	defer autopilotRpcServer.Stop()
+
 	// Next, Start the gRPC server listening for HTTP/2 connections.
 	for _, listener := range cfg.RPCListeners {
 		lis, err := lncfg.ListenOnAddress(listener)
@@ -421,20 +434,14 @@ func lndMain() error {
 	defer server.Stop()
 
 	// Now that the server has started, if the autopilot mode is currently
-	// active, then we'll initialize a fresh instance of it and start it.
+	// active, then we'll start the autopilot agent immediately. It will be
+	// stopped together with the autopilot service.
 	if cfg.Autopilot.Active {
-		pilot, err := initAutoPilot(server, cfg.Autopilot)
-		if err != nil {
-			ltndLog.Errorf("unable to create autopilot agent: %v",
-				err)
-			return err
-		}
-		if err := pilot.Start(); err != nil {
+		if err := autopilotRpcServer.StartAgent(); err != nil {
 			ltndLog.Errorf("unable to start autopilot agent: %v",
 				err)
 			return err
 		}
-		defer pilot.Stop()
 	}
 
 	// Wait for shutdown signal from either a graceful server stop or from

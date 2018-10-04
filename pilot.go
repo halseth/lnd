@@ -79,10 +79,11 @@ func (c *chanController) SpliceOut(chanPoint *wire.OutPoint,
 // autopilot.ChannelController interface.
 var _ autopilot.ChannelController = (*chanController)(nil)
 
-// initAutoPilot initializes a new autopilot.Agent instance based on the passed
-// configuration struct. All interfaces needed to drive the pilot will be
-// registered and launched.
-func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.Agent, error) {
+// initAutoPilot initializes a new autopilot.RPCServer that manages an
+// autopilot.Agent instance based on the passed configuration struct. The agent
+// and all interfaces needed to drive it won't be launched before the
+// RPCServer's StartAgent method is called.
+func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.RPCServer, error) {
 	atplLog.Infof("Instantiating autopilot with cfg: %v", spew.Sdump(cfg))
 
 	// First, we'll create the preferential attachment heuristic,
@@ -169,143 +170,40 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.Agent, error) 
 		DisconnectPeer: svr.DisconnectPeer,
 	}
 
-	// Next, we'll fetch the current state of open channels from the
-	// database to use as initial state for the auto-pilot agent.
-	activeChannels, err := svr.chanDB.FetchAllChannels()
-	if err != nil {
-		return nil, err
-	}
-	initialChanState := make([]autopilot.Channel, len(activeChannels))
-	for i, channel := range activeChannels {
-		initialChanState[i] = autopilot.Channel{
-			ChanID:   channel.ShortChanID(),
-			Capacity: channel.Capacity,
-			Node:     autopilot.NewNodeID(channel.IdentityPub),
-		}
-	}
-
-	// Now that we have all the initial dependencies, we can create the
-	// auto-pilot instance itself.
-	pilot, err := autopilot.New(pilotCfg, initialChanState)
-	if err != nil {
-		return nil, err
-	}
-
-	// Finally, we'll need to subscribe to two things: incoming
-	// transactions that modify the wallet's balance, and also any graph
-	// topology updates.
-	txnSubscription, err := svr.cc.wallet.SubscribeTransactions()
-	if err != nil {
-		return nil, err
-	}
-	graphSubscription, err := svr.chanRouter.SubscribeTopology()
-	if err != nil {
-		return nil, err
-	}
-
-	// We'll launch a goroutine to provide the agent with notifications
-	// whenever the balance of the wallet changes.
-	svr.wg.Add(2)
-	go func() {
-		defer txnSubscription.Cancel()
-		defer svr.wg.Done()
-
-		for {
-			select {
-			case <-txnSubscription.ConfirmedTransactions():
-				pilot.OnBalanceChange()
-			case <-svr.quit:
-				return
-			}
-		}
-
-	}()
-	go func() {
-		defer svr.wg.Done()
-
-		for {
-			select {
-			// We won't act upon new unconfirmed transaction, as
-			// we'll only use confirmed outputs when funding.
-			// However, we will still drain this request in order
-			// to avoid goroutine leaks, and ensure we promptly
-			// read from the channel if available.
-			case <-txnSubscription.UnconfirmedTransactions():
-			case <-svr.quit:
-				return
-			}
-		}
-
-	}()
-
-	// We'll also launch a goroutine to provide the agent with
-	// notifications for when the graph topology controlled by the node
-	// changes.
-	svr.wg.Add(1)
-	go func() {
-		defer graphSubscription.Cancel()
-		defer svr.wg.Done()
-
-		for {
-			select {
-			case topChange, ok := <-graphSubscription.TopologyChanges:
-				// If the router is shutting down, then we will
-				// as well.
-				if !ok {
-					return
+	// Create the autopilot.RPCServer that administrates this agent-pilot
+	// instance.
+	rpcServer, err := autopilot.NewRPCServer(
+		&autopilot.RPCServerCfg{
+			Self:     self,
+			PilotCfg: &pilotCfg,
+			ChannelState: func() ([]autopilot.Channel, error) {
+				// We'll fetch the current state of open
+				// channels from the database to use as initial
+				// state for the auto-pilot agent.
+				activeChannels, err := svr.chanDB.FetchAllChannels()
+				if err != nil {
+					return nil, err
 				}
-
-				for _, edgeUpdate := range topChange.ChannelEdgeUpdates {
-					// If this isn't an advertisement by
-					// the backing lnd node, then we'll
-					// continue as we only want to add
-					// channels that we've created
-					// ourselves.
-					if !edgeUpdate.AdvertisingNode.IsEqual(self) {
-						continue
+				chanState := make([]autopilot.Channel,
+					len(activeChannels))
+				for i, channel := range activeChannels {
+					chanState[i] = autopilot.Channel{
+						ChanID:   channel.ShortChanID(),
+						Capacity: channel.Capacity,
+						Node: autopilot.NewNodeID(
+							channel.IdentityPub),
 					}
-
-					// If this is indeed a channel we
-					// opened, then we'll convert it to the
-					// autopilot.Channel format, and notify
-					// the pilot of the new channel.
-					chanNode := autopilot.NewNodeID(
-						edgeUpdate.ConnectingNode,
-					)
-					chanID := lnwire.NewShortChanIDFromInt(
-						edgeUpdate.ChanID,
-					)
-					edge := autopilot.Channel{
-						ChanID:   chanID,
-						Capacity: edgeUpdate.Capacity,
-						Node:     chanNode,
-					}
-					pilot.OnChannelOpen(edge)
 				}
 
-				// For each closed channel, we'll obtain
-				// the chanID of the closed channel and send it
-				// to the pilot.
-				for _, chanClose := range topChange.ClosedChannels {
-					chanID := lnwire.NewShortChanIDFromInt(
-						chanClose.ChanID,
-					)
+				return chanState, nil
+			},
+			SubscribeTransactions: svr.cc.wallet.SubscribeTransactions,
+			SubscribeTopology:     svr.chanRouter.SubscribeTopology,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
 
-					pilot.OnChannelClose(chanID)
-				}
-
-				// If new nodes were added to the graph, or nod
-				// information has changed, we'll poke autopilot
-				// to see if it can make use of them.
-				if len(topChange.NodeUpdates) > 0 {
-					pilot.OnNodeUpdates()
-				}
-
-			case <-svr.quit:
-				return
-			}
-		}
-	}()
-
-	return pilot, nil
+	return rpcServer, nil
 }

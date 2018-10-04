@@ -136,6 +136,42 @@ func (d *databaseChannelGraph) ForEachNode(cb func(Node) error) error {
 	})
 }
 
+// FetchNode returns the Node from the graph for the given NodeID, or
+// ErrNodeNotFound if the node is not found. ErrNoAddresses is returned if the
+// node is found, but has no addresses to connected to.
+//
+// NOTE: Part of the autopilot.ChannelGraph interface.
+func (d *databaseChannelGraph) FetchNode(pubkeyBytes NodeID) (Node, error) {
+	pubKey, err := btcec.ParsePubKey(pubkeyBytes[:], btcec.S256())
+	if err != nil {
+		return nil, err
+	}
+
+	lnNode, err := d.db.FetchLightningNode(pubKey)
+	switch {
+	case err == channeldb.ErrGraphNotFound:
+		fallthrough
+	case err == channeldb.ErrGraphNodeNotFound:
+		return nil, ErrNodeNotFound
+
+	case err != nil:
+		return nil, err
+	}
+
+	// Since we need the node's address to be able to connect to it, we
+	// will return an error if there is none.
+	if len(lnNode.Addresses) == 0 {
+		return nil, ErrNoAddresses
+	}
+
+	// Return a dbNode from the fetched LightningNode. Since we don't have
+	// the database tx, it will be nil, and a new tx will be created when
+	// iterating over its channels.
+	return dbNode{
+		node: lnNode,
+	}, nil
+}
+
 // addRandChannel creates a new channel two target nodes. This function is
 // meant to aide in the generation of random graphs for use within test cases
 // the exercise the autopilot package.
@@ -301,6 +337,24 @@ func (m memChannelGraph) ForEachNode(cb func(Node) error) error {
 	}
 
 	return nil
+}
+
+// FetchNode returns the Node from the graph for the given NodeID, or
+// ErrNodeNotFound if the node is not found. ErrNoAddresses is returned if the
+// node is found, but has no addresses to connected to.
+//
+// NOTE: Part of the autopilot.ChannelGraph interface.
+func (m memChannelGraph) FetchNode(pubkeyBytes NodeID) (Node, error) {
+	node, ok := m.graph[pubkeyBytes]
+	if !ok {
+		return nil, ErrNodeNotFound
+	}
+
+	if len(node.Addrs()) == 0 {
+		return nil, ErrNoAddresses
+	}
+
+	return node, nil
 }
 
 // randChanID generates a new random channel ID.

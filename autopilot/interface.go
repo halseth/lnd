@@ -1,12 +1,23 @@
 package autopilot
 
 import (
+	"errors"
 	"net"
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnwire"
+)
+
+var (
+	// ErrNodeNotFound is returned in case a queried node is not found in
+	// the graph.
+	ErrNodeNotFound = errors.New("node not found")
+
+	// ErrNoAddresses is returned if a queried node is found in the graph,
+	// but no connectable addresses are associated with it.
+	ErrNoAddresses = errors.New("node has no addresses")
 )
 
 // Node node is an interface which represents n abstract vertex within the
@@ -79,6 +90,11 @@ type ChannelGraph interface {
 	// for each connected node within the channel graph. If the passed
 	// callback returns an error, then execution should be terminated.
 	ForEachNode(func(Node) error) error
+
+	// FetchNode returns the Node from the graph for the given NodeID, or
+	// ErrNodeNotFound if the node is not found. ErrNoAddresses is returned
+	// if the node is found, but has no addresses to connected to.
+	FetchNode(NodeID) (Node, error)
 }
 
 // AttachmentDirective describes a channel attachment proscribed by an

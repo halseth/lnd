@@ -42,6 +42,33 @@
         ]
       }
     },
+    "/v1/nodescores": {
+      "post": {
+        "summary": "*\nSetNodeScores us used to supply the autopilot agent with nodes and\navailability scores.",
+        "operationId": "SetNodeScores",
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/autopilotSetNodeScoresResponse"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/autopilotSetNodeScoresRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Autopilot"
+        ]
+      }
+    },
     "/v1/status": {
       "get": {
         "summary": "*\nGetStatus returns the status of the daemon's autopilot agent.",
@@ -83,6 +110,22 @@
           "description": "/ Indicates whther the autopilot is active or not."
         }
       }
+    },
+    "autopilotSetNodeScoresRequest": {
+      "type": "object",
+      "properties": {
+        "scores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "/ A map from pubkeys to scores for routing nodes."
+        }
+      }
+    },
+    "autopilotSetNodeScoresResponse": {
+      "type": "object"
     }
   }
 }

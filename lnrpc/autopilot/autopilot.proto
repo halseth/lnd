@@ -26,6 +26,17 @@ service Autopilot {
             body: "*"
         };
     }
+
+    /**
+    SetNodeScores us used to supply the autopilot agent with nodes and
+    availability scores.
+    */
+    rpc SetNodeScores(SetNodeScoresRequest) returns (SetNodeScoresResponse) {
+    option (google.api.http) = {
+            post: "/v1/nodescores"
+            body: "*"
+        };
+    }
 }
 
 message GetStatusRequest{
@@ -42,3 +53,10 @@ message EnableRequest{
 }
 
 message EnableResponse {}
+
+message SetNodeScoresRequest{
+    /// A map from pubkeys to scores for routing nodes.
+    map<string, uint32> scores = 1 [json_name = "scores"];
+}
+
+message SetNodeScoresResponse {}

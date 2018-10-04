@@ -1,10 +1,12 @@
 package autopilot
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcec"
+	lnrpc "github.com/lightningnetwork/lnd/lnrpc/autopilot"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
@@ -36,6 +38,8 @@ type RPCServerCfg struct {
 
 // RPCServer is struct that manages an autopilot agent, making it possible to
 // enable and disable it at will, and handle it relevant external information.
+// It implements the autopilot grpc service, which is used to get data about
+// the running autopilot, and give it relevant information.
 type RPCServer struct {
 	started uint32 // To be used atomically.
 	stopped uint32 // To be used atomically.
@@ -50,6 +54,10 @@ type RPCServer struct {
 	wg   sync.WaitGroup
 	sync.Mutex
 }
+
+// A compile time check to ensure that RPCServer fully implements the
+// AutopilotServer gRPC service.
+var _ lnrpc.AutopilotServer = (*RPCServer)(nil)
 
 // NewRPCServer creates a new instance of the RPCServer from the passed config.
 func NewRPCServer(cfg *RPCServerCfg) (*RPCServer, error) {
@@ -83,6 +91,19 @@ func (r *RPCServer) Stop() error {
 	r.wg.Wait()
 
 	return nil
+}
+
+// GetStatus returns the current status of the autopilot agent.
+//
+// NOTE: Part of the AutopilotServer interface.
+func (r *RPCServer) GetStatus(ctx context.Context,
+	in *lnrpc.GetStatusRequest) (*lnrpc.GetStatusResponse, error) {
+	r.Lock()
+	defer r.Unlock()
+
+	return &lnrpc.GetStatusResponse{
+		Active: r.pilot != nil,
+	}, nil
 }
 
 // StartAgent creates and starts an autopilot agent from the RPCServer's

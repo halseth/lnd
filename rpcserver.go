@@ -326,6 +326,11 @@ var (
 			Entity: "offchain",
 			Action: "read",
 		}},
+		// TODO: move
+		"/autopilot.Autopilot/GetStatus": {{
+			Entity: "info",
+			Action: "read",
+		}},
 	}
 )
 

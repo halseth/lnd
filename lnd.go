@@ -43,6 +43,7 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/autopilot"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
@@ -345,6 +346,14 @@ func lndMain() error {
 		return err
 	}
 	defer autopilotRpcServer.Stop()
+
+	// Register the gPRC service the autopilot service offers, but only for
+	// experemental builds.
+	if ExperimentalBuild {
+		autopilot.RegisterAutopilotServer(
+			grpcServer, autopilotRpcServer,
+		)
+	}
 
 	// Next, Start the gRPC server listening for HTTP/2 connections.
 	for _, listener := range cfg.RPCListeners {

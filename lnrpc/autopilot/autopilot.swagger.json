@@ -1,0 +1,48 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "autopilot/autopilot.proto",
+    "version": "version not set"
+  },
+  "schemes": [
+    "http",
+    "https"
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/status": {
+      "get": {
+        "summary": "*\nGetStatus returns the status of the daemon's autopilot agent.",
+        "operationId": "GetStatus",
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/autopilotGetStatusResponse"
+            }
+          }
+        },
+        "tags": [
+          "Autopilot"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "autopilotGetStatusResponse": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "/ Indicates whther the autopilot is active or not."
+        }
+      }
+    }
+  }
+}

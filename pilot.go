@@ -94,8 +94,16 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.RPCServer, err
 		Allocation:  cfg.Allocation,
 	}
 
-	// First, we'll create the preferential attachment heuristic,
-	// initialized with the passed auto pilot configuration parameters.
+	// First, we will set up a scoring based attachement heuristic, that
+	// will be queried first.
+	scoreAttachment := autopilot.NewScoreAttachment(
+		heuristicCfg,
+	)
+
+	// Second, we'll create the preferential attachment heuristic,
+	// initialized with the passed auto pilot configuration parameters. It
+	// will be queried if the scoring based heuristic cannot provide us
+	// with more channel candidates.
 	prefAttachment := autopilot.NewConstrainedPrefAttachment(
 		heuristicCfg,
 	)
@@ -104,8 +112,11 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.RPCServer, err
 	// of the items that the autopilot agent needs to perform its duties.
 	self := svr.identityPriv.PubKey()
 	pilotCfg := autopilot.Config{
-		Self:       self,
-		Heuristics: []autopilot.AttachmentHeuristic{prefAttachment},
+		Self: self,
+		Heuristics: []autopilot.AttachmentHeuristic{
+			scoreAttachment,
+			prefAttachment,
+		},
 		ChanController: &chanController{
 			server:   svr,
 			private:  cfg.Private,

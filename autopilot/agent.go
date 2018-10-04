@@ -20,14 +20,16 @@ type Config struct {
 	// accidentally attempt to open a channel with ourselves.
 	Self *btcec.PublicKey
 
-	// Heuristic is an attachment heuristic which will govern to whom we
-	// open channels to, and also what those channels look like in terms of
-	// desired capacity. The Heuristic will take into account the current
-	// state of the graph, our set of open channels, and the amount of
-	// available funds when determining how channels are to be opened.
-	// Additionally, a heuristic make also factor in extra-graph
+	// Heuristics is a list of attachment heuristics which will govern to
+	// whom we open channels to, and also what those channels look like in
+	// terms of desired capacity. The Heuristics will take into account the
+	// current state of the graph, our set of open channels, and the amount
+	// of available funds when determining how channels are to be opened.
+	// Additionally, a heuristic might also factor in extra-graph
 	// information in order to make more pertinent recommendations.
-	Heuristic AttachmentHeuristic
+	//
+	// NOTE: The heuristics are sorted in order of preference.
+	Heuristics []AttachmentHeuristic
 
 	// ChanController is an interface that is able to directly manage the
 	// creation, closing and update of channels within the network.
@@ -473,17 +475,33 @@ func (a *Agent) controller() {
 		pendingMtx.Unlock()
 
 		// Now that we've updated our internal state, we'll consult our
-		// channel attachment heuristic to determine if we should open
+		// channel attachment heuristics to determine if we should open
 		// up any additional channels or modify existing channels.
-		availableFunds, numChans, needMore := a.cfg.Heuristic.NeedMoreChans(
-			totalChans, a.totalBalance,
-		)
-		if !needMore {
+		var heuristic AttachmentHeuristic
+		var availableFunds btcutil.Amount
+		var numChans uint32
+		for _, h := range a.cfg.Heuristics {
+			var needMore bool
+			availableFunds, numChans, needMore = h.NeedMoreChans(
+				totalChans, a.totalBalance,
+			)
+
+			// The first heuristic that reports more channels are
+			// needed will be used.
+			if needMore {
+				heuristic = h
+				break
+			}
+		}
+
+		// No heuristic reported the need for more channels, go back to
+		// waiting for a new trigger.
+		if heuristic == nil {
 			continue
 		}
 
-		log.Infof("Triggering attachment directive dispatch, "+
-			"total_funds=%v", a.totalBalance)
+		log.Infof("Triggering %T attachment directive dispatch, "+
+			"total_funds=%v", heuristic, a.totalBalance)
 
 		// We're to attempt an attachment so we'll o obtain the set of
 		// nodes that we currently have channels with so we avoid
@@ -500,7 +518,7 @@ func (a *Agent) controller() {
 		// determines to the optimal state. So we'll call Select to get
 		// a fresh batch of attachment directives, passing in the
 		// amount of funds available for us to use.
-		chanCandidates, err := a.cfg.Heuristic.Select(
+		chanCandidates, err := heuristic.Select(
 			a.cfg.Self, a.cfg.Graph, availableFunds,
 			numChans, nodesToSkip,
 		)

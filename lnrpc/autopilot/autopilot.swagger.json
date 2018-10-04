@@ -15,6 +15,33 @@
     "application/json"
   ],
   "paths": {
+    "/v1/enable": {
+      "post": {
+        "summary": "*\nEnable is used to enable or disable the autopilot agent.",
+        "operationId": "Enable",
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/autopilotEnableResponse"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/autopilotEnableRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Autopilot"
+        ]
+      }
+    },
     "/v1/status": {
       "get": {
         "summary": "*\nGetStatus returns the status of the daemon's autopilot agent.",
@@ -34,6 +61,19 @@
     }
   },
   "definitions": {
+    "autopilotEnableRequest": {
+      "type": "object",
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "format": "boolean",
+          "description": "/ Whether the autopilot agent should be enabled or not."
+        }
+      }
+    },
+    "autopilotEnableResponse": {
+      "type": "object"
+    },
     "autopilotGetStatusResponse": {
       "type": "object",
       "properties": {

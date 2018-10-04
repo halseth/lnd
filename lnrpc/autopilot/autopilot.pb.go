@@ -10,6 +10,8 @@ It is generated from these files:
 It has these top-level messages:
 	GetStatusRequest
 	GetStatusResponse
+	EnableRequest
+	EnableResponse
 */
 package autopilot
 
@@ -59,9 +61,36 @@ func (m *GetStatusResponse) GetActive() bool {
 	return false
 }
 
+type EnableRequest struct {
+	// / Whether the autopilot agent should be enabled or not.
+	Enable bool `protobuf:"varint,1,opt,name=enable" json:"enable,omitempty"`
+}
+
+func (m *EnableRequest) Reset()                    { *m = EnableRequest{} }
+func (m *EnableRequest) String() string            { return proto.CompactTextString(m) }
+func (*EnableRequest) ProtoMessage()               {}
+func (*EnableRequest) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{2} }
+
+func (m *EnableRequest) GetEnable() bool {
+	if m != nil {
+		return m.Enable
+	}
+	return false
+}
+
+type EnableResponse struct {
+}
+
+func (m *EnableResponse) Reset()                    { *m = EnableResponse{} }
+func (m *EnableResponse) String() string            { return proto.CompactTextString(m) }
+func (*EnableResponse) ProtoMessage()               {}
+func (*EnableResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{3} }
+
 func init() {
 	proto.RegisterType((*GetStatusRequest)(nil), "autopilot.GetStatusRequest")
 	proto.RegisterType((*GetStatusResponse)(nil), "autopilot.GetStatusResponse")
+	proto.RegisterType((*EnableRequest)(nil), "autopilot.EnableRequest")
+	proto.RegisterType((*EnableResponse)(nil), "autopilot.EnableResponse")
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -78,6 +107,9 @@ type AutopilotClient interface {
 	// *
 	// GetStatus returns the status of the daemon's autopilot agent.
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
+	// *
+	// Enable is used to enable or disable the autopilot agent.
+	Enable(ctx context.Context, in *EnableRequest, opts ...grpc.CallOption) (*EnableResponse, error)
 }
 
 type autopilotClient struct {
@@ -97,12 +129,24 @@ func (c *autopilotClient) GetStatus(ctx context.Context, in *GetStatusRequest, o
 	return out, nil
 }
 
+func (c *autopilotClient) Enable(ctx context.Context, in *EnableRequest, opts ...grpc.CallOption) (*EnableResponse, error) {
+	out := new(EnableResponse)
+	err := grpc.Invoke(ctx, "/autopilot.Autopilot/Enable", in, out, c.cc, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Server API for Autopilot service
 
 type AutopilotServer interface {
 	// *
 	// GetStatus returns the status of the daemon's autopilot agent.
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
+	// *
+	// Enable is used to enable or disable the autopilot agent.
+	Enable(context.Context, *EnableRequest) (*EnableResponse, error)
 }
 
 func RegisterAutopilotServer(s *grpc.Server, srv AutopilotServer) {
@@ -127,6 +171,24 @@ func _Autopilot_GetStatus_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Autopilot_Enable_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnableRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AutopilotServer).Enable(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/autopilot.Autopilot/Enable",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AutopilotServer).Enable(ctx, req.(*EnableRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 var _Autopilot_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "autopilot.Autopilot",
 	HandlerType: (*AutopilotServer)(nil),
@@ -134,6 +196,10 @@ var _Autopilot_serviceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStatus",
 			Handler:    _Autopilot_GetStatus_Handler,
+		},
+		{
+			MethodName: "Enable",
+			Handler:    _Autopilot_Enable_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -143,16 +209,20 @@ var _Autopilot_serviceDesc = grpc.ServiceDesc{
 func init() { proto.RegisterFile("autopilot/autopilot.proto", fileDescriptor0) }
 
 var fileDescriptor0 = []byte{
-	// 174 bytes of a gzipped FileDescriptorProto
+	// 235 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0x92, 0x4c, 0x2c, 0x2d, 0xc9,
 	0x2f, 0xc8, 0xcc, 0xc9, 0x2f, 0xd1, 0x87, 0xb3, 0xf4, 0x0a, 0x8a, 0xf2, 0x4b, 0xf2, 0x85, 0x38,
 	0xe1, 0x02, 0x52, 0x32, 0xe9, 0xf9, 0xf9, 0xe9, 0x39, 0xa9, 0xfa, 0x89, 0x05, 0x99, 0xfa, 0x89,
 	0x79, 0x79, 0xf9, 0x25, 0x89, 0x25, 0x99, 0xf9, 0x79, 0xc5, 0x10, 0x85, 0x4a, 0x42, 0x5c, 0x02,
 	0xee, 0xa9, 0x25, 0xc1, 0x25, 0x89, 0x25, 0xa5, 0xc5, 0x41, 0xa9, 0x85, 0xa5, 0xa9, 0xc5, 0x25,
 	0x4a, 0xda, 0x5c, 0x82, 0x48, 0x62, 0xc5, 0x05, 0xf9, 0x79, 0xc5, 0xa9, 0x42, 0x62, 0x5c, 0x6c,
-	0x89, 0xc9, 0x25, 0x99, 0x65, 0xa9, 0x12, 0x8c, 0x0a, 0x8c, 0x1a, 0x1c, 0x41, 0x50, 0x9e, 0x51,
-	0x3a, 0x17, 0xa7, 0x23, 0xcc, 0x2e, 0xa1, 0x28, 0x2e, 0x4e, 0xb8, 0x4e, 0x21, 0x69, 0x3d, 0x84,
-	0xab, 0xd0, 0xed, 0x90, 0x92, 0xc1, 0x2e, 0x09, 0xb1, 0x4c, 0x49, 0xa8, 0xe9, 0xf2, 0x93, 0xc9,
-	0x4c, 0x3c, 0x42, 0x5c, 0xfa, 0x65, 0x86, 0xfa, 0xc5, 0x60, 0xb9, 0x24, 0x36, 0xb0, 0x83, 0x8d,
-	0x01, 0x01, 0x00, 0x00, 0xff, 0xff, 0x67, 0xd1, 0x70, 0xfd, 0xf6, 0x00, 0x00, 0x00,
+	0x89, 0xc9, 0x25, 0x99, 0x65, 0xa9, 0x12, 0x8c, 0x0a, 0x8c, 0x1a, 0x1c, 0x41, 0x50, 0x9e, 0x92,
+	0x3a, 0x17, 0xaf, 0x6b, 0x5e, 0x62, 0x52, 0x4e, 0x2a, 0x54, 0x37, 0x48, 0x61, 0x2a, 0x58, 0x00,
+	0xa6, 0x10, 0xc2, 0x53, 0x12, 0xe0, 0xe2, 0x83, 0x29, 0x84, 0x18, 0x69, 0xb4, 0x97, 0x91, 0x8b,
+	0xd3, 0x11, 0xe6, 0x4e, 0xa1, 0x28, 0x2e, 0x4e, 0xb8, 0xad, 0x42, 0xd2, 0x7a, 0x08, 0x1f, 0xa1,
+	0xbb, 0x4f, 0x4a, 0x06, 0xbb, 0x24, 0xc4, 0x54, 0x25, 0xa1, 0xa6, 0xcb, 0x4f, 0x26, 0x33, 0xf1,
+	0x08, 0x71, 0xe9, 0x97, 0x19, 0xea, 0x17, 0x43, 0x8c, 0x0b, 0xe1, 0x62, 0x83, 0xd8, 0x2d, 0x24,
+	0x81, 0xa4, 0x17, 0xc5, 0xdd, 0x52, 0x92, 0x58, 0x64, 0xa0, 0x46, 0x8a, 0x82, 0x8d, 0xe4, 0x57,
+	0x02, 0x1b, 0x09, 0xf1, 0x8e, 0x15, 0xa3, 0x56, 0x12, 0x1b, 0x38, 0x08, 0x8d, 0x01, 0x01, 0x00,
+	0x00, 0xff, 0xff, 0x23, 0x18, 0x03, 0x08, 0x88, 0x01, 0x00, 0x00,
 }

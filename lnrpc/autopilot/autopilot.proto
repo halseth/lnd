@@ -16,6 +16,16 @@ service Autopilot {
             get: "/v1/status"
         };
     }
+
+    /**
+    Enable is used to enable or disable the autopilot agent.
+    */
+    rpc Enable(EnableRequest) returns (EnableResponse) {
+    option (google.api.http) = {
+            post: "/v1/enable"
+            body: "*"
+        };
+    }
 }
 
 message GetStatusRequest{
@@ -25,3 +35,10 @@ message GetStatusResponse{
     /// Indicates whther the autopilot is active or not.
     bool active = 1 [json_name = "active"];
 }
+
+message EnableRequest{
+    /// Whether the autopilot agent should be enabled or not.
+    bool enable = 1 [json_name = "enable"];
+}
+
+message EnableResponse {}

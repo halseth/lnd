@@ -331,6 +331,10 @@ var (
 			Entity: "info",
 			Action: "read",
 		}},
+		"/autopilot.Autopilot/Enable": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
 	}
 )
 

@@ -106,6 +106,22 @@ func (r *RPCServer) GetStatus(ctx context.Context,
 	}, nil
 }
 
+// Enable activates the current autopilot agent, if active.
+//
+// NOTE: Part of the AutopilotServer interface.
+func (r *RPCServer) Enable(ctx context.Context,
+	in *lnrpc.EnableRequest) (*lnrpc.EnableResponse, error) {
+
+	var err error
+	if in.Enable {
+		err = r.StartAgent()
+	} else {
+		err = r.StopAgent()
+	}
+
+	return &lnrpc.EnableResponse{}, err
+}
+
 // StartAgent creates and starts an autopilot agent from the RPCServer's
 // config.
 func (r *RPCServer) StartAgent() error {

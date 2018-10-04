@@ -86,12 +86,18 @@ var _ autopilot.ChannelController = (*chanController)(nil)
 func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.RPCServer, error) {
 	atplLog.Infof("Instantiating autopilot with cfg: %v", spew.Sdump(cfg))
 
+	// Set up the constraints the autopilot heuristics must adhere to.
+	heuristicCfg := &autopilot.HeuristicConstraints{
+		MinChanSize: btcutil.Amount(cfg.MinChannelSize),
+		MaxChanSize: btcutil.Amount(cfg.MaxChannelSize),
+		ChanLimit:   uint16(cfg.MaxChannels),
+		Allocation:  cfg.Allocation,
+	}
+
 	// First, we'll create the preferential attachment heuristic,
 	// initialized with the passed auto pilot configuration parameters.
 	prefAttachment := autopilot.NewConstrainedPrefAttachment(
-		btcutil.Amount(cfg.MinChannelSize),
-		btcutil.Amount(cfg.MaxChannelSize),
-		uint16(cfg.MaxChannels), cfg.Allocation,
+		heuristicCfg,
 	)
 
 	// With the heuristic itself created, we can now populate the remainder

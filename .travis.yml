@@ -6,19 +6,24 @@ cache:
     - $GOPATH/src/github.com/btcsuite
     - $GOPATH/src/github.com/golang
     - $GOPATH/src/gopkg.in/alecthomas
+go:
+  - "1.11.x"
+  - "1.10.x"
 env:
   global:
     - GOCACHE=$HOME/.go-build
+  matrix:
+    - RACE=true LINT=true
+    - ITEST=true
+    - COVER=true
 matrix:
-  include:
-  - go: "1.11"
+  # Disable linting on go 1.10, as the linter disagrees with go 1.11.
+  exclude:
+  - go: "1.10.x"
     env: RACE=true LINT=true
-  - go: "1.11"
-    env: ITEST=true COVER=true LINT=true
-  - go: "1.10"
+  include:
+  - go: "1.10.x"
     env: RACE=true LINT=false
-  - go: "1.10"
-    env: ITEST=true COVER=true LINT=false
 sudo: required
 install:
   - sudo add-apt-repository -y ppa:bitcoin/bitcoin -y

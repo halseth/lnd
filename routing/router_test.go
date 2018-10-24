@@ -1871,8 +1871,10 @@ func TestFindPathFeeWeighting(t *testing.T) {
 	// the edge weighting, we should select the direct path over the 2 hop
 	// path even though the direct path has a higher potential time lock.
 	path, err := findPath(
-		nil, ctx.graph, nil, sourceNode, target, ignoreVertex,
-		ignoreEdge, amt, noFeeLimit, nil,
+		&findPathParams{
+			nil, ctx.graph, nil, sourceNode, target, ignoreVertex,
+			ignoreEdge, amt, noFeeLimit, nil,
+		},
 	)
 	if err != nil {
 		t.Fatalf("unable to find path: %v", err)

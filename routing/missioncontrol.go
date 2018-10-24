@@ -373,9 +373,17 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	// to our destination, respecting the recommendations from
 	// missionControl.
 	path, err := findPath(
-		nil, p.mc.graph, p.additionalEdges, p.mc.selfNode,
-		payment.Target, pruneView.vertexes, pruneView.edges,
-		payment.Amount, payment.FeeLimit, p.bandwidthHints,
+		&findPathParams{
+			graph:           p.mc.graph,
+			additionalEdges: p.additionalEdges,
+			sourceNode:      p.mc.selfNode,
+			targetNode:      payment.Target,
+			ignoredNodes:    pruneView.vertexes,
+			ignoredEdges:    pruneView.edges,
+			amt:             payment.Amount,
+			feeLimit:        payment.FeeLimit,
+			bandwidthHints:  p.bandwidthHints,
+		},
 	)
 	if err != nil {
 		return nil, err

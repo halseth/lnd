@@ -366,7 +366,7 @@ type rpcServer struct {
 	// proxy will use to connect to the main gRPC server.
 	restServerOpts []grpc.DialOption
 
-	// tlsCfg is the TLS configu that allows the REST server proxy to
+	// tlsCfg is the TLS config that allows the REST server proxy to
 	// connect to the main gRPC server to proxy all incoming requests.
 	tlsCfg *tls.Config
 
@@ -471,7 +471,8 @@ func newRPCServer(s *server, macService *macaroons.Service,
 		err := subServer.RegisterWithRootServer(grpcServer)
 		if err != nil {
 			return nil, fmt.Errorf("unable to register "+
-				"sub-server %v with root: %v", err)
+				"sub-server %v with root: %v",
+				subServer.Name(), err)
 		}
 	}
 

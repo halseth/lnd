@@ -297,7 +297,7 @@ func loadConfig() (*config, error) {
 		MaxPendingChannels: defaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,
 		SubRpcServers: &subRpcServerConfigs{
-			Signrpc: &signrpc.Config{},
+			SignRPC: &signrpc.Config{},
 		},
 		Autopilot: &autoPilotConfig{
 			MaxChannels:    5,

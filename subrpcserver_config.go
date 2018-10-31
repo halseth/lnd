@@ -15,9 +15,9 @@ import (
 // this struct to allow the main RPC server to create and manipulate the
 // sub-RPC servers in a generalized manner.
 type subRpcServerConfigs struct {
-	// Signrpc is a sub-RPC server that exposes signing of arbitrary inputs
+	// SignRPC is a sub-RPC server that exposes signing of arbitrary inputs
 	// as a gRPC service.
-	Signrpc *signrpc.Config `group:"signrpc" namespace:"signrpc"`
+	SignRPC *signrpc.Config `group:"signrpc" namespace:"signrpc"`
 }
 
 // PopulateDependancies attempts to iterate through all the sub-server configs

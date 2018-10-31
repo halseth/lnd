@@ -21,13 +21,6 @@ import (
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
-const (
-	// subServerName is the name of the sub rpc server. We'll use this name
-	// to register ourselves, and we also require that the main
-	// SubServerConfigDispatcher instance recognize as the name of our
-	subServerName = "SignRPC"
-)
-
 var (
 	// macaroonOps are the set of capabilities that our minted macaroon (if
 	// it doesn't already exist) will have.
@@ -158,7 +151,7 @@ func (s *Server) Stop() error {
 //
 // NOTE: This is part of the lnrpc.SubServer interface.
 func (s *Server) Name() string {
-	return subServerName
+	return SubServerName
 }
 
 // RegisterWithRootServer will be called by the root gRPC server to direct a

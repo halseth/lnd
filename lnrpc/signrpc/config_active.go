@@ -31,3 +31,12 @@ type Config struct {
 	// the active signer instance.
 	Signer lnwallet.Signer
 }
+
+func (c *Config) Populate(sign lnwallet.Signer,
+	networkDir string, macService *macaroons.Service) *Config {
+
+	c.NetworkDir = networkDir
+	c.MacService = macService
+	c.Signer = sign
+	return c
+}

@@ -66,7 +66,7 @@ type SubServerDriver struct {
 	// return the SubServer, ready for action, along with the set of
 	// macaroon permissions that the sub-server wishes to pass on to the
 	// root server for all methods routed towards it.
-	New func(subCfgs SubServerConfigDispatcher) (SubServer, MacaroonPerms, error)
+	New func(subCfgs interface{}) (SubServer, MacaroonPerms, error)
 }
 
 var (

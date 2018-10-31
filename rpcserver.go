@@ -32,6 +32,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
@@ -390,7 +391,13 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	var (
 		subServers     []lnrpc.SubServer
 		subServerPerms []lnrpc.MacaroonPerms
-		subServerCfgs  = map[string]func() interface{}{}
+		subServerCfgs  = map[string]func() interface{}{
+			signrpc.SubServerName: func() interface{} {
+				return cfg.SignRPC.Populate(
+					s.cc.signer, networkDir, macService,
+				)
+			},
+		}
 	)
 
 	// Now that the sub-servers have all their dependencies in place, we

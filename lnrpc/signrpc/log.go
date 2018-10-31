@@ -5,6 +5,13 @@ import (
 	"github.com/lightningnetwork/lnd/build"
 )
 
+const (
+	// subServerName is the name of the sub rpc server. We'll use this name
+	// to register ourselves, and we also require that the main
+	// SubServerConfigDispatcher instance recognize as the name of our
+	SubServerName = "SGNR"
+)
+
 // log is a logger that is initialized with no output filters.  This
 // means the package will not perform any logging by default until the caller
 // requests it.
@@ -12,7 +19,7 @@ var log btclog.Logger
 
 // The default amount of logging is none.
 func init() {
-	UseLogger(build.NewSubLogger("SGNR", nil))
+	UseLogger(build.NewSubLogger(SubServerName, nil))
 }
 
 // DisableLog disables all library log output.  Logging output is disabled

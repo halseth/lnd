@@ -32,6 +32,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
@@ -383,30 +384,32 @@ var _ lnrpc.LightningServer = (*rpcServer)(nil)
 // base level options passed to the grPC server. This typically includes things
 // like requiring TLS, etc.
 func newRPCServer(s *server, macService *macaroons.Service,
-	subServerCgs *subRpcServerConfigs, serverOpts []grpc.ServerOption,
+	serverOpts []grpc.ServerOption,
 	restServerOpts []grpc.DialOption,
 	tlsCfg *tls.Config) (*rpcServer, error) {
 
 	var (
 		subServers     []lnrpc.SubServer
 		subServerPerms []lnrpc.MacaroonPerms
+		subServerCfgs  = map[string]func() interface{}{
+			signrpc.SubServerName: func() interface{} {
+				return cfg.SignRPC.Populate(
+					s.cc.signer, networkDir, macService,
+				)
+			},
+		}
 	)
-
-	// Before we create any of the sub-servers, we need to ensure that all
-	// the dependencies they need are properly populated within each sub
-	// server configuration struct.
-	err := subServerCgs.PopulateDependancies(
-		s.cc, networkDir, macService,
-	)
-	if err != nil {
-		return nil, err
-	}
 
 	// Now that the sub-servers have all their dependencies in place, we
 	// can create each sub-server!
 	registeredSubServers := lnrpc.RegisteredSubServers()
 	for _, subServer := range registeredSubServers {
-		subServerInstance, macPerms, err := subServer.New(subServerCgs)
+		fetchCfg, ok := subServerCfgs[subServer.SubServerName]
+		if !ok {
+			return nil, fmt.Errorf("config not found")
+		}
+		cfg := fetchCfg()
+		subServerInstance, macPerms, err := subServer.New(cfg)
 		if err != nil {
 			return nil, err
 		}

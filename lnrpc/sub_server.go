@@ -38,18 +38,6 @@ type SubServer interface {
 	RegisterWithRootServer(*grpc.Server) error
 }
 
-// SubServerConfigDispatcher is an interface that all sub-servers will use to
-// dynamically locate their configuration files. This abstraction will allow
-// the primary RPC sever to initialize all sub-servers in a generic manner
-// without knowing of each individual sub server.
-type SubServerConfigDispatcher interface {
-	// FetchConfig attempts to locate an existing configuration file mapped
-	// to the target sub-server. If we're unable to find a config file
-	// matching the subServerName name, then false will be returned for the
-	// second parameter.
-	FetchConfig(subServerName string) (interface{}, bool)
-}
-
 // SubServerDriver is a template struct that allows the root server to create a
 // sub-server with minimal knowledge. The root server only need a fully
 // populated SubServerConfigDispatcher and with the aide of the
@@ -66,7 +54,7 @@ type SubServerDriver struct {
 	// return the SubServer, ready for action, along with the set of
 	// macaroon permissions that the sub-server wishes to pass on to the
 	// root server for all methods routed towards it.
-	New func(subCfgs SubServerConfigDispatcher) (SubServer, MacaroonPerms, error)
+	New func(subCfgs interface{}) (SubServer, MacaroonPerms, error)
 }
 
 var (

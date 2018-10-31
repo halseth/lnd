@@ -221,7 +221,7 @@ type config struct {
 
 	Tor *torConfig `group:"Tor" namespace:"tor"`
 
-	SubRpcServers *subRpcServerConfigs `group:"subrpc"`
+	SignRPC *signrpc.Config `group:"subrpc"`
 
 	Hodl *hodl.Config `group:"hodl" namespace:"hodl"`
 
@@ -296,9 +296,7 @@ func loadConfig() (*config, error) {
 		},
 		MaxPendingChannels: defaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,
-		SubRpcServers: &subRpcServerConfigs{
-			SignRPC: &signrpc.Config{},
-		},
+		SignRPC:            &signrpc.Config{},
 		Autopilot: &autoPilotConfig{
 			MaxChannels:    5,
 			Allocation:     0.6,

@@ -2354,6 +2354,30 @@ func (d *AuthenticatedGossiper) processNetworkAnnouncement(
 				source: nMsg.source,
 				msg:    e1Ann,
 			})
+
+			// Since the edge exists, then we can also send the node
+			// announcement of the edge's backing node.
+			node, err := d.cfg.Router.FetchLightningNode(
+				chanInfo.NodeKey1Bytes,
+			)
+			if err != nil {
+				err := fmt.Errorf("unable to retrieve node "+
+					"%x: %v", chanInfo.NodeKey1Bytes, err)
+				nMsg.err <- err
+				return nil
+			}
+			if node.HaveNodeAnnouncement {
+				nodeAnn, err := node.NodeAnnouncement(true)
+				if err != nil {
+					nMsg.err <- err
+					return nil
+				}
+				announcements = append(announcements, networkMsg{
+					peer:   nMsg.peer,
+					source: nMsg.source,
+					msg:    nodeAnn,
+				})
+			}
 		}
 		if e2Ann != nil {
 			announcements = append(announcements, networkMsg{
@@ -2361,6 +2385,30 @@ func (d *AuthenticatedGossiper) processNetworkAnnouncement(
 				source: nMsg.source,
 				msg:    e2Ann,
 			})
+
+			// Since the edge exists, then we can also send the node
+			// announcement of the edge's backing node.
+			node, err := d.cfg.Router.FetchLightningNode(
+				chanInfo.NodeKey2Bytes,
+			)
+			if err != nil {
+				err := fmt.Errorf("unable to retrieve node "+
+					"%x: %v", chanInfo.NodeKey1Bytes, err)
+				nMsg.err <- err
+				return nil
+			}
+			if node.HaveNodeAnnouncement {
+				nodeAnn, err := node.NodeAnnouncement(true)
+				if err != nil {
+					nMsg.err <- err
+					return nil
+				}
+				announcements = append(announcements, networkMsg{
+					peer:   nMsg.peer,
+					source: nMsg.source,
+					msg:    nodeAnn,
+				})
+			}
 		}
 
 		nMsg.err <- nil

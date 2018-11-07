@@ -7911,18 +7911,74 @@ func testNodeAnnouncement(net *lntest.NetworkHarness, t *harnessTest) {
 
 	timeout := time.Duration(time.Second * 5)
 	ctxt, _ := context.WithTimeout(ctxb, timeout)
-	chanPoint := openChannelAndAssert(
-		ctxt, t, net, net.Bob, dave,
+	chanOpenUpdate, err := net.OpenChannel(
+		ctxt, net.Bob, dave,
 		lntest.OpenChannelParams{
 			Amt: 1000000,
 		},
 	)
+	if err != nil {
+		t.Fatalf("unable to open channel: %v", err)
+	}
 
-	// When Alice now connects with Dave, Alice will get his node
-	// announcement.
+	// Mine 5 blocks. This is enough for the channel to become active from
+	// the POV of the two nodes, but still doesn't make it public.
+	mineBlocks(t, net, 5)
+
+	chanPoint, err := net.WaitForChannelOpen(ctxt, chanOpenUpdate)
+	if err != nil {
+		t.Fatalf("error while waiting for channel open: %v", err)
+	}
+	txidHash, err := getChanPointFundingTxid(chanPoint)
+	if err != nil {
+		t.Fatalf("unable to get txid: %v", err)
+	}
+	fundingTxID, err := chainhash.NewHash(txidHash)
+	if err != nil {
+		t.Fatalf("unable to create sha hash: %v", err)
+	}
+
+	// The channel should be listed in the peer information returned by
+	// both peers.
+	cp := wire.OutPoint{
+		Hash:  *fundingTxID,
+		Index: chanPoint.OutputIndex,
+	}
+	if err := net.AssertChannelExists(ctxt, net.Bob, &cp); err != nil {
+		t.Fatalf("unable to assert channel existence: %v", err)
+	}
+	if err := net.AssertChannelExists(ctxt, dave, &cp); err != nil {
+		t.Fatalf("unable to assert channel existence: %v", err)
+	}
+
+	// When Alice now connects with Dave, Alice will NOT get his node
+	// announcement yet, as the channel is not public.
 	if err := net.ConnectNodes(ctxb, net.Alice, dave); err != nil {
 		t.Fatalf("unable to connect bob to carol: %v", err)
 	}
+
+	assertNoNodeAnns := func(graphSub graphSubscription) {
+		for {
+			select {
+			case graphUpdate := <-graphSub.updateChan:
+				if len(graphUpdate.NodeUpdates) > 0 {
+					t.Fatalf("got unexpected node "+
+						"announcement: %v",
+						spew.Sdump(
+							graphUpdate.NodeUpdates,
+						))
+				}
+			case err := <-graphSub.errChan:
+				t.Fatalf("unable to recv graph update: %v", err)
+			case <-time.After(200 * time.Millisecond):
+				// No updates expected.
+				return
+			}
+		}
+	}
+
+	// Make sure Alice receives no node announcements.
+	assertNoNodeAnns(aliceSub)
 
 	assertAddrs := func(addrsFound []string, targetAddrs ...string) {
 		addrs := make(map[string]struct{}, len(addrsFound))
@@ -7961,6 +8017,9 @@ func testNodeAnnouncement(net *lntest.NetworkHarness, t *harnessTest) {
 		}
 	}
 
+	// Mine one block. This makes the channel public, and Dave should send
+	// the node announcements to Alice.
+	mineBlocks(t, net, 1)
 	waitForAddrsInUpdate(
 		aliceSub, dave.PubKeyStr, advertisedAddrs...,
 	)

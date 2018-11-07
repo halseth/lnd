@@ -7885,6 +7885,15 @@ func testNodeAnnouncement(net *lntest.NetworkHarness, t *harnessTest) {
 	aliceSub := subscribeGraphNotifications(t, ctxb, net.Alice)
 	defer close(aliceSub.quit)
 
+	carol, err := net.NewNode("Carol", nil)
+	if err != nil {
+		t.Fatalf("unable to create new nodes: %v", err)
+	}
+	defer shutdownAndAssert(net, t, carol)
+
+	carolSub := subscribeGraphNotifications(t, ctxb, carol)
+	defer close(carolSub.quit)
+
 	advertisedAddrs := []string{
 		"192.168.1.1:8333",
 		"[2001:db8:85a3:8d3:1319:8a2e:370:7348]:8337",
@@ -8022,6 +8031,16 @@ func testNodeAnnouncement(net *lntest.NetworkHarness, t *harnessTest) {
 	mineBlocks(t, net, 1)
 	waitForAddrsInUpdate(
 		aliceSub, dave.PubKeyStr, advertisedAddrs...,
+	)
+
+	// Connect carol to Dave. Since the channel is already public, she
+	// should also receive the node announcement immediately.
+	ctxt, _ = context.WithTimeout(ctxb, timeout)
+	if err := net.ConnectNodes(ctxt, carol, dave); err != nil {
+		t.Fatalf("unable to connect bob to carol: %v", err)
+	}
+	waitForAddrsInUpdate(
+		carolSub, dave.PubKeyStr, advertisedAddrs...,
 	)
 
 	// Close the channel between Bob and Dave.

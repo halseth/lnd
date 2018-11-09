@@ -2977,13 +2977,12 @@ func (s *server) fetchLastChanUpdate() func(lnwire.ShortChannelID) (
 	}
 }
 
-// extractChannelUpdate attempts to retrieve a lnwire.ChannelUpdate message
-// from an edge's info and a set of routing policies.
+// extractPolicy attempts to find the ChannelEdgePolicy belonging to the passed
+// pubkey among the edge policies.
 // NOTE: the passed policies can be nil.
-func extractChannelUpdate(ownerPubKey []byte,
-	info *channeldb.ChannelEdgeInfo,
+func extractPolicy(pub []byte, info *channeldb.ChannelEdgeInfo,
 	policies ...*channeldb.ChannelEdgePolicy) (
-	*lnwire.ChannelUpdate, error) {
+	*channeldb.ChannelEdgePolicy, error) {
 
 	// Helper function to extract the owner of the given policy.
 	owner := func(edge *channeldb.ChannelEdgePolicy) []byte {
@@ -3003,15 +3002,31 @@ func extractChannelUpdate(ownerPubKey []byte,
 		return pubKey.SerializeCompressed()
 	}
 
-	// Extract the channel update from the policy we own, if any.
+	// Return policy of the owner, if any.
 	for _, edge := range policies {
-		if edge != nil && bytes.Equal(ownerPubKey, owner(edge)) {
-			return createChannelUpdate(info, edge)
+		if edge != nil && bytes.Equal(pub, owner(edge)) {
+			return edge, nil
 		}
 	}
 
-	return nil, fmt.Errorf("unable to extract ChannelUpdate for channel %v",
-		info.ChannelPoint)
+	return nil, fmt.Errorf("unable to find policy for owner %x for "+
+		"channel %v", pub, info.ChannelPoint)
+}
+
+// extractChannelUpdate attempts to retrieve a lnwire.ChannelUpdate message
+// from an edge's info and a set of routing policies.
+// NOTE: the passed policies can be nil.
+func extractChannelUpdate(ownerPubKey []byte, info *channeldb.ChannelEdgeInfo,
+	policies ...*channeldb.ChannelEdgePolicy) (
+	*lnwire.ChannelUpdate, error) {
+
+	// Extract the channel update from the policy we own, if any.
+	policy, err := extractPolicy(ownerPubKey, info, policies...)
+	if err != nil {
+		return nil, err
+	}
+
+	return createChannelUpdate(info, policy)
 }
 
 // createChannelUpdate reconstructs a signed ChannelUpdate from the given edge

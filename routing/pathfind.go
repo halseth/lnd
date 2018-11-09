@@ -13,6 +13,7 @@ import (
 	"github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing/machine"
 )
 
 const (
@@ -465,7 +466,7 @@ type restrictParams struct {
 // destination node back to source. This is to properly accumulate fees
 // that need to be paid along the path and accurately check the amount
 // to forward at every node against the available bandwidth.
-func findPath(g *graphParams, r *restrictParams,
+func findPath(g *graphParams, r *restrictParams, p machine.ProbabilityMachine,
 	sourceNode *channeldb.LightningNode, target *btcec.PublicKey,
 	amt lnwire.MilliSatoshi) ([]*channeldb.ChannelEdgePolicy, error) {
 
@@ -828,6 +829,7 @@ func findPaths(tx *bbolt.Tx, graph *channeldb.ChannelGraph,
 			ignoredEdges: ignoredEdges,
 			feeLimit:     feeLimit,
 		},
+		nil,
 		source, target, amt,
 	)
 	if err != nil {
@@ -911,7 +913,9 @@ func findPaths(tx *bbolt.Tx, graph *channeldb.ChannelGraph,
 					ignoredNodes: ignoredVertexes,
 					ignoredEdges: ignoredEdges,
 					feeLimit:     feeLimit,
-				}, spurNode, target, amt,
+				},
+				nil,
+				spurNode, target, amt,
 			)
 
 			// If we weren't able to find a path, we'll continue to

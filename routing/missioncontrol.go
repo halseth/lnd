@@ -416,6 +416,7 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 			ignoredEdges: pruneView.edges,
 			feeLimit:     payment.FeeLimit,
 		},
+		nil,
 		p.mc.selfNode, payment.Target, payment.Amount,
 	)
 	if err != nil {

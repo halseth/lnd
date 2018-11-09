@@ -3054,27 +3054,21 @@ func (s *server) applyChannelUpdate(update *lnwire.ChannelUpdate) error {
 }
 
 // watchChannelStatus periodically queries the Switch for the status of the
-// open channels, and sends out ChannelUpdates to the network indicating their
-// active status. Currently we'll send out either a Disabled or Active update
-// if the channel has been in the same status over a given amount of time.
+// open channels, and sends out ChannelUpdates with the disabled flags set to
+// the network if they have been inactive for a given amount of time.
 //
 // NOTE: This MUST be run as a goroutine.
 func (s *server) watchChannelStatus() {
 	defer s.wg.Done()
 
-	// A map with values activeStatus is used to keep track of the first
-	// time we saw a link changing to the current active status.
-	type activeStatus struct {
-		active bool
-		time   time.Time
-	}
-	status := make(map[wire.OutPoint]activeStatus)
+	// A map with the times a channel was first seen inactive.
+	inactiveTime := make(map[wire.OutPoint]time.Time)
 
 	// We'll check in on the channel statuses every 1/4 of the timeout.
-	unchangedTimeout := cfg.InactiveChanTimeout
-	tickerTimeout := unchangedTimeout / 4
+	inactiveTimeout := cfg.InactiveChanTimeout
+	tickerTimeout := inactiveTimeout / 4
 
-	if unchangedTimeout == 0 || tickerTimeout == 0 {
+	if inactiveTimeout == 0 || tickerTimeout == 0 {
 		srvrLog.Debugf("Won't watch channel statuses")
 		return
 	}
@@ -3092,10 +3086,9 @@ func (s *server) watchChannelStatus() {
 				continue
 			}
 
-			// For each open channel, update the status. We'll copy
-			// the updated statuses to a new map, to avoid keeping
-			// the status of closed channels around.
-			newStatus := make(map[wire.OutPoint]activeStatus)
+			// For each open channel, check their active status and
+			// keep track of channels that have gone inactive since
+			// last time we checked.
 			for _, c := range channels {
 				// We'll skip any private channels, as they
 				// aren't used for routing within the network by
@@ -3110,54 +3103,45 @@ func (s *server) watchChannelStatus() {
 				// Get the current active stauts from the
 				// Switch.
 				active := s.htlcSwitch.HasActiveLink(chanID)
+				_, ok := inactiveTime[c.FundingOutpoint]
 
-				var currentStatus activeStatus
+				switch {
 
-				// If this link is not in the map, or the
-				// status has changed, set an updated active
-				// status.
-				st, ok := status[c.FundingOutpoint]
-				if !ok || st.active != active {
-					currentStatus = activeStatus{
-						active: active,
-						time:   time.Now(),
-					}
-				} else {
-					// The status is unchanged, we'll keep
-					// it as is.
-					currentStatus = st
+				// If this link is active, we remove it from
+				// the map of inactive channels.
+				case active:
+					delete(inactiveTime, c.FundingOutpoint)
+
+				// If the channel was inactive, but not in the
+				// map, we add it now.
+				case !ok:
+					inactiveTime[c.FundingOutpoint] = time.Now()
 				}
-
-				newStatus[c.FundingOutpoint] = currentStatus
 			}
 
-			// Set the status map to the map of new statuses.
-			status = newStatus
-
-			// If no change in status has happened during the last
+			// If the channel has stayed inactive during the entire
 			// interval, we'll send out an update. Note that we add
 			// the negative of the timeout to set our limit in the
 			// past.
-			limit := time.Now().Add(-unchangedTimeout)
+			limit := time.Now().Add(-inactiveTimeout)
 
 			// We'll send out an update for all channels that have
-			// had their status unchanged for longer than the limit.
-			// NOTE: We also make sure to activate any channel when
-			// we connect to a peer, to make them available for
-			// path finding immediately.
-			for op, st := range status {
-				disable := !st.active
+			// been inactive for longer than the limit.
+			// NOTE: We activate channels only when we connect to a
+			// peer, to make them available for path finding
+			// immediately.
+			for op, t := range inactiveTime {
 
-				if st.time.Before(limit) {
+				if t.Before(limit) {
 					// Before we attempt to announce the
 					// status of the channel, we remove it
-					// from the status map such that it
-					// will need a full unchaged interval
-					// before we attempt to announce its
-					// status again.
-					delete(status, op)
+					// from the inactive map such that it
+					// will need a full interval of being
+					// inactive before we attempt to
+					// announce its status again.
+					delete(inactiveTime, op)
 
-					err = s.announceChanStatus(op, disable)
+					err = s.announceChanStatus(op, true)
 					if err != nil &&
 						err != channeldb.ErrEdgeNotFound {
 

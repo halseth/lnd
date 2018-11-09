@@ -3112,6 +3112,7 @@ func (s *server) watchChannelStatus() {
 					continue
 				}
 
+				remotePub := c.IdentityPub.SerializeCompressed()
 				chanID := lnwire.NewChanIDFromOutPoint(
 					&c.FundingOutpoint)
 
@@ -3132,6 +3133,49 @@ func (s *server) watchChannelStatus() {
 				case !ok:
 					inactiveTime[c.FundingOutpoint] = time.Now()
 				}
+
+				// Get the current statuses found in the graph.
+				g := s.chanDB.ChannelGraph()
+				info, e1, e2, err := g.FetchChannelEdgesByOutpoint(
+					&c.FundingOutpoint,
+				)
+				if err != nil {
+					continue
+				}
+
+				remotePolicy, err := extractPolicy(
+					remotePub, info, e1, e2,
+				)
+				if err != nil {
+					continue
+				}
+				disabled := remotePolicy.Flags & lnwire.ChanUpdateDisabled
+
+				// If the remote peer has our channel disabled
+				// even though we are active, we will disable
+				// back.
+
+				// Actually disable channel here. Must make
+				// sure we don't end up in a feedback loop
+				// where a peer will disable (or forget to
+				// enable) a channel.
+
+				// Do we actually want this? Seems "good" for
+				// us to keep the channel enabled to let us
+				// route through it. The assumption was that
+				// nodes could game the heuristics by disabling
+				// channels to us, thereby making us look
+				// worse. But they might have legitimate
+				// reasons for disabling channels? In that case
+				// they would disable us (maybe becuase there's
+				// no balance in the direcion), we would
+				// disable them and the channel would never be
+				// used. In this case maybe we can utilize the
+				// assumption that we should balance the
+				// channel, expecting them to enable it. If
+				// they at this point don't enable the channel,
+				// we should disable it.
+
 			}
 
 			// If the channel has stayed inactive during the entire
@@ -3171,4 +3215,5 @@ func (s *server) watchChannelStatus() {
 			return
 		}
 	}
+
 }

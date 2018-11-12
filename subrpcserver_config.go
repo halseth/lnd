@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnrpc/autopilotrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/macaroons"
@@ -32,7 +33,8 @@ type subRPCServerConfigs struct {
 // NOTE: This MUST be called before any callers are permitted to execute the
 // FetchConfig method.
 func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
-	networkDir string, macService *macaroons.Service) error {
+	networkDir string, macService *macaroons.Service,
+	atpl *autopilot.Manager) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -69,6 +71,19 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 			)
 			subCfgValue.FieldByName("Signer").Set(
 				reflect.ValueOf(cc.signer),
+			)
+
+		case *autopilotrpc.Config:
+			subCfgValue := extractReflectValue(cfg)
+
+			subCfgValue.FieldByName("MacService").Set(
+				reflect.ValueOf(macService),
+			)
+			subCfgValue.FieldByName("NetworkDir").Set(
+				reflect.ValueOf(networkDir),
+			)
+			subCfgValue.FieldByName("Manager").Set(
+				reflect.ValueOf(atpl),
 			)
 
 		default:

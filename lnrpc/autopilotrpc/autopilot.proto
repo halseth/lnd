@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package autopilotrpc;
+
+// Autopilot is a service that can be used to get information about the current
+// state of the daemon's autopilot agent, and also supply it with information
+// that can be used when deciding where to open channels.
+service Autopilot {
+    /**
+    GetStatus returns the status of the daemon's autopilot agent.
+    */
+    rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+    /**
+    Enable is used to enable or disable the autopilot agent.
+    */
+    rpc Enable(EnableRequest) returns (EnableResponse);
+}
+
+message GetStatusRequest{
+}
+
+message GetStatusResponse{
+    /// Indicates whther the autopilot is active or not.
+    bool active = 1 [json_name = "active"];
+}
+
+message EnableRequest{
+    /// Whether the autopilot agent should be enabled or not.
+    bool enable = 1 [json_name = "enable"];
+}
+
+message EnableResponse {}

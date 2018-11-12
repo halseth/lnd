@@ -292,6 +292,9 @@ func main() {
 		forwardingHistoryCommand,
 	}
 
+	// Add any extra commands determined by build flags.
+	app.Commands = append(app.Commands, extraCommands()...)
+
 	if err := app.Run(os.Args); err != nil {
 		fatal(err)
 	}

@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -485,211 +486,221 @@ func (a *Agent) controller() {
 		log.Infof("Triggering attachment directive dispatch, "+
 			"total_funds=%v", a.totalBalance)
 
-		// We're to attempt an attachment so we'll obtain the set of
-		// nodes that we currently have channels with so we avoid
-		// duplicate edges.
-		connectedNodes := a.chanState.ConnectedNodes()
-		a.pendingMtx.Lock()
-		nodesToSkip := mergeNodeMaps(a.pendingOpens,
-			a.pendingConns, connectedNodes, a.failedNodes,
-		)
-		a.pendingMtx.Unlock()
-
-		// If we reach this point, then according to our heuristic we
-		// should modify our channel state to tend towards what it
-		// determines to the optimal state. So we'll call Select to get
-		// a fresh batch of attachment directives, passing in the
-		// amount of funds available for us to use.
-		chanCandidates, err := a.cfg.Heuristic.Select(
-			a.cfg.Self, a.cfg.Graph, availableFunds,
-			numChans, nodesToSkip,
-		)
+		err := a.openChans(availableFunds, numChans, totalChans)
 		if err != nil {
-			log.Errorf("Unable to select candidates for "+
-				"attachment: %v", err)
+			log.Errorf("Unable to open channels: %v", err)
+		}
+	}
+}
+
+// openChans queries the agent's heuristic for a set of channel candidates, and
+// attempts to open channels to them.
+func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
+	totalChans []Channel) error {
+
+	// We're to attempt an attachment so we'll obtain the set of
+	// nodes that we currently have channels with so we avoid
+	// duplicate edges.
+	connectedNodes := a.chanState.ConnectedNodes()
+	a.pendingMtx.Lock()
+	nodesToSkip := mergeNodeMaps(a.pendingOpens,
+		a.pendingConns, connectedNodes, a.failedNodes,
+	)
+	a.pendingMtx.Unlock()
+
+	// If we reach this point, then according to our heuristic we
+	// should modify our channel state to tend towards what it
+	// determines to the optimal state. So we'll call Select to get
+	// a fresh batch of attachment directives, passing in the
+	// amount of funds available for us to use.
+	chanCandidates, err := a.cfg.Heuristic.Select(
+		a.cfg.Self, a.cfg.Graph, availableFunds,
+		numChans, nodesToSkip,
+	)
+	if err != nil {
+		return fmt.Errorf("Unable to select candidates for "+
+			"attachment: %v", err)
+	}
+
+	if len(chanCandidates) == 0 {
+		log.Infof("No eligible candidates to connect to")
+		return nil
+	}
+
+	log.Infof("Attempting to execute channel attachment "+
+		"directives: %v", spew.Sdump(chanCandidates))
+
+	// Before proceeding, check to see if we have any slots
+	// available to open channels. If there are any, we will attempt
+	// to dispatch the retrieved directives since we can't be
+	// certain which ones may actually succeed. If too many
+	// connections succeed, we will they will be ignored and made
+	// available to future heuristic selections.
+	a.pendingMtx.Lock()
+	if uint16(len(a.pendingOpens)) >= a.cfg.Constraints.MaxPendingOpens {
+		a.pendingMtx.Unlock()
+		log.Debugf("Reached cap of %v pending "+
+			"channel opens, will retry "+
+			"after success/failure",
+			a.cfg.Constraints.MaxPendingOpens)
+		return nil
+	}
+
+	// For each recommended attachment directive, we'll launch a
+	// new goroutine to attempt to carry out the directive. If any
+	// of these succeed, then we'll receive a new state update,
+	// taking us back to the top of our controller loop.
+	for _, chanCandidate := range chanCandidates {
+		// Skip candidates which we are already trying
+		// to establish a connection with.
+		nodeID := chanCandidate.NodeID
+		if _, ok := a.pendingConns[nodeID]; ok {
 			continue
 		}
+		a.pendingConns[nodeID] = struct{}{}
 
-		if len(chanCandidates) == 0 {
-			log.Infof("No eligible candidates to connect to")
-			continue
-		}
+		go func(directive AttachmentDirective) {
+			// We'll start out by attempting to connect to
+			// the peer in order to begin the funding
+			// workflow.
+			pub := directive.NodeKey
+			alreadyConnected, err := a.cfg.ConnectToPeer(
+				pub, directive.Addrs,
+			)
+			if err != nil {
+				log.Warnf("Unable to connect "+
+					"to %x: %v",
+					pub.SerializeCompressed(),
+					err)
 
-		log.Infof("Attempting to execute channel attachment "+
-			"directives: %v", spew.Sdump(chanCandidates))
-
-		// Before proceeding, check to see if we have any slots
-		// available to open channels. If there are any, we will attempt
-		// to dispatch the retrieved directives since we can't be
-		// certain which ones may actually succeed. If too many
-		// connections succeed, we will they will be ignored and made
-		// available to future heuristic selections.
-		a.pendingMtx.Lock()
-		if uint16(len(a.pendingOpens)) >= a.cfg.Constraints.MaxPendingOpens {
-			a.pendingMtx.Unlock()
-			log.Debugf("Reached cap of %v pending "+
-				"channel opens, will retry "+
-				"after success/failure",
-				a.cfg.Constraints.MaxPendingOpens)
-			continue
-		}
-
-		// For each recommended attachment directive, we'll launch a
-		// new goroutine to attempt to carry out the directive. If any
-		// of these succeed, then we'll receive a new state update,
-		// taking us back to the top of our controller loop.
-		for _, chanCandidate := range chanCandidates {
-			// Skip candidates which we are already trying
-			// to establish a connection with.
-			nodeID := chanCandidate.NodeID
-			if _, ok := a.pendingConns[nodeID]; ok {
-				continue
-			}
-			a.pendingConns[nodeID] = struct{}{}
-
-			go func(directive AttachmentDirective) {
-				// We'll start out by attempting to connect to
-				// the peer in order to begin the funding
-				// workflow.
-				pub := directive.NodeKey
-				alreadyConnected, err := a.cfg.ConnectToPeer(
-					pub, directive.Addrs,
-				)
-				if err != nil {
-					log.Warnf("Unable to connect "+
-						"to %x: %v",
-						pub.SerializeCompressed(),
-						err)
-
-					// Since we failed to connect to them,
-					// we'll mark them as failed so that we
-					// don't attempt to connect to them
-					// again.
-					nodeID := NewNodeID(pub)
-					a.pendingMtx.Lock()
-					delete(a.pendingConns, nodeID)
-					a.failedNodes[nodeID] = struct{}{}
-					a.pendingMtx.Unlock()
-
-					// Finally, we'll trigger the agent to
-					// select new peers to connect to.
-					a.OnChannelOpenFailure()
-
-					return
-				}
-
-				// The connection was successful, though before
-				// progressing we must check that we have not
-				// already met our quota for max pending open
-				// channels. This can happen if multiple
-				// directives were spawned but fewer slots were
-				// available, and other successful attempts
-				// finished first.
+				// Since we failed to connect to them,
+				// we'll mark them as failed so that we
+				// don't attempt to connect to them
+				// again.
+				nodeID := NewNodeID(pub)
 				a.pendingMtx.Lock()
-				if uint16(len(a.pendingOpens)) >=
-					a.cfg.Constraints.MaxPendingOpens {
-					// Since we've reached our max number of
-					// pending opens, we'll disconnect this
-					// peer and exit. However, if we were
-					// previously connected to them, then
-					// we'll make sure to maintain the
-					// connection alive.
-					if alreadyConnected {
-						// Since we succeeded in
-						// connecting, we won't add this
-						// peer to the failed nodes map,
-						// but we will remove it from
-						// a.pendingConns so that it can
-						// be retried in the future.
-						delete(a.pendingConns, nodeID)
-						a.pendingMtx.Unlock()
-						return
-					}
-
-					err = a.cfg.DisconnectPeer(
-						pub,
-					)
-					if err != nil {
-						log.Warnf("Unable to "+
-							"disconnect peer "+
-							"%x: %v",
-							pub.SerializeCompressed(),
-							err)
-					}
-
-					// Now that we have disconnected, we can
-					// remove this node from our pending
-					// conns map, permitting subsequent
-					// connection attempts.
-					delete(a.pendingConns, nodeID)
-					a.pendingMtx.Unlock()
-					return
-				}
-
-				// If we were successful, we'll track this peer
-				// in our set of pending opens. We do this here
-				// to ensure we don't stall on selecting new
-				// peers if the connection attempt happens to
-				// take too long.
-				nodeID := directive.NodeID
 				delete(a.pendingConns, nodeID)
-				a.pendingOpens[nodeID] = Channel{
-					Capacity: directive.ChanAmt,
-					Node:     nodeID,
-				}
+				a.failedNodes[nodeID] = struct{}{}
 				a.pendingMtx.Unlock()
 
-				// We can then begin the funding workflow with
-				// this peer.
-				err = a.cfg.ChanController.OpenChannel(
-					pub, directive.ChanAmt,
-				)
-				if err != nil {
-					log.Warnf("Unable to open "+
-						"channel to %x of %v: %v",
-						pub.SerializeCompressed(),
-						directive.ChanAmt, err)
+				// Finally, we'll trigger the agent to
+				// select new peers to connect to.
+				a.OnChannelOpenFailure()
 
-					// As the attempt failed, we'll clear
-					// the peer from the set of pending
-					// opens and mark them as failed so we
-					// don't attempt to open a channel to
-					// them again.
-					a.pendingMtx.Lock()
-					delete(a.pendingOpens, nodeID)
-					a.failedNodes[nodeID] = struct{}{}
+				return
+			}
+
+			// The connection was successful, though before
+			// progressing we must check that we have not
+			// already met our quota for max pending open
+			// channels. This can happen if multiple
+			// directives were spawned but fewer slots were
+			// available, and other successful attempts
+			// finished first.
+			a.pendingMtx.Lock()
+			if uint16(len(a.pendingOpens)) >=
+				a.cfg.Constraints.MaxPendingOpens {
+				// Since we've reached our max number of
+				// pending opens, we'll disconnect this
+				// peer and exit. However, if we were
+				// previously connected to them, then
+				// we'll make sure to maintain the
+				// connection alive.
+				if alreadyConnected {
+					// Since we succeeded in
+					// connecting, we won't add this
+					// peer to the failed nodes map,
+					// but we will remove it from
+					// a.pendingConns so that it can
+					// be retried in the future.
+					delete(a.pendingConns, nodeID)
 					a.pendingMtx.Unlock()
-
-					// Trigger the agent to re-evaluate
-					// everything and possibly retry with a
-					// different node.
-					a.OnChannelOpenFailure()
-
-					// Finally, we should also disconnect
-					// the peer if we weren't already
-					// connected to them beforehand by an
-					// external subsystem.
-					if alreadyConnected {
-						return
-					}
-
-					err = a.cfg.DisconnectPeer(pub)
-					if err != nil {
-						log.Warnf("Unable to "+
-							"disconnect peer "+
-							"%x: %v",
-							pub.SerializeCompressed(),
-							err)
-					}
+					return
 				}
 
-				// Since the channel open was successful and is
-				// currently pending, we'll trigger the
-				// autopilot agent to query for more peers.
-				a.OnChannelPendingOpen()
-			}(chanCandidate)
-		}
-		a.pendingMtx.Unlock()
+				err = a.cfg.DisconnectPeer(
+					pub,
+				)
+				if err != nil {
+					log.Warnf("Unable to "+
+						"disconnect peer "+
+						"%x: %v",
+						pub.SerializeCompressed(),
+						err)
+				}
 
+				// Now that we have disconnected, we can
+				// remove this node from our pending
+				// conns map, permitting subsequent
+				// connection attempts.
+				delete(a.pendingConns, nodeID)
+				a.pendingMtx.Unlock()
+				return
+			}
+
+			// If we were successful, we'll track this peer
+			// in our set of pending opens. We do this here
+			// to ensure we don't stall on selecting new
+			// peers if the connection attempt happens to
+			// take too long.
+			nodeID := directive.NodeID
+			delete(a.pendingConns, nodeID)
+			a.pendingOpens[nodeID] = Channel{
+				Capacity: directive.ChanAmt,
+				Node:     nodeID,
+			}
+			a.pendingMtx.Unlock()
+
+			// We can then begin the funding workflow with
+			// this peer.
+			err = a.cfg.ChanController.OpenChannel(
+				pub, directive.ChanAmt,
+			)
+			if err != nil {
+				log.Warnf("Unable to open "+
+					"channel to %x of %v: %v",
+					pub.SerializeCompressed(),
+					directive.ChanAmt, err)
+
+				// As the attempt failed, we'll clear
+				// the peer from the set of pending
+				// opens and mark them as failed so we
+				// don't attempt to open a channel to
+				// them again.
+				a.pendingMtx.Lock()
+				delete(a.pendingOpens, nodeID)
+				a.failedNodes[nodeID] = struct{}{}
+				a.pendingMtx.Unlock()
+
+				// Trigger the agent to re-evaluate
+				// everything and possibly retry with a
+				// different node.
+				a.OnChannelOpenFailure()
+
+				// Finally, we should also disconnect
+				// the peer if we weren't already
+				// connected to them beforehand by an
+				// external subsystem.
+				if alreadyConnected {
+					return
+				}
+
+				err = a.cfg.DisconnectPeer(pub)
+				if err != nil {
+					log.Warnf("Unable to "+
+						"disconnect peer "+
+						"%x: %v",
+						pub.SerializeCompressed(),
+						err)
+				}
+			}
+
+			// Since the channel open was successful and is
+			// currently pending, we'll trigger the
+			// autopilot agent to query for more peers.
+			a.OnChannelPendingOpen()
+		}(chanCandidate)
 	}
+	a.pendingMtx.Unlock()
+	return nil
 }

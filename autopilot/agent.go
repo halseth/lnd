@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"net"
@@ -578,18 +579,58 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 	)
 	a.pendingMtx.Unlock()
 
-	// If we reach this point, then according to our heuristic we
-	// should modify our channel state to tend towards what it
-	// determines to the optimal state. So we'll call Select to get
-	// a fresh batch of attachment directives, passing in the
-	// amount of funds available for us to use.
-	chanCandidates, err := a.cfg.Heuristic.Select(
-		a.cfg.Self, a.cfg.Graph, availableFunds,
-		numChans, nodesToSkip,
+	// Gather the set of all nodes in the graph, except those we
+	// want to skip.
+	selfPubBytes := a.cfg.Self.SerializeCompressed()
+	nodes := make(map[NodeID]struct{})
+	if err := a.cfg.Graph.ForEachNode(func(node Node) error {
+		nID := NodeID(node.PubKey())
+
+		// If we come across ourselves, them we'll continue in
+		// order to avoid attempting to make a channel with
+		// ourselves.
+		if bytes.Equal(nID[:], selfPubBytes) {
+			return nil
+		}
+
+		// Additionally, if this node is in the blacklist, then
+		// we'll skip it.
+		if _, ok := nodesToSkip[nID]; ok {
+			return nil
+		}
+
+		nodes[nID] = struct{}{}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("unable to get graph nodes: %v", err)
+	}
+
+	// Use the heuristic to calculate a score for each node in the
+	// graph.
+	scores, err := a.cfg.Heuristic.NodeScores(
+		a.cfg.Graph, totalChans, availableFunds, nodes,
 	)
 	if err != nil {
-		return fmt.Errorf("Unable to select candidates for "+
-			"attachment: %v", err)
+		return fmt.Errorf("unable to calculate node scores : %v", err)
+	}
+
+	// Filter out nodes below our score threshold.
+	numNodes := len(scores)
+	for k, v := range scores {
+		if v.Score < a.cfg.Constraints.MinScoreThreshold {
+			delete(scores, k)
+		}
+	}
+
+	log.Debugf("Got scores for %d nodes (%d below threshold)",
+		numNodes, numNodes-len(scores))
+
+	// Now use the score to make a weighted choice which
+	// nodes to attempt to open channels to.
+	chanCandidates, err := chooseN(int(numChans), scores)
+	if err != nil {
+		return fmt.Errorf("Unable to make weighted choice: %v",
+			err)
 	}
 
 	if len(chanCandidates) == 0 {
@@ -769,7 +810,7 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 			// currently pending, we'll trigger the
 			// autopilot agent to query for more peers.
 			a.OnChannelPendingOpen()
-		}(chanCandidate)
+		}(*chanCandidate)
 	}
 	a.pendingMtx.Unlock()
 	return nil

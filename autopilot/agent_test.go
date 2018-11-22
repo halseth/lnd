@@ -29,8 +29,8 @@ type mockHeuristic struct {
 	moreChansResps chan moreChansResp
 	moreChanArgs   chan moreChanArg
 
-	directiveResps chan []AttachmentDirective
-	directiveArgs  chan directiveArg
+	nodeScoresResps chan map[NodeID]*AttachmentDirective
+	nodeScoresArgs  chan directiveArg
 
 	quit chan struct{}
 }
@@ -60,44 +60,37 @@ func (m *mockHeuristic) NeedMoreChans(chans []Channel,
 }
 
 type directiveArg struct {
-	self  *btcec.PublicKey
 	graph ChannelGraph
 	amt   btcutil.Amount
-	skip  map[NodeID]struct{}
-}
-
-func (m *mockHeuristic) Select(self *btcec.PublicKey, graph ChannelGraph,
-	amtToUse btcutil.Amount, numChans uint32,
-	skipChans map[NodeID]struct{}) ([]AttachmentDirective, error) {
-
-	if m.directiveArgs != nil {
-		directive := directiveArg{
-			self:  self,
-			graph: graph,
-			amt:   amtToUse,
-			skip:  skipChans,
-		}
-
-		select {
-		case m.directiveArgs <- directive:
-		case <-m.quit:
-			return nil, errors.New("exiting")
-		}
-	}
-
-	select {
-	case resp := <-m.directiveResps:
-		return resp, nil
-	case <-m.quit:
-		return nil, errors.New("exiting")
-	}
+	chans []Channel
+	nodes map[NodeID]struct{}
 }
 
 func (m *mockHeuristic) NodeScores(g ChannelGraph, chans []Channel,
 	fundsAvailable btcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*AttachmentDirective, error) {
 
-	return nil, nil
+	if m.nodeScoresArgs != nil {
+		directive := directiveArg{
+			graph: g,
+			amt:   fundsAvailable,
+			chans: chans,
+			nodes: nodes,
+		}
+
+		select {
+		case m.nodeScoresArgs <- directive:
+		case <-m.quit:
+			return nil, errors.New("exiting")
+		}
+	}
+
+	select {
+	case resp := <-m.nodeScoresResps:
+		return resp, nil
+	case <-m.quit:
+		return nil, errors.New("exiting")
+	}
 }
 
 var _ AttachmentHeuristic = (*mockHeuristic)(nil)
@@ -151,8 +144,8 @@ func TestAgentChannelOpenSignal(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent, 10),
@@ -233,7 +226,7 @@ func TestAgentChannelOpenSignal(t *testing.T) {
 
 	// If this send success, then Select was erroneously called and the
 	// test should be failed.
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 		t.Fatalf("Select was called but shouldn't have been")
 
 	// This is the correct path as Select should've be called.
@@ -276,8 +269,8 @@ func TestAgentChannelFailureSignal(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockFailingChanController{}
 	memGraph, _, _ := newMemChanGraph()
@@ -331,7 +324,7 @@ func TestAgentChannelFailureSignal(t *testing.T) {
 	// At this point, the agent should now be querying the heuristic to
 	// request attachment directives, return a fake so the agent will
 	// attempt to open a channel.
-	var fakeDirective = AttachmentDirective{
+	var fakeDirective = &AttachmentDirective{
 		NodeKey: self,
 		NodeID:  NewNodeID(self),
 		ChanAmt: btcutil.SatoshiPerBitcoin,
@@ -340,10 +333,13 @@ func TestAgentChannelFailureSignal(t *testing.T) {
 				IP: bytes.Repeat([]byte("a"), 16),
 			},
 		},
+		Score: 0.5,
 	}
 
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{fakeDirective}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{
+		NewNodeID(self): fakeDirective,
+	}:
 	case <-time.After(time.Second * 10):
 		t.Fatal("heuristic wasn't queried in time")
 	}
@@ -358,7 +354,7 @@ func TestAgentChannelFailureSignal(t *testing.T) {
 	}
 
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 	case <-time.After(time.Second * 10):
 		t.Fatal("heuristic wasn't queried in time")
 	}
@@ -377,8 +373,8 @@ func TestAgentChannelCloseSignal(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -466,7 +462,7 @@ func TestAgentChannelCloseSignal(t *testing.T) {
 
 	// If this send success, then Select was erroneously called and the
 	// test should be failed.
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 		t.Fatalf("Select was called but shouldn't have been")
 
 	// This is the correct path as Select should've be called.
@@ -487,8 +483,8 @@ func TestAgentBalanceUpdate(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -577,7 +573,7 @@ func TestAgentBalanceUpdate(t *testing.T) {
 
 	// If this send success, then Select was erroneously called and the
 	// test should be failed.
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 		t.Fatalf("Select was called but shouldn't have been")
 
 	// This is the correct path as Select should've be called.
@@ -597,8 +593,8 @@ func TestAgentImmediateAttach(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -667,7 +663,7 @@ func TestAgentImmediateAttach(t *testing.T) {
 	// At this point, the agent should now be querying the heuristic to
 	// requests attachment directives. We'll generate 5 mock directives so
 	// it can progress within its loop.
-	directives := make([]AttachmentDirective, numChans)
+	directives := make(map[NodeID]*AttachmentDirective)
 	nodeKeys := make(map[NodeID]struct{})
 	for i := 0; i < numChans; i++ {
 		pub, err := randKey()
@@ -675,7 +671,7 @@ func TestAgentImmediateAttach(t *testing.T) {
 			t.Fatalf("unable to generate key: %v", err)
 		}
 		nodeID := NewNodeID(pub)
-		directives[i] = AttachmentDirective{
+		directives[nodeID] = &AttachmentDirective{
 			NodeKey: pub,
 			NodeID:  nodeID,
 			ChanAmt: btcutil.SatoshiPerBitcoin,
@@ -684,6 +680,7 @@ func TestAgentImmediateAttach(t *testing.T) {
 					IP: bytes.Repeat([]byte("a"), 16),
 				},
 			},
+			Score: 0.5,
 		}
 		nodeKeys[nodeID] = struct{}{}
 	}
@@ -691,7 +688,7 @@ func TestAgentImmediateAttach(t *testing.T) {
 	// With our fake directives created, we'll now send then to the agent
 	// as a return value for the Select function.
 	select {
-	case heuristic.directiveResps <- directives:
+	case heuristic.nodeScoresResps <- directives:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("heuristic wasn't queried in time")
 	}
@@ -713,6 +710,7 @@ func TestAgentImmediateAttach(t *testing.T) {
 					nodeID)
 			}
 			delete(nodeKeys, nodeID)
+
 		case <-time.After(time.Second * 10):
 			t.Fatalf("channel not opened in time")
 		}
@@ -731,8 +729,8 @@ func TestAgentPrivateChannels(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	// The chanController should be initialized such that all of its open
 	// channel requests are for private channels.
@@ -802,13 +800,13 @@ func TestAgentPrivateChannels(t *testing.T) {
 	// At this point, the agent should now be querying the heuristic to
 	// requests attachment directives. We'll generate 5 mock directives so
 	// it can progress within its loop.
-	directives := make([]AttachmentDirective, numChans)
+	directives := make(map[NodeID]*AttachmentDirective)
 	for i := 0; i < numChans; i++ {
 		pub, err := randKey()
 		if err != nil {
 			t.Fatalf("unable to generate key: %v", err)
 		}
-		directives[i] = AttachmentDirective{
+		directives[NewNodeID(pub)] = &AttachmentDirective{
 			NodeKey: pub,
 			NodeID:  NewNodeID(pub),
 			ChanAmt: btcutil.SatoshiPerBitcoin,
@@ -817,13 +815,14 @@ func TestAgentPrivateChannels(t *testing.T) {
 					IP: bytes.Repeat([]byte("a"), 16),
 				},
 			},
+			Score: 0.5,
 		}
 	}
 
 	// With our fake directives created, we'll now send then to the agent
 	// as a return value for the Select function.
 	select {
-	case heuristic.directiveResps <- directives:
+	case heuristic.nodeScoresResps <- directives:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("heuristic wasn't queried in time")
 	}
@@ -855,8 +854,8 @@ func TestAgentPendingChannelState(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -931,7 +930,7 @@ func TestAgentPendingChannelState(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	nodeID := NewNodeID(nodeKey)
-	nodeDirective := AttachmentDirective{
+	nodeDirective := &AttachmentDirective{
 		NodeKey: nodeKey,
 		NodeID:  nodeID,
 		ChanAmt: 0.5 * btcutil.SatoshiPerBitcoin,
@@ -940,14 +939,18 @@ func TestAgentPendingChannelState(t *testing.T) {
 				IP: bytes.Repeat([]byte("a"), 16),
 			},
 		},
+		Score: 0.5,
 	}
+
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{nodeDirective}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{
+		nodeID: nodeDirective,
+	}:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("heuristic wasn't queried in time")
 	}
 
-	heuristic.directiveArgs = make(chan directiveArg)
+	heuristic.nodeScoresArgs = make(chan directiveArg)
 
 	// A request to open the channel should've also been sent.
 	select {
@@ -1010,12 +1013,12 @@ func TestAgentPendingChannelState(t *testing.T) {
 	// Select method. The arguments passed should reflect the fact that the
 	// node we have a pending channel to, should be ignored.
 	select {
-	case req := <-heuristic.directiveArgs:
-		if len(req.skip) == 0 {
+	case req := <-heuristic.nodeScoresArgs:
+		if len(req.chans) == 0 {
 			t.Fatalf("expected to skip %v nodes, instead "+
-				"skipping %v", 1, len(req.skip))
+				"skipping %v", 1, len(req.chans))
 		}
-		if _, ok := req.skip[nodeID]; !ok {
+		if req.chans[0].Node != nodeID {
 			t.Fatalf("pending node not included in skip arguments")
 		}
 	case <-time.After(time.Second * 10):
@@ -1036,8 +1039,8 @@ func TestAgentPendingOpenChannel(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -1100,7 +1103,7 @@ func TestAgentPendingOpenChannel(t *testing.T) {
 	// There shouldn't be a call to the Select method as we've returned
 	// "false" for NeedMoreChans above.
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 		t.Fatalf("Select was called but shouldn't have been")
 	default:
 	}
@@ -1121,8 +1124,8 @@ func TestAgentOnNodeUpdates(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -1178,7 +1181,7 @@ func TestAgentOnNodeUpdates(t *testing.T) {
 	// Send over an empty list of attachment directives, which should cause
 	// the agent to return to waiting on a new signal.
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("Select was not called but should have been")
 	}
@@ -1204,7 +1207,7 @@ func TestAgentOnNodeUpdates(t *testing.T) {
 	// It's not important that this list is also empty, so long as the node
 	// updates signal is causing the agent to make this attempt.
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{}:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("Select was not called but should have been")
 	}
@@ -1226,8 +1229,8 @@ func TestAgentSkipPendingConns(t *testing.T) {
 		t.Fatalf("unable to generate key: %v", err)
 	}
 	heuristic := &mockHeuristic{
-		moreChansResps: make(chan moreChansResp),
-		directiveResps: make(chan []AttachmentDirective),
+		moreChansResps:  make(chan moreChansResp),
+		nodeScoresResps: make(chan map[NodeID]*AttachmentDirective),
 	}
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent),
@@ -1299,7 +1302,7 @@ func TestAgentSkipPendingConns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to generate key: %v", err)
 	}
-	nodeDirective := AttachmentDirective{
+	nodeDirective := &AttachmentDirective{
 		NodeKey: nodeKey,
 		NodeID:  NewNodeID(nodeKey),
 		ChanAmt: 0.5 * btcutil.SatoshiPerBitcoin,
@@ -1308,9 +1311,13 @@ func TestAgentSkipPendingConns(t *testing.T) {
 				IP: bytes.Repeat([]byte("a"), 16),
 			},
 		},
+		Score: 0.5,
 	}
+
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{nodeDirective}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{
+		NewNodeID(nodeKey): nodeDirective,
+	}:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("heuristic wasn't queried in time")
 	}
@@ -1338,7 +1345,9 @@ func TestAgentSkipPendingConns(t *testing.T) {
 
 	// Send a directive for the same node, which already has a pending conn.
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{nodeDirective}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{
+		NewNodeID(nodeKey): nodeDirective,
+	}:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("heuristic wasn't queried in time")
 	}
@@ -1375,7 +1384,9 @@ func TestAgentSkipPendingConns(t *testing.T) {
 
 	// Send a directive for the same node, which already has a pending conn.
 	select {
-	case heuristic.directiveResps <- []AttachmentDirective{nodeDirective}:
+	case heuristic.nodeScoresResps <- map[NodeID]*AttachmentDirective{
+		NewNodeID(nodeKey): nodeDirective,
+	}:
 	case <-time.After(time.Second * 10):
 		t.Fatalf("heuristic wasn't queried in time")
 	}

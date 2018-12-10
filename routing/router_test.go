@@ -193,6 +193,30 @@ func createTestCtxFromFile(startingHeight uint32, testGraph string) (*testCtx, f
 	return createTestCtxFromGraphInstance(startingHeight, graphInstance)
 }
 
+// Add valid signature to channel update simulated as error
+// received from the network.
+func signErrChanUpdate(key *btcec.PrivateKey,
+	errChanUpdate *lnwire.ChannelUpdate) error {
+
+	chanUpdateMsg, err := errChanUpdate.DataToSign()
+	if err != nil {
+		return err
+	}
+
+	digest := chainhash.DoubleHashB(chanUpdateMsg)
+	sig, err := key.Sign(digest)
+	if err != nil {
+		return err
+	}
+
+	errChanUpdate.Signature, err = lnwire.NewSigFromSignature(sig)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // TestFindRoutesWithFeeLimit asserts that routes found by the FindRoutes method
 // within the channel router contain a total fee less than or equal to the fee
 // limit.
@@ -499,7 +523,7 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 	defer cleanUp()
 
 	// Craft a LightningPayment struct that'll send a payment from roasbeef
-	// to luo ji for 100 satoshis.
+	// to sophon for 1000 satoshis.
 	var payHash [32]byte
 	amt := lnwire.NewMSatFromSatoshis(1000)
 	payment := LightningPayment{
@@ -512,10 +536,10 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 	var preImage [32]byte
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 
-	// We'll also fetch the first outgoing channel edge from roasbeef to
-	// son goku. We'll obtain this as we'll need to to generate the
+	// We'll also fetch the first outgoing channel edge from son goku
+	// to sophon. We'll obtain this as we'll need to to generate the
 	// FeeInsufficient error that we'll send back.
-	chanID := uint64(12345)
+	chanID := uint64(3495345)
 	_, _, edgeUpdateToFail, err := ctx.graph.FetchChannelEdgesByID(chanID)
 	if err != nil {
 		t.Fatalf("unable to fetch chan id: %v", err)
@@ -533,13 +557,18 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 		FeeRate:         uint32(edgeUpdateToFail.FeeProportionalMillionths),
 	}
 
+	err = signErrChanUpdate(ctx.privKeys["songoku"], &errChanUpdate)
+	if err != nil {
+		t.Fatalf("Failed to sign channel update error: %v ", err)
+	}
+
 	// We'll now modify the SendToSwitch method to return an error for the
 	// outgoing channel to Son goku. This will be a fee related error, so
 	// it should only cause the edge to be pruned after the second attempt.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
-			roasbeefSongoku := lnwire.NewShortChanIDFromInt(chanID)
+			roasbeefSongoku := lnwire.NewShortChanIDFromInt(12345)
 			if firstHop == roasbeefSongoku {
 				return [32]byte{}, htlcswitch.NewForwardingError(
 					// Within our error, we'll add a
@@ -555,7 +584,13 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 			return preImage, nil
 		})
 
-	// Send off the payment request to the router, route through satoshi
+	// processUpdate ensures that the funding transaction is not spent,
+	// before further processing an edge update. Toggel AssumeChannelValid
+	// to avoid dropping the channel update, as the utxo set query is
+	// not mocked in this test.
+	ctx.router.cfg.AssumeChannelValid = true
+
+	// Send off the payment request to the router, route through pham nuwen
 	// should've been selected as a fall back and succeeded correctly.
 	paymentPreImage, route, err := ctx.router.SendPayment(&payment)
 	if err != nil {
@@ -577,7 +612,7 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 	// The route should have pham nuwen as the first hop.
 	if route.Hops[0].PubKeyBytes != ctx.aliases["phamnuwen"] {
 
-		t.Fatalf("route should go through satoshi as first hop, "+
+		t.Fatalf("route should go through pham nuwen as first hop, "+
 			"instead passes through: %v",
 			getAliasFromPubKey(route.Hops[0].PubKeyBytes,
 				ctx.aliases))

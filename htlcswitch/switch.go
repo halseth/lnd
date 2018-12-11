@@ -386,8 +386,9 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	}
 
 	// Send the HTLC async, returning the response channels immediately to
-	// the caller.
-	if err := s.forward(packet); err != nil {
+	// the caller. If the returned error is a duplicate add, then we can
+	// ignore it, as our HTLC was already forwarded by the switch.
+	if err := s.forward(packet); err != nil && err != ErrDuplicateAdd {
 		s.removePendingPayment(paymentID)
 		if err := s.control.Fail(htlc.PaymentHash); err != nil {
 			errChan <- err

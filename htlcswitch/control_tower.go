@@ -47,8 +47,10 @@ type ControlTower interface {
 	// conflicting payment paying to the same hash but having a different
 	// payment ID is found, ErrConflictingPaymentInFlight is returned. If a
 	// payment to this hash has already succeeded, ErrAlreadyPaid is
-	// returned.
-	ClearForTakeoff(paymentID uint64, htlc *lnwire.UpdateAddHTLC) error
+	// returned. In case of ErrAlready paid, the preimage obtained will
+	// also be returned.
+	ClearForTakeoff(paymentID uint64, htlc *lnwire.UpdateAddHTLC) (
+		[32]byte, error)
 
 	// Success transitions an InFlight payment into a Completed payment.
 	// After invoking this method, ClearForTakeoff should always return an
@@ -90,9 +92,10 @@ func NewPaymentControl(strict bool, db *channeldb.DB) ControlTower {
 // ClearForTakeoff checks that we don't already have an InFlight or Completed
 // payment identified by the same payment hash.
 func (p *paymentControl) ClearForTakeoff(paymentID uint64,
-	htlc *lnwire.UpdateAddHTLC) error {
+	htlc *lnwire.UpdateAddHTLC) ([32]byte, error) {
 
 	var takeoffErr error
+	var preimage [32]byte
 	err := p.db.Batch(func(tx *bbolt.Tx) error {
 		// Retrieve current status of payment from local database.
 		paymentStatus, err := channeldb.FetchPaymentStatusTx(
@@ -105,6 +108,7 @@ func (p *paymentControl) ClearForTakeoff(paymentID uint64,
 		// Reset the takeoff error, to avoid carrying over an error
 		// from a previous execution of the batched db transaction.
 		takeoffErr = nil
+		preimage = [32]byte{}
 
 		switch paymentStatus {
 
@@ -150,6 +154,13 @@ func (p *paymentControl) ClearForTakeoff(paymentID uint64,
 			// forbid the switch from sending another.
 			takeoffErr = ErrAlreadyPaid
 
+			// We've already completed a payment to this payment
+			// hash, forbid the switch from sending another.
+			preimage, err = channeldb.FetchPaymentPreimageTx(
+				tx, htlc.PaymentHash,
+			)
+			return err
+
 		default:
 			takeoffErr = ErrUnknownPaymentStatus
 		}
@@ -157,10 +168,10 @@ func (p *paymentControl) ClearForTakeoff(paymentID uint64,
 		return nil
 	})
 	if err != nil {
-		return err
+		return preimage, err
 	}
 
-	return takeoffErr
+	return preimage, takeoffErr
 }
 
 // Success transitions an InFlight payment to Completed, otherwise it returns an

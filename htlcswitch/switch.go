@@ -371,7 +371,16 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	// double check that we don't already have 1) an
 	// in-flight payment to this payment hash, or 2) a complete payment for
 	// the same hash.
-	if err := s.control.ClearForTakeoff(paymentID, htlc); err != nil {
+	preimage, err := s.control.ClearForTakeoff(paymentID, htlc)
+	switch {
+
+	// The payment was already made, we can return the preimage
+	// immediately.
+	case err == ErrAlreadyPaid:
+		preimageChan <- preimage
+		return preimageChan, errChan
+
+	case err != nil:
 		errChan <- err
 		return preimageChan, errChan
 	}

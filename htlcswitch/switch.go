@@ -372,6 +372,11 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	}
 
 	s.pendingMutex.Lock()
+	if _, ok := s.pendingPayments[paymentID]; ok {
+		s.pendingMutex.Unlock()
+		errChan <- errors.New("paymentID already used")
+		return preimageChan, errChan
+	}
 	s.pendingPayments[paymentID] = payment
 	s.pendingMutex.Unlock()
 

@@ -12,9 +12,11 @@ var (
 	// ErrAlreadyPaid signals we have already paid this payment hash.
 	ErrAlreadyPaid = errors.New("invoice is already paid")
 
-	// ErrPaymentInFlight signals that payment for this payment hash is
-	// already "in flight" on the network.
-	ErrPaymentInFlight = errors.New("payment is in transition")
+	// ErrConflictingPaymentInFlight is returned if a payment with a
+	// different payment ID paying to the same payment hash is in flight on
+	// the network.
+	ErrConflictingPaymentInFlight = errors.New("conflicting payment with " +
+		"same hash is in transition")
 
 	// ErrPaymentNotInitiated is returned  if payment wasn't initiated in
 	// switch.
@@ -37,9 +39,16 @@ var (
 // transitions.
 type ControlTower interface {
 	// ClearForTakeoff atomically checks that no inflight or completed
-	// payments exist for this payment hash. If none are found, this method
-	// atomically transitions the status for this payment hash as InFlight.
-	ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error
+	// payments exist for this payment hash with a different paymentID. If
+	// none are found, this method atomically transitions the status for
+	// this payment hash paymentID as InFlight. If the exact payment (same
+	// ID and hash) is already found, no error is returned, as it is
+	// assumed safe to let the switch handle a duplicate replay. If a
+	// conflicting payment paying to the same hash but having a different
+	// payment ID is found, ErrConflictingPaymentInFlight is returned. If a
+	// payment to this hash has already succeeded, ErrAlreadyPaid is
+	// returned.
+	ClearForTakeoff(paymentID uint64, htlc *lnwire.UpdateAddHTLC) error
 
 	// Success transitions an InFlight payment into a Completed payment.
 	// After invoking this method, ClearForTakeoff should always return an
@@ -80,7 +89,9 @@ func NewPaymentControl(strict bool, db *channeldb.DB) ControlTower {
 
 // ClearForTakeoff checks that we don't already have an InFlight or Completed
 // payment identified by the same payment hash.
-func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
+func (p *paymentControl) ClearForTakeoff(paymentID uint64,
+	htlc *lnwire.UpdateAddHTLC) error {
+
 	var takeoffErr error
 	err := p.db.Batch(func(tx *bbolt.Tx) error {
 		// Retrieve current status of payment from local database.
@@ -102,14 +113,37 @@ func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
 			// haven't left one in flight. Since this one is
 			// grounded, Transition the payment status to InFlight
 			// to prevent others.
-			return channeldb.UpdatePaymentStatusTx(
+			err := channeldb.UpdatePaymentStatusTx(
 				tx, htlc.PaymentHash, channeldb.StatusInFlight,
+			)
+			if err != nil {
+				return err
+			}
+
+			return channeldb.UpdatePaymentIDTx(
+				tx, htlc.PaymentHash, paymentID,
 			)
 
 		case channeldb.StatusInFlight:
-			// We already have an InFlight payment on the network. We will
-			// disallow any more payment until a response is received.
-			takeoffErr = ErrPaymentInFlight
+			// We already have an InFlight payment on the network.
+			// Check whether it is a conflicting payment with a
+			// different paymentID, or the same one already cleared
+			// for takeoff.
+			pid, err := channeldb.FetchPaymentIDTx(
+				tx, htlc.PaymentHash,
+			)
+			if err != nil {
+				return err
+			}
+
+			// We will disallow any more payment until a response
+			// is received if a conflicting payment is paying to
+			// this hash..
+			if pid != paymentID {
+				takeoffErr = ErrConflictingPaymentInFlight
+			}
+
+			return nil
 
 		case channeldb.StatusCompleted:
 			// We've already completed a payment to this payment hash,

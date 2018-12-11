@@ -342,23 +342,30 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 }
 
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
-// package in order to send the htlc update.
+// package in order to send the htlc update. This method is asynchronous, and
+// in case of a successful HTLC settle the preimage will be delivered on the
+// returned channel. In case an error is encountered during forwarding, it will
+// be returned on the error channel.
 func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	htlc *lnwire.UpdateAddHTLC, paymentID uint64,
-	deobfuscator ErrorDecrypter) ([sha256.Size]byte, error) {
+	deobfuscator ErrorDecrypter) (chan [sha256.Size]byte, chan error) {
+
+	preimageChan := make(chan [sha256.Size]byte, 1)
+	errChan := make(chan error, 1)
 
 	// Before sending, double check that we don't already have 1) an
 	// in-flight payment to this payment hash, or 2) a complete payment for
 	// the same hash.
 	if err := s.control.ClearForTakeoff(htlc); err != nil {
-		return zeroPreimage, err
+		errChan <- err
+		return preimageChan, errChan
 	}
 
 	// Create payment and add to the map of payment in order later to be
 	// able to retrieve it and return response to the user.
 	payment := &pendingPayment{
-		err:          make(chan error, 1),
-		preimage:     make(chan [sha256.Size]byte, 1),
+		err:          errChan,
+		preimage:     preimageChan,
 		paymentHash:  htlc.PaymentHash,
 		amount:       htlc.Amount,
 		deobfuscator: deobfuscator,
@@ -378,35 +385,20 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 		htlc:           htlc,
 	}
 
+	// Send the HTLC async, returning the response channels immediately to
+	// the caller.
 	if err := s.forward(packet); err != nil {
 		s.removePendingPayment(paymentID)
 		if err := s.control.Fail(htlc.PaymentHash); err != nil {
-			return zeroPreimage, err
+			errChan <- err
+			return preimageChan, errChan
 		}
 
-		return zeroPreimage, err
+		errChan <- err
+		return preimageChan, errChan
 	}
 
-	// Returns channels so that other subsystem might wait/skip the
-	// waiting of handling of payment.
-	var preimage [sha256.Size]byte
-	var err error
-
-	select {
-	case e := <-payment.err:
-		err = e
-	case <-s.quit:
-		return zeroPreimage, ErrSwitchExiting
-	}
-
-	select {
-	case p := <-payment.preimage:
-		preimage = p
-	case <-s.quit:
-		return zeroPreimage, ErrSwitchExiting
-	}
-
-	return preimage, err
+	return preimageChan, errChan
 }
 
 // UpdateForwardingPolicies sends a message to the switch to update the
@@ -901,8 +893,11 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	// Deliver the payment error and preimage to the application, if it is
 	// waiting for a response.
 	if payment != nil {
-		payment.err <- paymentErr
-		payment.preimage <- preimage
+		if paymentErr != nil {
+			payment.err <- paymentErr
+		} else {
+			payment.preimage <- preimage
+		}
 		s.removePendingPayment(pkt.incomingHTLCID)
 	}
 }

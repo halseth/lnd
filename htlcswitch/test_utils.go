@@ -647,12 +647,15 @@ func generateHops(payAmt lnwire.MilliSatoshi, startingHeight uint32,
 }
 
 type paymentResponse struct {
-	rhash chainhash.Hash
-	err   chan error
+	rhash  chainhash.Hash
+	preImg chan [32]byte
+	err    chan error
 }
 
 func (r *paymentResponse) Wait(d time.Duration) (chainhash.Hash, error) {
 	select {
+	case <-r.preImg:
+		return r.rhash, nil
 	case err := <-r.err:
 		close(r.err)
 		return r.rhash, err
@@ -715,16 +718,14 @@ func (n *threeHopNetwork) makePayment(sendingPeer, receivingPeer lnpeer.Peer,
 	}
 
 	// Send payment and expose err channel.
-	go func() {
-		_, err := sender.htlcSwitch.SendHTLC(
-			firstHop, htlc, pid, newMockDeobfuscator(),
-		)
-		paymentErr <- err
-	}()
+	preImg, paymentErr := sender.htlcSwitch.SendHTLC(
+		firstHop, htlc, pid, newMockDeobfuscator(),
+	)
 
 	return &paymentResponse{
-		rhash: rhash,
-		err:   paymentErr,
+		rhash:  rhash,
+		preImg: preImg,
+		err:    paymentErr,
 	}
 }
 

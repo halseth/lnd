@@ -20,6 +20,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/multimutex"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -208,6 +209,7 @@ type Switch struct {
 	// integer ID when it is created.
 	pendingPayments map[uint64]*pendingPayment
 	pendingMutex    sync.RWMutex
+	paymentIDMtx    *multimutex.Mutex
 
 	// control provides verification of sending htlc mesages
 	control ControlTower
@@ -298,6 +300,7 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		interfaceIndex:    make(map[[33]byte]map[lnwire.ChannelID]ChannelLink),
 		pendingLinkIndex:  make(map[lnwire.ChannelID]ChannelLink),
 		pendingPayments:   make(map[uint64]*pendingPayment),
+		paymentIDMtx:      multimutex.NewMutex(),
 		htlcPlex:          make(chan *plexPacket),
 		chanCloseRequests: make(chan *ChanClose),
 		resolutionMsgs:    make(chan *resolutionMsg),
@@ -353,13 +356,40 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	preimageChan := make(chan [sha256.Size]byte, 1)
 	errChan := make(chan error, 1)
 
-	// Before sending, double check that we don't already have 1) an
+	// To ensure atomicity between clearing a payment for take-off, adding
+	// it to the pending payments map, and committing it to the switch, we
+	// aquire a multimutex for this paymentID. This let us keep sending
+	// payments with unique paymentIDs concurrently. We need to ensure
+	// atomicity to avoid a few race cases arising from the fact that the
+	// three operations are not done in the same transaction. Without the
+	// mutex we would risk an existing payment getting settled between
+	// clearing it for takeoff and committing it to the switch.
+	s.paymentIDMtx.Lock(paymentID)
+	defer s.paymentIDMtx.Unlock(paymentID)
+
+	// Before sending,
+	// double check that we don't already have 1) an
 	// in-flight payment to this payment hash, or 2) a complete payment for
 	// the same hash.
 	if err := s.control.ClearForTakeoff(paymentID, htlc); err != nil {
 		errChan <- err
 		return preimageChan, errChan
 	}
+
+	// TODO: create unit tests for the foloowing scenarios:
+	// Problem is if there's a payment in flight, and we replay it on
+	// restart. It will be cleared for takeoff, and at the same time it
+	// gets settled. Since we haven't yet added it to the pending payment
+	// map, no response is sent. We then add it to the pending payment map,
+	// but the event has already happened.
+	// We fix this by using a mulimutex, this ensures that the payment
+	// won't be attempted settled between we clear it for takeoff and
+	// adding it to the pending paymentmap, and at the same time allows
+	// distinct payment IDs to be cleared concurrently.
+	//
+	// Another race: we clear for takeoff, add to pending payment map, a
+	// settle comes in and is removed from the circuit map, we add it to
+	// the circuit map again.
 
 	// Create payment and add to the map of payment in order later to be
 	// able to retrieve it and return response to the user.
@@ -836,6 +866,13 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		}
 	}
 
+	// Before tearing down the circuit and respond to ant pending payment,
+	// we must acquire a lock for this paymentID. This ensures that the
+	// same payment is not being attempted resent concurrently.
+	paymentID := pkt.incomingHTLCID
+	s.paymentIDMtx.Lock(paymentID)
+	defer s.paymentIDMtx.Unlock(paymentID)
+
 	// Next, we'll remove the circuit since we are about to complete an
 	// fulfill/fail of this HTLC. Since we've already removed the
 	// settle/fail fwdpkg reference, the response from the peer cannot be
@@ -852,7 +889,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	// Locate the pending payment to notify the application that this
 	// payment has failed. If one is not found, it likely means the daemon
 	// has been restarted since sending the payment.
-	payment := s.findPayment(pkt.incomingHTLCID)
+	payment := s.findPayment(paymentID)
 
 	var (
 		preimage   [32]byte
@@ -906,7 +943,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		} else {
 			payment.preimage <- preimage
 		}
-		s.removePendingPayment(pkt.incomingHTLCID)
+		s.removePendingPayment(paymentID)
 	}
 }
 

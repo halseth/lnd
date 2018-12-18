@@ -811,3 +811,43 @@ func (a *Agent) executeDirective(directive AttachmentDirective) {
 	// we'll trigger the autopilot agent to query for more peers.
 	a.OnChannelPendingOpen()
 }
+
+type HeuristicScores map[string]map[NodeID]float64
+
+func (a *Agent) queryHeuristics(nodes map[NodeID]struct{}) (HeuristicScores, error) {
+
+	// With all the updates applied, we'll obtain a set of the
+	// current active channels (confirmed channels), and also
+	// factor in our set of unconfirmed channels.
+	a.chanStateMtx.Lock()
+	a.pendingMtx.Lock()
+	totalChans := mergeChanState(a.pendingOpens, a.chanState)
+	a.pendingMtx.Unlock()
+	a.chanStateMtx.Unlock()
+
+	chanSize := a.cfg.Constraints.MaxChannelSize()
+
+	// Use the heuristic to calculate a score for each node in the
+	// graph.
+	report := make(HeuristicScores)
+	for _, h := range a.cfg.Heuristics {
+		s, err := h.NodeScores(
+			a.cfg.Graph, totalChans, chanSize, nodes,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get scores: %v", err)
+		}
+
+		scores := make(map[NodeID]float64)
+		for nID, score := range s {
+			scores[nID] = score.Score
+		}
+
+		name := h.Name()
+		report[name] = scores
+	}
+
+	// TODO: report combined score
+
+	return report, nil
+}

@@ -18,6 +18,8 @@ service Autopilot {
     rpc ModifyStatus(ModifyStatusRequest) returns (ModifyStatusResponse);
 
     rpc SetScores(SetScoresRequest) returns (SetScoresResponse);
+
+    rpc Scores(ScoresRequest) returns (ScoresResponse);
 }
 
 message StatusRequest{
@@ -40,3 +42,17 @@ message SetScoresRequest{
 }
 
 message SetScoresResponse {}
+
+message ScoresRequest{
+    repeated string pubkeys = 1 [json_name = "pubkeys"];
+}
+
+message ScoreReport {
+    string heuristic = 1 [json_name = "heuristic"];
+    //TODO: avoid float?
+    map<string, double> scores= 2 [json_name = "scores"];
+}
+
+message ScoresResponse {
+    repeated ScoreReport reports = 1 [json_name = "reports"];
+}

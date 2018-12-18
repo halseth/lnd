@@ -4,9 +4,11 @@ package autopilotrpc
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"sync/atomic"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/grpc"
@@ -29,6 +31,13 @@ var (
 			Action: "read",
 		}},
 		"/autopilotrpc.Autopilot/ModifyStatus": {{
+			Entity: "onchain",
+			Action: "write",
+		}, {
+			Entity: "offchain",
+			Action: "write",
+		}},
+		"/autopilotrpc.Autopilot/SetScores": {{
 			Entity: "onchain",
 			Action: "write",
 		}, {
@@ -153,4 +162,32 @@ func (s *Server) ModifyStatus(ctx context.Context,
 		err = s.manager.StopAgent()
 	}
 	return &ModifyStatusResponse{}, err
+}
+
+// SetScores sets the scores of the ExternalScoreHeuristic, if active.
+//
+// NOTE: Part of the AutopilotServer interface.
+func (s *Server) SetScores(ctx context.Context,
+	in *SetScoresRequest) (*SetScoresResponse, error) {
+
+	scores := make(map[autopilot.NodeID]float64)
+	for pubStr, score := range in.Scores {
+		pubHex, err := hex.DecodeString(pubStr)
+		if err != nil {
+			return nil, err
+		}
+		pubKey, err := btcec.ParsePubKey(pubHex, btcec.S256())
+		if err != nil {
+			return nil, err
+		}
+		nID := autopilot.NewNodeID(pubKey)
+
+		scores[nID] = float64(score)
+	}
+
+	if err := s.manager.SetNodeScores(scores); err != nil {
+		return nil, err
+	}
+
+	return &SetScoresResponse{}, nil
 }

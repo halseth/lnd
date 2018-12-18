@@ -95,17 +95,24 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) *autopilot.ManagerCfg {
 		cfg.Allocation,
 	)
 
-	// First, we'll create the preferential attachment heuristic.
+	// First, we will set up a scoring based attachement heuristic.
+	scoreAttachment := autopilot.NewExternalScoreAttachment()
+
+	// Second, we'll create the preferential attachment heuristic.
 	prefAttachment := autopilot.NewPrefAttachment()
+
+	// TODO: make weights configurable.
+	heuristics := []*autopilot.WeightedHeuristic{
+		{0.7, scoreAttachment},
+		{0.3, prefAttachment},
+	}
 
 	// With the heuristic itself created, we can now populate the remainder
 	// of the items that the autopilot agent needs to perform its duties.
 	self := svr.identityPriv.PubKey()
 	pilotCfg := autopilot.Config{
-		Self: self,
-		Heuristics: []*autopilot.WeightedHeuristic{
-			{1.0, prefAttachment},
-		},
+		Self:       self,
+		Heuristics: heuristics,
 		ChanController: &chanController{
 			server:   svr,
 			private:  cfg.Private,

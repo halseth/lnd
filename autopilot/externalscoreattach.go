@@ -23,6 +23,13 @@ func NewExternalScoreAttachment() *ExternalScoreAttachment {
 // AttachmentHeuristic interface.
 var _ AttachmentHeuristic = (*ExternalScoreAttachment)(nil)
 
+// Name returns the name of this heuristic.
+//
+// NOTE: This is a part of the AttachmentHeuristic interface.
+func (s *ExternalScoreAttachment) Name() string {
+	return "externalscore"
+}
+
 // SetNodeScores is used to set the internal map from NodeIDs to scores.
 func (s *ExternalScoreAttachment) SetNodeScores(
 	newScores map[NodeID]float64) error {

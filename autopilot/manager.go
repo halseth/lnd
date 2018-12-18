@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -264,4 +265,18 @@ func (m *Manager) StopAgent() error {
 	log.Debugf("Manager stopped autopilot agent")
 
 	return nil
+}
+
+func (m *Manager) SetNodeScores(newScores map[NodeID]float64) error {
+
+	// Check if the external score attachement is active.
+	for _, h := range m.cfg.PilotCfg.Heuristics {
+		ext, ok := h.AttachmentHeuristic.(*ExternalScoreAttachment)
+		if !ok {
+			continue
+		}
+		return ext.SetNodeScores(newScores)
+	}
+
+	return fmt.Errorf("external scoring not available")
 }

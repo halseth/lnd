@@ -280,3 +280,21 @@ func (m *Manager) SetNodeScores(newScores map[NodeID]float64) error {
 
 	return fmt.Errorf("external scoring not available")
 }
+
+func (m *Manager) QueryHeuristics(nodes []NodeID) (HeuristicScores, error) {
+
+	m.Lock()
+	defer m.Unlock()
+
+	// Not active, so we can return early.
+	if m.pilot == nil {
+		return nil, fmt.Errorf("autopilot not active")
+	}
+
+	n := make(map[NodeID]struct{})
+	for _, node := range nodes {
+		n[node] = struct{}{}
+	}
+
+	return m.pilot.queryHeuristics(n)
+}

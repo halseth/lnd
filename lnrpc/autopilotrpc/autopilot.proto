@@ -16,6 +16,8 @@ service Autopilot {
     enabling or disabling it.
     */
     rpc ModifyStatus(ModifyStatusRequest) returns (ModifyStatusResponse);
+
+    rpc SetScores(SetScoresRequest) returns (SetScoresResponse);
 }
 
 message StatusRequest{
@@ -32,3 +34,9 @@ message ModifyStatusRequest{
 }
 
 message ModifyStatusResponse {}
+
+message SetScoresRequest{
+    map<string, int64> scores= 1 [json_name = "scores"];
+}
+
+message SetScoresResponse {}

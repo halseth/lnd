@@ -483,7 +483,15 @@ func (a *Agent) controller() {
 		availableFunds, numChans := a.cfg.Constraints.AvailableChans(
 			totalChans, a.totalBalance,
 		)
-		if numChans == 0 {
+		switch {
+		case numChans == 0:
+			continue
+
+		// If the amount is too small, we don't want to attempt opening
+		// another channel.
+		case availableFunds == 0:
+			fallthrough
+		case availableFunds < a.cfg.Constraints.MinChanSize():
 			continue
 		}
 

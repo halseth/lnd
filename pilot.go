@@ -102,8 +102,10 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) *autopilot.ManagerCfg {
 	// of the items that the autopilot agent needs to perform its duties.
 	self := svr.identityPriv.PubKey()
 	pilotCfg := autopilot.Config{
-		Self:      self,
-		Heuristic: prefAttachment,
+		Self: self,
+		Heuristics: []*autopilot.WeightedHeuristic{
+			{1.0, prefAttachment},
+		},
 		ChanController: &chanController{
 			server:   svr,
 			private:  cfg.Private,

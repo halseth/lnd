@@ -176,8 +176,10 @@ func TestAgentChannelOpenSignal(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return 0, nil
@@ -313,8 +315,10 @@ func TestAgentChannelFailureSignal(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return 0, nil
@@ -423,8 +427,10 @@ func TestAgentChannelCloseSignal(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return 0, nil
@@ -547,8 +553,10 @@ func TestAgentBalanceUpdate(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			walletBalanceMtx.Lock()
@@ -666,8 +674,10 @@ func TestAgentImmediateAttach(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return walletBalance, nil
@@ -806,8 +816,10 @@ func TestAgentPrivateChannels(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	cfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return walletBalance, nil
@@ -931,8 +943,10 @@ func TestAgentPendingChannelState(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			walletBalanceMtx.Lock()
@@ -1117,8 +1131,10 @@ func TestAgentPendingOpenChannel(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	cfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return walletBalance, nil
@@ -1212,8 +1228,10 @@ func TestAgentOnNodeUpdates(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	cfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return walletBalance, nil
@@ -1328,8 +1346,10 @@ func TestAgentSkipPendingConns(t *testing.T) {
 	// With the dependencies we created, we can now create the initial
 	// agent itself.
 	testCfg := Config{
-		Self:           self,
-		Heuristic:      heuristic,
+		Self: self,
+		Heuristics: []*WeightedHeuristic{
+			{1.0, heuristic},
+		},
 		ChanController: chanController,
 		WalletBalance: func() (btcutil.Amount, error) {
 			return walletBalance, nil

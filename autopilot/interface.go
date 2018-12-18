@@ -138,6 +138,17 @@ type AttachmentHeuristic interface {
 		map[NodeID]*NodeScore, error)
 }
 
+// WeightedHeuristic is a tuple that associates a weight to an
+// AttachmentHeuristic. This is used to determining a node's final score when
+// querying several heuristics for scores.
+type WeightedHeuristic struct {
+	// Weight is this AttachmentHeuristic's relative weight factor. It
+	// should be between 0.0 and 1.0.
+	Weight float64
+
+	AttachmentHeuristic
+}
+
 // ChannelController is a simple interface that allows an auto-pilot agent to
 // open a channel within the graph to a target peer, close targeted channels,
 // or add/remove funds from existing channels via a splice in/out mechanisms.

@@ -24,14 +24,15 @@ type Config struct {
 	// accidentally attempt to open a channel with ourselves.
 	Self *btcec.PublicKey
 
-	// Heuristic is an attachment heuristic which will govern to whom we
-	// open channels to, and also what those channels look like in terms of
-	// desired capacity. The Heuristic will take into account the current
-	// state of the graph, our set of open channels, and the amount of
-	// available funds when determining how channels are to be opened.
-	// Additionally, a heuristic make also factor in extra-graph
-	// information in order to make more pertinent recommendations.
-	Heuristic AttachmentHeuristic
+	// Heuristics is a slice of attachment heuristics which will govern to
+	// whom we open channels to. The Heuristics will take into account the
+	// current state of the graph, our set of open channels, and desired
+	// channel size when determining how channels are to be opened.
+	// Additionally, a heuristic might also factor in extra-graph
+	// information in order to make more pertinent recommendations. The
+	// weight given to each heuristic is a given each heuristic's weight,
+	// which must sum to 1.0 for the slice.
+	Heuristics []*WeightedHeuristic
 
 	// ChanController is an interface that is able to directly manage the
 	// creation, closing and update of channels within the network.
@@ -184,6 +185,18 @@ func New(cfg Config, initialState []Channel) (*Agent, error) {
 		failedNodes:        make(map[NodeID]struct{}),
 		pendingConns:       make(map[NodeID]struct{}),
 		pendingOpens:       make(map[NodeID]Channel),
+	}
+
+	// The sum of weights given to the sub-heuristics must sum to exactly
+	// 1.0.
+	var sum float64
+	for _, w := range cfg.Heuristics {
+		sum += w.Weight
+	}
+
+	if sum != 1.0 {
+		return nil, fmt.Errorf("heuristic weights MUST sum to 1.0 "+
+			"(was %v)", sum)
 	}
 
 	for _, c := range initialState {
@@ -561,17 +574,41 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 		chanSize = availableFunds
 	}
 
-	// Use the heuristic to calculate a score for each node in the
-	// graph.
-	scores, err := a.cfg.Heuristic.NodeScores(
-		a.cfg.Graph, totalChans, chanSize, nodes,
-	)
-	if err != nil {
-		return fmt.Errorf("unable to calculate node scores : %v", err)
+	// We now query each heuristic to determine the score they give to the
+	// nodes for the given channel size.
+	var subScores []map[NodeID]*NodeScore
+	for _, h := range a.cfg.Heuristics {
+		s, err := h.NodeScores(
+			a.cfg.Graph, totalChans, chanSize, nodes,
+		)
+		if err != nil {
+			return fmt.Errorf("unable to get scores: %v", err)
+		}
+
+		subScores = append(subScores, s)
 	}
 
+	// We combine the scores given by the sub-heuristics by using the
+	// heruistics' given weight factor.
 	dirs := make(map[NodeID]*AttachmentDirective)
-	for nID, score := range scores {
+	for nID := range nodes {
+		score := NodeScore{
+			NodeID: nID,
+		}
+
+		// Each sub-heuristic should have scored the node, if not it is
+		// implicitly given a zero score by that heuristic.
+		for i, h := range a.cfg.Heuristics {
+			sub, ok := subScores[i][nID]
+			if !ok {
+				continue
+			}
+			// Use the heuristic's weight factor to determine of
+			// how much weight we should give to this particular
+			// score.
+			score.Score += h.Weight * sub.Score
+		}
+
 		// Add addresses to the candidates.
 		addrs := addresses[nID]
 
@@ -588,16 +625,16 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 		}
 
 		dirs[nID] = &AttachmentDirective{
-			NodeScore: *score,
+			NodeScore: score,
 			ChanAmt:   chanSize,
 			Addrs:     addrs,
 		}
 	}
 
-	log.Debugf("Got scores for %d nodes", len(scores))
+	log.Debugf("Got scores for %d nodes", len(dirs))
 
-	// Now use the score to make a weighted choice which
-	// nodes to attempt to open channels to.
+	// Now use the score to make a weighted choice which nodes to attempt
+	// to open channels to.
 	// TODO(halseth): make chooseN take NodeScores instead.
 	chanCandidates, err := chooseN(int(numChans), dirs)
 	if err != nil {

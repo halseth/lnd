@@ -480,10 +480,10 @@ func (a *Agent) controller() {
 		// Now that we've updated our internal state, we'll consult our
 		// channel attachment heuristic to determine if we should open
 		// up any additional channels or modify existing channels.
-		availableFunds, numChans, needMore := a.cfg.Heuristic.NeedMoreChans(
+		availableFunds, numChans := a.cfg.Constraints.AvailableChans(
 			totalChans, a.totalBalance,
 		)
-		if !needMore {
+		if numChans == 0 {
 			continue
 		}
 

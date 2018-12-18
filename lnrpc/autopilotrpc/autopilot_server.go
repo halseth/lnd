@@ -191,3 +191,46 @@ func (s *Server) SetScores(ctx context.Context,
 
 	return &SetScoresResponse{}, nil
 }
+
+// Scores...
+//
+// NOTE: Part of the AutopilotServer interface.
+func (s *Server) Scores(ctx context.Context,
+	in *ScoresRequest) (*ScoresResponse, error) {
+
+	var nodes []autopilot.NodeID
+	for _, pubStr := range in.Pubkeys {
+		pubHex, err := hex.DecodeString(pubStr)
+		if err != nil {
+			return nil, err
+		}
+		pubKey, err := btcec.ParsePubKey(pubHex, btcec.S256())
+		if err != nil {
+			return nil, err
+		}
+		nID := autopilot.NewNodeID(pubKey)
+		nodes = append(nodes, nID)
+	}
+
+	heuristicScores, err := s.manager.QueryHeuristics(nodes)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &ScoresResponse{}
+	for heuristic, scores := range heuristicScores {
+
+		report := &ScoreReport{
+			Heuristic: heuristic,
+		}
+
+		for pub, score := range scores {
+			pubkeyHex := hex.EncodeToString(pub[:])
+			report.Scores[pubkeyHex] = score
+		}
+
+		resp.Reports = append(resp.Reports, report)
+	}
+
+	return resp, nil
+}

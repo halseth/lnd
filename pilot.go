@@ -14,6 +14,65 @@ import (
 	"github.com/lightningnetwork/lnd/tor"
 )
 
+// validateAtplConfig is a helper method that makes sure the passed
+// configuration is sane. Currently it checks that the heuristic configuration
+// makes sense. In case the config is valid, it will return a list of
+// WeightedHeuristics that can be combined for use with the autopilot agent.
+func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
+	error) {
+
+	// Create a help text that we can return in case the config is not
+	// correct.
+	heuristicsStr := ""
+	for _, a := range autopilot.AvailableHeuristics {
+		heuristicsStr += fmt.Sprintf(" '%v' ", a.Name())
+	}
+	availStr := fmt.Sprintf("Avaiblable heuristcs are: [%v]", heuristicsStr)
+
+	// We'll go through the config and make sure all the heuristics exists,
+	// and that the sum of their weights is 1.0.
+	var sum float64
+	var heuristics []*autopilot.WeightedHeuristic
+outer:
+	for name, weight := range cfg.Heuristic {
+		for _, a := range autopilot.AvailableHeuristics {
+			if a.Name() != name {
+				continue
+			}
+
+			// If this heuristic was among the registered ones, we
+			// add it to the list we'll give to the agent, and keep
+			// track of the sum of weights.
+			heuristics = append(
+				heuristics,
+				&autopilot.WeightedHeuristic{
+					Weight:              weight,
+					AttachmentHeuristic: a,
+				},
+			)
+			sum += weight
+
+			// We continue the outer loop as we are done with this
+			// config option.
+			continue outer
+		}
+
+		// No heuristic matching this config option was found.
+		return nil, fmt.Errorf("Heuristic %v not available. %v",
+			name, availStr)
+	}
+
+	// Check found heuristics. We must have at least one to operate.
+	if len(heuristics) == 0 {
+		return nil, fmt.Errorf("No active heuristics. %v", availStr)
+	}
+
+	if sum != 1.0 {
+		return nil, fmt.Errorf("Heuristic weights must sum to 1.0")
+	}
+	return heuristics, nil
+}
+
 // chanController is an implementation of the autopilot.ChannelController
 // interface that's backed by a running lnd instance.
 type chanController struct {

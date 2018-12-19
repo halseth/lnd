@@ -12,7 +12,7 @@ var ErrNoPositive = errors.New("no positive weights left")
 
 // weightedChoice draws a random index from the map of channel candidates, with
 // a probability propotional to their score.
-func weightedChoice(s map[NodeID]*AttachmentDirective) (NodeID, error) {
+func weightedChoice(s map[NodeID]*NodeScore) (NodeID, error) {
 	// Calculate the sum of scores found in the map.
 	var sum float64
 	for _, v := range s {
@@ -50,20 +50,20 @@ func weightedChoice(s map[NodeID]*AttachmentDirective) (NodeID, error) {
 	return NodeID{}, fmt.Errorf("unable to make choice")
 }
 
-// chooseN picks at random min[n, len(s)] nodes if from the
-// AttachmentDirectives map, with a probability weighted by their score.
-func chooseN(n int, s map[NodeID]*AttachmentDirective) (
-	map[NodeID]*AttachmentDirective, error) {
+// chooseN picks at random min[n, len(s)] nodes if from the NodeScore map, with
+// a probability weighted by their score.
+func chooseN(n int, s map[NodeID]*NodeScore) (
+	map[NodeID]*NodeScore, error) {
 
 	// Keep a map of nodes not yet choosen.
-	rem := make(map[NodeID]*AttachmentDirective)
+	rem := make(map[NodeID]*NodeScore)
 	for k, v := range s {
 		rem[k] = v
 	}
 
 	// Pick a weighted choice from the remaining nodes as long as there are
 	// nodes left, and we haven't already picked n.
-	chosen := make(map[NodeID]*AttachmentDirective)
+	chosen := make(map[NodeID]*NodeScore)
 	for len(chosen) < n && len(rem) > 0 {
 		choice, err := weightedChoice(rem)
 		if err == ErrNoPositive {

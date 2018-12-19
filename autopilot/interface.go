@@ -115,6 +115,7 @@ type AttachmentDirective struct {
 // AvailableHeuristics holds all heuristics possible to combine for use with
 // the autopilot agent.
 var AvailableHeuristics = []AttachmentHeuristic{
+	NewExternalScoreAttachment(),
 	NewPrefAttachment(),
 }
 

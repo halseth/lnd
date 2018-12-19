@@ -112,6 +112,12 @@ type AttachmentDirective struct {
 	Addrs []net.Addr
 }
 
+// AvailableHeuristics holds all heuristics possible to combine for use with
+// the autopilot agent.
+var AvailableHeuristics = []AttachmentHeuristic{
+	NewPrefAttachment(),
+}
+
 // AttachmentHeuristic is one of the primary interfaces within this package.
 // Implementations of this interface will be used to implement a control system
 // which automatically regulates channels of a particular agent, attempting to

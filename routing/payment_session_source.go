@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"bytes"
+
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -128,6 +130,11 @@ func RouteHintsToEdges(routeHints [][]zpay32.HopHint, target route.Vertex) (
 			// Finally, create the channel edge from the hop hint
 			// and add it to list of edges corresponding to the node
 			// at the start of the channel.
+			v := route.NewVertex(hopHint.NodeID)
+			var flags lnwire.ChanUpdateChanFlags
+			if bytes.Compare(v[:], endNode.PubKeyBytes[:]) == 1 {
+				flags |= lnwire.ChanUpdateDirection
+			}
 			edge := &channeldb.ChannelEdgePolicy{
 				Node:      endNode,
 				ChannelID: hopHint.ChannelID,
@@ -138,9 +145,9 @@ func RouteHintsToEdges(routeHints [][]zpay32.HopHint, target route.Vertex) (
 					hopHint.FeeProportionalMillionths,
 				),
 				TimeLockDelta: hopHint.CLTVExpiryDelta,
+				ChannelFlags:  flags,
 			}
 
-			v := route.NewVertex(hopHint.NodeID)
 			edges[v] = append(edges[v], edge)
 		}
 	}

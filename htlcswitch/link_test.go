@@ -996,6 +996,8 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	totalFees := amount - htlcAmt
+
 	// Generate payment: invoice and htlc.
 	invoice, htlc, err := generatePayment(amount, htlcAmt, totalTimelock,
 		blob)
@@ -1015,6 +1017,7 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 	// Send payment and expose err channel.
 	_, err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), htlc,
+		totalFees,
 		newMockDeobfuscator(),
 	)
 	if err.Error() != lnwire.CodeUnknownPaymentHash.String() {

@@ -1,11 +1,10 @@
-package htlcswitch
+package channeldb
 
 import (
 	"sync"
 
 	"github.com/coreos/bbolt"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/channeldb"
 )
 
 // defaultSequenceBatchSize specifies the window of sequence numbers that are
@@ -21,8 +20,9 @@ type Sequencer interface {
 }
 
 var (
-	// nextPaymentIDKey identifies the bucket that will keep track of the
-	// persistent sequence numbers for payments.
+	// nextPaymentIDKey is the old bucket to keep track of the persistent
+	// sequence numbers for payments. We keep the key to be backwards
+	// compatible.
 	nextPaymentIDKey = []byte("next-payment-id-key")
 
 	// ErrSequencerCorrupted signals that the persistence engine was not
@@ -34,7 +34,7 @@ var (
 // persistentSequencer is a concrete implementation of IDGenerator, that uses
 // channeldb to allocate sequence numbers.
 type persistentSequencer struct {
-	db *channeldb.DB
+	db *DB
 
 	mu sync.Mutex
 
@@ -43,7 +43,7 @@ type persistentSequencer struct {
 }
 
 // NewPersistentSequencer initializes a new sequencer using a channeldb backend.
-func NewPersistentSequencer(db *channeldb.DB) (Sequencer, error) {
+func NewPersistentSequencer(db *DB) (Sequencer, error) {
 	g := &persistentSequencer{
 		db: db,
 	}
@@ -88,7 +88,7 @@ func (s *persistentSequencer) NextID() (uint64, error) {
 	// as we only require uniqueness of the allocated numbers.
 	var nextHorizonID uint64
 	if err := s.db.Update(func(tx *bbolt.Tx) error {
-		nextIDBkt := tx.Bucket(nextPaymentIDKey)
+		nextIDBkt := tx.Bucket(paymentBucket)
 		if nextIDBkt == nil {
 			return ErrSequencerCorrupted
 		}
@@ -122,7 +122,25 @@ func (s *persistentSequencer) NextID() (uint64, error) {
 // initDB populates the bucket used to generate payment sequence numbers.
 func (s *persistentSequencer) initDB() error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(nextPaymentIDKey)
-		return err
+		seqs, err := tx.CreateBucketIfNotExists(nextPaymentIDKey)
+		if err != nil {
+			return err
+		}
+
+		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
+		if err != nil {
+			return err
+		}
+
+		// For backwards compatibility, make sure the sequence we are
+		// going to be using from the payments bucket is not colliding
+		// with the sequence source we previously used.
+		nextID := payments.Sequence()
+		prev := seqs.Sequence()
+		if nextID < prev {
+			payments.SetSequence(prev)
+		}
+
+		return nil
 	})
 }

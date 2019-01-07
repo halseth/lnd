@@ -208,7 +208,7 @@ type Switch struct {
 	pendingPayments map[uint64]*pendingPayment
 	pendingMutex    sync.RWMutex
 
-	paymentSequencer Sequencer
+	paymentSequencer channeldb.Sequencer
 
 	// control provides verification of sending htlc mesages
 	control ControlTower
@@ -288,7 +288,7 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		return nil, err
 	}
 
-	sequencer, err := NewPersistentSequencer(cfg.DB)
+	sequencer, err := channeldb.NewPersistentSequencer(cfg.DB)
 	if err != nil {
 		return nil, err
 	}

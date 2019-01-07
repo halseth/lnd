@@ -2343,7 +2343,8 @@ func (r *rpcServer) savePayment(route *routing.Route,
 	}
 	copy(payment.PaymentPreimage[:], preImage)
 
-	return r.server.chanDB.AddPayment(payment)
+	// NOTE: Zero ID only to make commit compile. Will be removed.
+	return r.server.chanDB.AddPayment(0, payment)
 }
 
 // validatePayReqExpiry checks if the passed payment request has expired. In

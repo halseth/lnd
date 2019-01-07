@@ -19,13 +19,13 @@ import (
 func TestPaymentStatusesMigration(t *testing.T) {
 	t.Parallel()
 
-	fakePayment := makeFakePayment()
+	pid, fakePayment := makeFakePayment()
 	paymentHash := sha256.Sum256(fakePayment.PaymentPreimage[:])
 
 	// Add fake payment to test database, verifying that it was created,
 	// that we have only one payment, and its status is not "Completed".
 	beforeMigrationFunc := func(d *DB) {
-		if err := d.AddPayment(fakePayment); err != nil {
+		if err := d.AddPayment(pid, fakePayment); err != nil {
 			t.Fatalf("unable to add payment: %v", err)
 		}
 

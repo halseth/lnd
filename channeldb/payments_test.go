@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,7 +13,11 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
-func makeFakePayment() *OutgoingPayment {
+var (
+	currentPID uint64 // to be used atomically.
+)
+
+func makeFakePayment() (uint64, *OutgoingPayment) {
 	fakeInvoice := &Invoice{
 		// Use single second precision to avoid false positive test
 		// failures due to the monotonic time component.
@@ -37,7 +42,7 @@ func makeFakePayment() *OutgoingPayment {
 		TimeLockLength: 1000,
 	}
 	copy(fakePayment.PaymentPreimage[:], rev[:])
-	return fakePayment
+	return atomic.AddUint64(&currentPID, 1), fakePayment
 }
 
 func makeFakePaymentHash() [32]byte {
@@ -60,7 +65,7 @@ func randomBytes(minLen, maxLen int) ([]byte, error) {
 	return randBuf, nil
 }
 
-func makeRandomFakePayment() (*OutgoingPayment, error) {
+func makeRandomFakePayment() (uint64, *OutgoingPayment, error) {
 	var err error
 	fakeInvoice := &Invoice{
 		// Use single second precision to avoid false positive test
@@ -70,19 +75,19 @@ func makeRandomFakePayment() (*OutgoingPayment, error) {
 
 	fakeInvoice.Memo, err = randomBytes(1, 50)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	fakeInvoice.Receipt, err = randomBytes(1, 50)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	fakeInvoice.PaymentRequest = []byte("")
 
 	preImg, err := randomBytes(32, 33)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	copy(fakeInvoice.Terms.PaymentPreimage[:], preImg)
 
@@ -93,7 +98,7 @@ func makeRandomFakePayment() (*OutgoingPayment, error) {
 	for i := 0; i < fakePathLen; i++ {
 		b, err := randomBytes(33, 34)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		copy(fakePath[i][:], b)
 	}
@@ -106,13 +111,13 @@ func makeRandomFakePayment() (*OutgoingPayment, error) {
 	}
 	copy(fakePayment.PaymentPreimage[:], fakeInvoice.Terms.PaymentPreimage[:])
 
-	return fakePayment, nil
+	return atomic.AddUint64(&currentPID, 1), fakePayment, nil
 }
 
 func TestOutgoingPaymentSerialization(t *testing.T) {
 	t.Parallel()
 
-	fakePayment := makeFakePayment()
+	_, fakePayment := makeFakePayment()
 
 	var b bytes.Buffer
 	if err := serializeOutgoingPayment(&b, fakePayment); err != nil {
@@ -142,8 +147,8 @@ func TestOutgoingPaymentWorkflow(t *testing.T) {
 		t.Fatalf("unable to make test db: %v", err)
 	}
 
-	fakePayment := makeFakePayment()
-	if err = db.AddPayment(fakePayment); err != nil {
+	pid, fakePayment := makeFakePayment()
+	if err = db.AddPayment(pid, fakePayment); err != nil {
 		t.Fatalf("unable to put payment in DB: %v", err)
 	}
 
@@ -163,12 +168,12 @@ func TestOutgoingPaymentWorkflow(t *testing.T) {
 
 	// Make some random payments
 	for i := 0; i < 5; i++ {
-		randomPayment, err := makeRandomFakePayment()
+		pid, randomPayment, err := makeRandomFakePayment()
 		if err != nil {
 			t.Fatalf("Internal error in tests: %v", err)
 		}
 
-		if err = db.AddPayment(randomPayment); err != nil {
+		if err = db.AddPayment(pid, randomPayment); err != nil {
 			t.Fatalf("unable to put payment in DB: %v", err)
 		}
 

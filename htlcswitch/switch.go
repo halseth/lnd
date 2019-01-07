@@ -19,6 +19,7 @@ import (
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/multimutex"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -207,6 +208,7 @@ type Switch struct {
 	// integer ID when it is created.
 	pendingPayments map[uint64]*pendingPayment
 	pendingMutex    sync.RWMutex
+	paymentIDMtx    *multimutex.Mutex
 
 	paymentSequencer Sequencer
 
@@ -305,6 +307,7 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		interfaceIndex:    make(map[[33]byte]map[lnwire.ChannelID]ChannelLink),
 		pendingLinkIndex:  make(map[lnwire.ChannelID]ChannelLink),
 		pendingPayments:   make(map[uint64]*pendingPayment),
+		paymentIDMtx:      multimutex.NewMutex(),
 		htlcPlex:          make(chan *plexPacket),
 		chanCloseRequests: make(chan *ChanClose),
 		resolutionMsgs:    make(chan *resolutionMsg),
@@ -365,6 +368,17 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	if err != nil {
 		return zeroPreimage, err
 	}
+
+	// To ensure atomicity between adding a payment to the DB and
+	// committing it to the switch, we aquire a multimutex for this
+	// paymentID. This let us keep sending payments with unique paymentIDs
+	// concurrently. We need to ensure atomicity to avoid a few race cases
+	// arising from the fact that operations are not done in the same db
+	// transaction. Without the mutex we would risk an existing payment
+	// being completed or deleted from the DB between re-adding it and
+	// committing it to the switch.
+	s.paymentIDMtx.Lock(paymentID)
+	defer s.paymentIDMtx.Unlock(paymentID)
 
 	err = s.cfg.DB.InitiatePayment(paymentID)
 	if existsErr, ok := err.(*channeldb.PaymentExistsError); ok {
@@ -854,6 +868,13 @@ func (s *Switch) handleLocalDispatch(pkt *htlcPacket) error {
 func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	defer s.wg.Done()
 
+	// Before tearing down the circuit and responding to any pending
+	// payment, we must acquire a lock for this paymentID. This ensures
+	// that the same payment is not being attempted resent concurrently.
+	paymentID := pkt.incomingHTLCID
+	s.paymentIDMtx.Lock(paymentID)
+	defer s.paymentIDMtx.Unlock(paymentID)
+
 	// First, we'll clean up any fwdpkg references, circuit entries, and
 	// mark in our db that the payment for this payment hash has either
 	// succeeded or failed.
@@ -868,8 +889,6 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 			return
 		}
 	}
-
-	paymentID := pkt.incomingHTLCID
 
 	// Next, we'll remove the circuit since we are about to complete an
 	// fulfill/fail of this HTLC. Since we've already removed the
@@ -887,7 +906,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	// Locate the pending payment to notify the application that this
 	// payment has failed. If one is not found, it likely means the daemon
 	// has been restarted since sending the payment.
-	payment := s.findPayment(pkt.incomingHTLCID)
+	payment := s.findPayment(paymentID)
 
 	var (
 		preimage   [32]byte
@@ -946,7 +965,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	if payment != nil {
 		payment.err <- paymentErr
 		payment.preimage <- preimage
-		s.removePendingPayment(pkt.incomingHTLCID)
+		s.removePendingPayment(paymentID)
 	}
 }
 

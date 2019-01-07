@@ -102,7 +102,7 @@ type OutgoingPayment struct {
 
 // AddPayment saves a successful payment to the database. It is assumed that
 // all payment are sent using unique payment hashes.
-func (db *DB) AddPayment(payment *OutgoingPayment) error {
+func (db *DB) AddPayment(paymentID uint64, payment *OutgoingPayment) error {
 	// Validate the field of the inner voice within the outgoing payment,
 	// these must also adhere to the same constraints as regular invoices.
 	if err := validateInvoice(&payment.Invoice); err != nil {
@@ -120,12 +120,6 @@ func (db *DB) AddPayment(payment *OutgoingPayment) error {
 
 	return db.Batch(func(tx *bbolt.Tx) error {
 		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
-		if err != nil {
-			return err
-		}
-
-		// Obtain the new unique sequence number for this payment.
-		paymentID, err := payments.NextSequence()
 		if err != nil {
 			return err
 		}

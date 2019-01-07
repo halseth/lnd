@@ -1331,7 +1331,14 @@ func TestSkipIneligibleLinksLocalForward(t *testing.T) {
 	// We'll attempt to send out a new HTLC that has Alice as the first
 	// outgoing link. This should fail as Alice isn't yet able to forward
 	// any active HTLC's.
-	_, err = s.SendHTLC(aliceChannelLink.ShortChanID(), addMsg, 0, nil)
+	_, errChan := s.SendHTLC(aliceChannelLink.ShortChanID(), addMsg, 0, nil)
+
+	select {
+	case err = <-errChan:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no response sending payment")
+	}
+
 	if err == nil {
 		t.Fatalf("local forward should fail due to inactive link")
 	}
@@ -1654,46 +1661,34 @@ func TestSwitchSendPayment(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	errChan := make(chan error)
-	go func() {
-		_, err := s.SendHTLC(
-			aliceChannelLink.ShortChanID(), update, 0,
-			newMockDeobfuscator())
-		errChan <- err
-	}()
-
-	go func() {
-		// Send the payment with the same payment hash and same
-		// amount and check that it will be propagated successfully
-		_, err := s.SendHTLC(
-			aliceChannelLink.ShortChanID(), update, 0,
-			newMockDeobfuscator(),
-		)
-		errChan <- err
-	}()
+	_, errChan := s.SendHTLC(
+		aliceChannelLink.ShortChanID(), update, 0,
+		newMockDeobfuscator())
 
 	select {
 	case packet := <-aliceChannelLink.packets:
 		if err := aliceChannelLink.completeCircuit(packet); err != nil {
 			t.Fatalf("unable to complete payment circuit: %v", err)
 		}
-
 	case err := <-errChan:
-		if err != ErrPaymentInFlight {
-			t.Fatalf("unable to send payment: %v", err)
-		}
+		t.Fatalf("did not expect error: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("request was not propagated to destination")
 	}
 
-	select {
-	case packet := <-aliceChannelLink.packets:
-		if err := aliceChannelLink.completeCircuit(packet); err != nil {
-			t.Fatalf("unable to complete payment circuit: %v", err)
-		}
+	// Send the payment with the same payment hash and same
+	// amount and check that it gets handled properly.
+	_, errChan2 := s.SendHTLC(
+		aliceChannelLink.ShortChanID(), update, 0,
+		newMockDeobfuscator(),
+	)
 
-	case err := <-errChan:
-		t.Fatalf("unable to send payment: %v", err)
+	// It should faile  with ErrPaymentInFlight.
+	select {
+	case err = <-errChan2:
+		if err != ErrPaymentInFlight {
+			t.Fatalf("expected ErrPaymentInFlight, instead got: %v", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("request was not propagated to destination")
 	}

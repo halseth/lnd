@@ -521,7 +521,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 		SendToSwitch: func(firstHop lnwire.ShortChannelID, pid uint64,
 			htlcAdd *lnwire.UpdateAddHTLC,
 			totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
-			circuit *sphinx.Circuit) ([32]byte, error) {
+			circuit *sphinx.Circuit) (chan [32]byte, chan error) {
 
 			// Using the created circuit, initialize the error
 			// decrypter so we can parse+decode any failures

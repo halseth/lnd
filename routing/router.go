@@ -289,6 +289,10 @@ type ChannelRouter struct {
 	// when doing any path finding.
 	selfNode *channeldb.LightningNode
 
+	// control provides verification of sending htlc mesages
+	//TODO: move to routing
+	control htlcswitch.ControlTower
+
 	// routeCache is a map that caches the k-shortest paths from ourselves
 	// to a given target destination for a particular payment amount. This
 	// map is used as an optimization to speed up subsequent payments to a
@@ -366,6 +370,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 
 	r := &ChannelRouter{
 		cfg:               &cfg,
+		control:           htlcswitch.NewPaymentControl(false, cfg.DB),
 		networkUpdates:    make(chan *routingMsg),
 		topologyClients:   make(map[uint64]*topologyClient),
 		ntfnClientUpdates: make(chan *topologyClientUpdate),
@@ -1782,6 +1787,14 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}
 		copy(htlcAdd.OnionBlob[:], onionBlob)
 
+		// Before sending, double check that we don't already have 1)
+		// an in-flight payment to this payment hash, or 2) a complete
+		// payment for the same hash.
+		// TODO: do atomically with storing payment.
+		if err := r.control.ClearForTakeoff(htlcAdd); err != nil {
+			return preImage, nil, err
+		}
+
 		// We generate a new, unique payment ID that we will use for
 		// this HTLC.
 		paymentID, err := r.cfg.NextPaymentID()
@@ -1824,6 +1837,16 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// terminate this attempt.
 			log.Errorf("Attempt to send payment %x failed: %v",
 				payment.PaymentHash, sendError)
+
+			// Persistently mark that a payment to this payment hash failed.
+			// This will permit us to make another attempt at a successful
+			// payment.
+			err := r.control.Fail(htlcAdd.PaymentHash)
+			if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+				log.Warnf("Unable to ground payment %x: %v",
+					htlcAdd.PaymentHash, err)
+				return preImage, nil, err
+			}
 
 			fErr, ok := sendError.(*htlcswitch.ForwardingError)
 			if !ok {
@@ -2042,6 +2065,16 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			default:
 				return preImage, nil, sendError
 			}
+		}
+
+		// Persistently mark that a payment to this payment hash
+		// succeeded. This will prevent us from ever making another
+		// payment to this hash.
+		err = r.control.Success(htlcAdd.PaymentHash)
+		if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+			log.Warnf("Unable to mark completed payment %x: %v",
+				htlcAdd.PaymentHash, err)
+			return preImage, nil, err
 		}
 
 		return preImage, route, nil

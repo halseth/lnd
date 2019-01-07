@@ -24,7 +24,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/coreos/bbolt"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lightning-onion"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/brontide"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -508,10 +508,12 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 
 	s.chanRouter, err = routing.New(routing.Config{
 		Graph:     chanGraph,
+		DB:        chanDB,
 		Chain:     cc.chainIO,
 		ChainView: cc.chainView,
 		SendToSwitch: func(firstHop lnwire.ShortChannelID,
 			htlcAdd *lnwire.UpdateAddHTLC,
+			totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
 			circuit *sphinx.Circuit) ([32]byte, error) {
 
 			// Using the created circuit, initialize the error
@@ -522,7 +524,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			}
 
 			return s.htlcSwitch.SendHTLC(
-				firstHop, htlcAdd, errorDecryptor,
+				firstHop, htlcAdd, totalFees, paymentPath,
+				errorDecryptor,
 			)
 		},
 		ChannelPruneExpiry: time.Duration(time.Hour * 24 * 14),

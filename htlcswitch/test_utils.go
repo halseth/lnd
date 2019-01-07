@@ -696,7 +696,9 @@ func (n *threeHopNetwork) makePayment(sendingPeer, receivingPeer lnpeer.Peer,
 	}
 
 	// Generate payment: invoice and htlc.
-	invoice, htlc, err := generatePayment(invoiceAmt, htlcAmt, timelock, blob)
+	invoice, htlc, err := generatePayment(
+		invoiceAmt, htlcAmt, timelock, blob,
+	)
 	if err != nil {
 		paymentErr <- err
 		return &paymentResponse{
@@ -718,7 +720,7 @@ func (n *threeHopNetwork) makePayment(sendingPeer, receivingPeer lnpeer.Peer,
 	// Send payment and expose err channel.
 	go func() {
 		_, err := sender.htlcSwitch.SendHTLC(
-			firstHop, htlc, newMockDeobfuscator(),
+			firstHop, htlc, 0, nil, newMockDeobfuscator(),
 		)
 		paymentErr <- err
 	}()

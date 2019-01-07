@@ -16,7 +16,7 @@ import (
 	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lightning-onion"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -151,6 +151,8 @@ type Config struct {
 	// TODO(roasbeef): make into an interface
 	Graph *channeldb.ChannelGraph
 
+	DB *channeldb.DB
+
 	// Chain is the router's source to the most up-to-date blockchain data.
 	// All incoming advertised channels will be checked against the chain
 	// to ensure that the channels advertised are still open.
@@ -167,6 +169,7 @@ type Config struct {
 	// payment was unsuccessful.
 	SendToSwitch func(firstHop lnwire.ShortChannelID,
 		htlcAdd *lnwire.UpdateAddHTLC,
+		totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
 		circuit *sphinx.Circuit) ([sha256.Size]byte, error)
 
 	// ChannelPruneExpiry is the duration used to determine if a channel
@@ -1769,6 +1772,12 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}
 		copy(htlcAdd.OnionBlob[:], onionBlob)
 
+		paymentPath := make([][33]byte, len(route.Hops))
+		for i, hop := range route.Hops {
+			hopPub := hop.PubKeyBytes
+			copy(paymentPath[i][:], hopPub[:])
+		}
+
 		// Attempt to send this payment through the network to complete
 		// the payment. If this attempt fails, then we'll continue on
 		// to the next available route.
@@ -1776,7 +1785,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			route.Hops[0].ChannelID,
 		)
 		preImage, sendError = r.cfg.SendToSwitch(
-			firstHop, htlcAdd, circuit,
+			firstHop, htlcAdd, route.TotalFees, paymentPath, circuit,
 		)
 		if sendError != nil {
 			// An error occurred when attempting to send the

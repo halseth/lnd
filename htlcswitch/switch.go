@@ -352,12 +352,46 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 // package in order to send the htlc update.
 func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	htlc *lnwire.UpdateAddHTLC,
+	totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
 	deobfuscator ErrorDecrypter) ([sha256.Size]byte, error) {
 
 	// Before sending, double check that we don't already have 1) an
 	// in-flight payment to this payment hash, or 2) a complete payment for
 	// the same hash.
 	if err := s.control.ClearForTakeoff(htlc); err != nil {
+		return zeroPreimage, err
+	}
+
+	amt := htlc.Amount - totalFees
+	p := &channeldb.OutgoingPayment{
+		Invoice: channeldb.Invoice{
+			Terms: channeldb.ContractTerm{
+				Value: amt,
+			},
+			CreationDate: time.Now(),
+		},
+		Path:           paymentPath,
+		Fee:            totalFees,
+		TimeLockLength: htlc.Expiry,
+	}
+
+	paymentID, err := s.paymentSequencer.NextID()
+	if err != nil {
+		return zeroPreimage, err
+	}
+
+	err = s.cfg.DB.AddPayment(paymentID, p)
+	if existsErr, ok := err.(*channeldb.PaymentExistsError); ok {
+		if existsErr.Preimage != zeroPreimage {
+			// This payment already completed, so we can return the
+			// preimage immediately.
+			return existsErr.Preimage, err
+		}
+
+		// The payment is already in flight. Since we don't know for
+		// sure whether it was successfully committed to the circuit,
+		// we attempt to do it again.
+	} else if err != nil {
 		return zeroPreimage, err
 	}
 
@@ -369,11 +403,6 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 		paymentHash:  htlc.PaymentHash,
 		amount:       htlc.Amount,
 		deobfuscator: deobfuscator,
-	}
-
-	paymentID, err := s.paymentSequencer.NextID()
-	if err != nil {
-		return zeroPreimage, err
 	}
 
 	s.pendingMutex.Lock()
@@ -390,9 +419,14 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 		htlc:           htlc,
 	}
 
-	if err := s.forward(packet); err != nil {
+	// If the returned error is a duplicate add, then we can ignore it, as
+	// our HTLC was already forwarded by the switch.
+	if err := s.forward(packet); err != nil && err != ErrDuplicateAdd {
 		s.removePendingPayment(paymentID)
 		if err := s.control.Fail(htlc.PaymentHash); err != nil {
+			return zeroPreimage, err
+		}
+		if err := s.cfg.DB.DeletePayment(paymentID); err != nil {
 			return zeroPreimage, err
 		}
 
@@ -849,6 +883,8 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		}
 	}
 
+	paymentID := pkt.incomingHTLCID
+
 	// Next, we'll remove the circuit since we are about to complete an
 	// fulfill/fail of this HTLC. Since we've already removed the
 	// settle/fail fwdpkg reference, the response from the peer cannot be
@@ -886,6 +922,11 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 				pkt.circuit.PaymentHash, err)
 			return
 		}
+		err = s.cfg.DB.CompletePayment(paymentID, preimage)
+		if err != nil {
+			log.Errorf("unable to complete payment: %v", err)
+			return
+		}
 
 		preimage = htlc.PaymentPreimage
 
@@ -899,6 +940,11 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		if err != nil && err != ErrPaymentAlreadyCompleted {
 			log.Warnf("Unable to ground payment %x: %v",
 				pkt.circuit.PaymentHash, err)
+			return
+		}
+		err = s.cfg.DB.DeletePayment(paymentID)
+		if err != nil {
+			log.Errorf("unable to delete payment: %v", err)
 			return
 		}
 

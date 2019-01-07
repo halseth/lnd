@@ -171,7 +171,7 @@ type Config struct {
 	// forward a fully encoded payment to the first hop in the route
 	// denoted by its public key. A non-nil error is to be returned if the
 	// payment was unsuccessful.
-	SendToSwitch func(firstHop lnwire.ShortChannelID,
+	SendToSwitch func(firstHop lnwire.ShortChannelID, paymentID uint64,
 		htlcAdd *lnwire.UpdateAddHTLC,
 		totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
 		circuit *sphinx.Circuit) ([sha256.Size]byte, error)
@@ -193,6 +193,12 @@ type Config struct {
 	// date knowledge of the available bandwidth of the link should be
 	// returned.
 	QueryBandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi
+
+	// NextPaymentID is a method that guarantees to return a new, unique ID
+	// each time it is called. This is used by the router to generate a
+	// unique payment ID for each payment it attempts to send, such that
+	// the switch can properly handle the HTLC.
+	NextPaymentID func() (uint64, error)
 
 	// AssumeChannelValid toggles whether or not the router will check for
 	// spentness of channel outpoints. For neutrino, this saves long rescans
@@ -1776,6 +1782,13 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}
 		copy(htlcAdd.OnionBlob[:], onionBlob)
 
+		// We generate a new, unique payment ID that we will use for
+		// this HTLC.
+		paymentID, err := r.cfg.NextPaymentID()
+		if err != nil {
+			return preImage, nil, err
+		}
+
 		paymentPath := make([][33]byte, len(route.Hops))
 		for i, hop := range route.Hops {
 			hopPub := hop.PubKeyBytes
@@ -1789,7 +1802,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			route.Hops[0].ChannelID,
 		)
 		preImage, sendError = r.cfg.SendToSwitch(
-			firstHop, htlcAdd, route.TotalFees, paymentPath, circuit,
+			firstHop, paymentID, htlcAdd, route.TotalFees, paymentPath, circuit,
 		)
 		if sendError != nil {
 			// An error occurred when attempting to send the

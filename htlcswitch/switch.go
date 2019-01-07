@@ -210,8 +210,6 @@ type Switch struct {
 	pendingMutex    sync.RWMutex
 	paymentIDMtx    *multimutex.Mutex
 
-	paymentSequencer channeldb.Sequencer
-
 	// control provides verification of sending htlc mesages
 	control ControlTower
 
@@ -290,16 +288,10 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		return nil, err
 	}
 
-	sequencer, err := channeldb.NewPersistentSequencer(cfg.DB)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Switch{
 		bestHeight:        currentHeight,
 		cfg:               &cfg,
 		circuits:          circuitMap,
-		paymentSequencer:  sequencer,
 		control:           NewPaymentControl(false, cfg.DB),
 		linkIndex:         make(map[lnwire.ChannelID]ChannelLink),
 		mailOrchestrator:  newMailOrchestrator(),
@@ -353,7 +345,7 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
 // package in order to send the htlc update.
-func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
+func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	htlc *lnwire.UpdateAddHTLC,
 	totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
 	deobfuscator ErrorDecrypter) ([sha256.Size]byte, error) {
@@ -378,11 +370,6 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 		TimeLockLength: htlc.Expiry,
 	}
 
-	paymentID, err := s.paymentSequencer.NextID()
-	if err != nil {
-		return zeroPreimage, err
-	}
-
 	// To ensure atomicity between adding a payment to the DB and
 	// committing it to the switch, we aquire a multimutex for this
 	// paymentID. This let us keep sending payments with unique paymentIDs
@@ -394,7 +381,7 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	s.paymentIDMtx.Lock(paymentID)
 	defer s.paymentIDMtx.Unlock(paymentID)
 
-	err = s.cfg.DB.AddPayment(paymentID, p)
+	err := s.cfg.DB.AddPayment(paymentID, p)
 	if existsErr, ok := err.(*channeldb.PaymentExistsError); ok {
 		if existsErr.Preimage != zeroPreimage {
 			// This payment already completed, so we can return the

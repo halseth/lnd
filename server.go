@@ -506,12 +506,19 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 	}
 	s.currentNodeAnn = nodeAnn
 
+	// The router will get access to the payment ID sequencer, such that it
+	// can generate unique payment IDs.
+	sequencer, err := channeldb.NewPersistentSequencer(chanDB)
+	if err != nil {
+		return nil, err
+	}
+
 	s.chanRouter, err = routing.New(routing.Config{
 		Graph:     chanGraph,
 		DB:        chanDB,
 		Chain:     cc.chainIO,
 		ChainView: cc.chainView,
-		SendToSwitch: func(firstHop lnwire.ShortChannelID,
+		SendToSwitch: func(firstHop lnwire.ShortChannelID, pid uint64,
 			htlcAdd *lnwire.UpdateAddHTLC,
 			totalFees lnwire.MilliSatoshi, paymentPath [][33]byte,
 			circuit *sphinx.Circuit) ([32]byte, error) {
@@ -524,7 +531,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			}
 
 			return s.htlcSwitch.SendHTLC(
-				firstHop, htlcAdd, totalFees, paymentPath,
+				firstHop, pid, htlcAdd, totalFees, paymentPath,
 				errorDecryptor,
 			)
 		},
@@ -560,6 +567,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			return link.Bandwidth()
 		},
 		AssumeChannelValid: cfg.Routing.UseAssumeChannelValid(),
+		NextPaymentID:      sequencer.NextID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't create router: %v", err)

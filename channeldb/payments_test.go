@@ -41,7 +41,7 @@ func makeFakePayment() (uint64, *OutgoingPayment) {
 		Path:           fakePath,
 		TimeLockLength: 1000,
 	}
-	copy(fakePayment.PaymentPreimage[:], rev[:])
+	//	copy(fakePayment.PaymentPreimage[:], rev[:])
 	return atomic.AddUint64(&currentPID, 1), fakePayment
 }
 
@@ -109,7 +109,7 @@ func makeRandomFakePayment() (uint64, *OutgoingPayment, error) {
 		Path:           fakePath,
 		TimeLockLength: uint32(rand.Intn(10000)),
 	}
-	copy(fakePayment.PaymentPreimage[:], fakeInvoice.Terms.PaymentPreimage[:])
+	//copy(fakePayment.PaymentPreimage[:], fakeInvoice.Terms.PaymentPreimage[:])
 
 	return atomic.AddUint64(&currentPID, 1), fakePayment, nil
 }
@@ -147,10 +147,12 @@ func TestOutgoingPaymentWorkflow(t *testing.T) {
 		t.Fatalf("unable to make test db: %v", err)
 	}
 
+	var paymentIDs []uint64
 	pid, fakePayment := makeFakePayment()
 	if err = db.AddPayment(pid, fakePayment); err != nil {
 		t.Fatalf("unable to put payment in DB: %v", err)
 	}
+	paymentIDs = append(paymentIDs, pid)
 
 	payments, err := db.FetchAllPayments()
 	if err != nil {
@@ -177,6 +179,7 @@ func TestOutgoingPaymentWorkflow(t *testing.T) {
 			t.Fatalf("unable to put payment in DB: %v", err)
 		}
 
+		paymentIDs = append(paymentIDs, pid)
 		expectedPayments = append(expectedPayments, randomPayment)
 	}
 
@@ -191,6 +194,25 @@ func TestOutgoingPaymentWorkflow(t *testing.T) {
 			spew.Sdump(payments),
 			spew.Sdump(expectedPayments),
 		)
+	}
+
+	// Delete the first payement.
+	if err = db.DeletePayment(paymentIDs[0]); err != nil {
+		t.Fatalf("unable to delete payment: %v", err)
+	}
+
+	// Complete all payments.
+	for i, pid := range paymentIDs {
+		p := expectedPayments[i]
+		err = db.CompletePayment(pid, p.Terms.PaymentPreimage)
+
+		// The first payment should fail to copmlete, as we deleted it
+		// earlier.
+		if i == 0 && err != ErrPaymentIDNotFound {
+			t.Fatalf("expected to not find payment, got: %v", err)
+		} else if i != 0 && err != nil {
+			t.Fatalf("unable to complete payment %d: %v", i, err)
+		}
 	}
 
 	// Delete all payments.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/coreos/bbolt"
@@ -19,9 +20,23 @@ var (
 	// feature is used for generating monotonically increasing id.
 	paymentBucket = []byte("payments")
 
-	// paymentStatusBucket is the name of the bucket within the database that
-	// stores the status of a payment indexed by the payment's preimage.
+	// paymentStatusBucket is the name of the bucket within the database
+	// that stores the status of a payment indexed by the payment's payment
+	// hash.
 	paymentStatusBucket = []byte("payment-status")
+
+	// ErrPaymentIDNotFound is an error returned if we cannot find the
+	// given paymentID in the database.
+	ErrPaymentIDNotFound = errors.New("paymentID not found")
+
+	// ErrPreimageKnown is an error returned if we try to complete or
+	// delete a payment whose preimage is already set in the database.
+	ErrPreimageKnown = errors.New("preimage was already found in the" +
+		"database")
+
+	// zeroPreimage is the empty preimage, indicating the payment's
+	// preimage is not yet known.
+	zeroPreimage [32]byte
 )
 
 // PaymentStatus represent current status of payment
@@ -77,9 +92,21 @@ func (ps PaymentStatus) String() string {
 	}
 }
 
-// OutgoingPayment represents a successful payment between the daemon and a
-// remote node. Details such as the total fee paid, and the time of the payment
-// are stored.
+// PaymentExistError is an error that will be returned if we attempt to add a
+// payment for a paymentID that alrady exists in the DB. It encapsulates the
+// preimage stored for that particular payment.
+type PaymentExistsError struct {
+	Preimage [32]byte
+}
+
+// Error returns a human-readable string for the PaymentExistsError.
+func (p *PaymentExistsError) Error() string {
+	return fmt.Sprintf("Payment exists with preimage: %x", p.Preimage)
+}
+
+// OutgoingPayment represents a payment between the daemon and a remote node.
+// If the PaymentPreimage is set, it means that the payment was successful.
+// Details such as the total fee paid, and the time of the payment are stored.
 type OutgoingPayment struct {
 	Invoice
 
@@ -100,13 +127,21 @@ type OutgoingPayment struct {
 	PaymentPreimage [32]byte
 }
 
-// AddPayment saves a successful payment to the database. It is assumed that
-// all payment are sent using unique payment hashes.
+// AddPayment adds a ongoing payment to the database. It is assumed that all
+// payment are sent using unique paymentIDs. When the payment eventually
+// succeeds, it should be marked as such by calling CompletePayment.
 func (db *DB) AddPayment(paymentID uint64, payment *OutgoingPayment) error {
 	// Validate the field of the inner voice within the outgoing payment,
 	// these must also adhere to the same constraints as regular invoices.
 	if err := validateInvoice(&payment.Invoice); err != nil {
 		return err
+	}
+
+	// We only allow adding payments without the preimage set. The preimage
+	// should be set using CompletePayment after the payment succeeds.
+	if payment.PaymentPreimage != zeroPreimage {
+		return fmt.Errorf("payments can only be added with zero " +
+			"preimage")
 	}
 
 	// We first serialize the payment before starting the database
@@ -118,7 +153,10 @@ func (db *DB) AddPayment(paymentID uint64, payment *OutgoingPayment) error {
 	}
 	paymentBytes := b.Bytes()
 
-	return db.Batch(func(tx *bbolt.Tx) error {
+	var existingErr error
+	err := db.Batch(func(tx *bbolt.Tx) error {
+		existingErr = nil
+
 		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
 		if err != nil {
 			return err
@@ -130,7 +168,103 @@ func (db *DB) AddPayment(paymentID uint64, payment *OutgoingPayment) error {
 		paymentIDBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
 
+		// We first check whether the payment already exists.
+		if v := payments.Get(paymentIDBytes); v != nil {
+
+			// If the payment exists, we return an error carrying
+			// the preimage stored for this payment.
+			r := bytes.NewReader(v)
+			p, err := deserializeOutgoingPayment(r)
+			if err != nil {
+				return err
+			}
+
+			pErr := &PaymentExistsError{}
+			copy(pErr.Preimage[:], p.PaymentPreimage[:])
+
+			existingErr = pErr
+			return nil
+		}
+
 		return payments.Put(paymentIDBytes, paymentBytes)
+	})
+	if err != nil {
+		return err
+	}
+	return existingErr
+}
+
+// CompletePayment adds the given preimage to the OutgoingPayment stored in the
+// DB for the given paymentID.
+func (db *DB) CompletePayment(paymentID uint64, preimage [32]byte) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
+		payments := tx.Bucket(paymentBucket)
+		if payments == nil {
+			return ErrNoPaymentsCreated
+		}
+
+		paymentIDBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
+
+		// The payment must already be in the DB.
+		v := payments.Get(paymentIDBytes)
+		if v == nil {
+			return ErrPaymentIDNotFound
+		}
+
+		r := bytes.NewReader(v)
+		payment, err := deserializeOutgoingPayment(r)
+		if err != nil {
+			return err
+		}
+
+		// The existing preimage stored for this payment MUST be the
+		// zero preimage.
+		if payment.PaymentPreimage != zeroPreimage {
+			return ErrPreimageKnown
+		}
+		copy(payment.PaymentPreimage[:], preimage[:])
+
+		var b bytes.Buffer
+		if err := serializeOutgoingPayment(&b, payment); err != nil {
+			return err
+		}
+
+		return payments.Put(paymentIDBytes, b.Bytes())
+	})
+}
+
+// DeletePayment deletes the payment with the given paymentID from the
+// database. It only allows deleting payments where the preimage is not known,
+// and should only be used to delete payments that failed.
+func (db *DB) DeletePayment(pid uint64) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
+		payments := tx.Bucket(paymentBucket)
+		if payments == nil {
+			return nil
+		}
+
+		paymentIDBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(paymentIDBytes, pid)
+
+		// Ensure the payment exists, and that the preimage is not
+		// known.
+		v := payments.Get(paymentIDBytes)
+		if v == nil {
+			return ErrPaymentIDNotFound
+		}
+
+		r := bytes.NewReader(v)
+		payment, err := deserializeOutgoingPayment(r)
+		if err != nil {
+			return err
+		}
+
+		if payment.PaymentPreimage != zeroPreimage {
+			return ErrPreimageKnown
+		}
+
+		return payments.Delete(paymentIDBytes)
 	})
 }
 

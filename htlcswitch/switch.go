@@ -889,34 +889,6 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	s.paymentIDMtx.Lock(paymentID)
 	defer s.paymentIDMtx.Unlock(paymentID)
 
-	// First, we'll clean up any fwdpkg references, circuit entries, and
-	// mark in our db that the payment for this payment hash has either
-	// succeeded or failed.
-	//
-	// If this response is contained in a forwarding package, we'll start by
-	// acking the settle/fail so that we don't continue to retransmit the
-	// HTLC internally.
-	if pkt.destRef != nil {
-		if err := s.ackSettleFail(*pkt.destRef); err != nil {
-			log.Warnf("Unable to ack settle/fail reference: %s: %v",
-				*pkt.destRef, err)
-			return
-		}
-	}
-
-	// Next, we'll remove the circuit since we are about to complete an
-	// fulfill/fail of this HTLC. Since we've already removed the
-	// settle/fail fwdpkg reference, the response from the peer cannot be
-	// replayed internally if this step fails. If this happens, this logic
-	// will be executed when a provided resolution message comes through.
-	// This can only happen if the circuit is still open, which is why this
-	// ordering is chosen.
-	if err := s.teardownCircuit(pkt); err != nil {
-		log.Warnf("Unable to teardown circuit %s: %v",
-			pkt.inKey(), err)
-		return
-	}
-
 	// Locate the pending payment to notify the application that this
 	// payment has failed. If one is not found, it likely means the daemon
 	// has been restarted since sending the payment.
@@ -971,6 +943,34 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 
 	default:
 		log.Warnf("Received unknown response type: %T", pkt.htlc)
+		return
+	}
+
+	// First, we'll clean up any fwdpkg references, circuit entries, and
+	// mark in our db that the payment for this payment hash has either
+	// succeeded or failed.
+	//
+	// If this response is contained in a forwarding package, we'll start by
+	// acking the settle/fail so that we don't continue to retransmit the
+	// HTLC internally.
+	if pkt.destRef != nil {
+		if err := s.ackSettleFail(*pkt.destRef); err != nil {
+			log.Warnf("Unable to ack settle/fail reference: %s: %v",
+				*pkt.destRef, err)
+			return
+		}
+	}
+
+	// Next, we'll remove the circuit since we are about to complete an
+	// fulfill/fail of this HTLC. Since we've already removed the
+	// settle/fail fwdpkg reference, the response from the peer cannot be
+	// replayed internally if this step fails. If this happens, this logic
+	// will be executed when a provided resolution message comes through.
+	// This can only happen if the circuit is still open, which is why this
+	// ordering is chosen.
+	if err := s.teardownCircuit(pkt); err != nil {
+		log.Warnf("Unable to teardown circuit %s: %v",
+			pkt.inKey(), err)
 		return
 	}
 

@@ -598,9 +598,14 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 		cleanUpDb()
 		return nil, nil, err
 	}
+	waitingProofStore, err := channeldb.NewWaitingProofStore(db)
+	if err != nil {
+		cleanUpDb()
+		return nil, nil, err
+	}
 
 	broadcastedMessage := make(chan msgWithSenders, 10)
-	gossiper, err := New(Config{
+	gossiper := New(Config{
 		Notifier: notifier,
 		Broadcast: func(senders map[routing.Vertex]struct{},
 			msgs ...lnwire.Message) error {
@@ -620,17 +625,14 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 		FindPeer: func(target *btcec.PublicKey) (lnpeer.Peer, error) {
 			return &mockPeer{target, nil, nil}, nil
 		},
-		Router:           router,
-		TrickleDelay:     trickleDelay,
-		RetransmitDelay:  retransmitDelay,
-		ProofMatureDelta: proofMatureDelta,
-		DB:               db,
-		MessageStore:     gossipMessageStore,
+		Router:            router,
+		TrickleDelay:      trickleDelay,
+		RetransmitDelay:   retransmitDelay,
+		ProofMatureDelta:  proofMatureDelta,
+		WaitingProofStore: waitingProofStore,
+		MessageStore:      gossipMessageStore,
 	}, nodeKeyPub1)
-	if err != nil {
-		cleanUpDb()
-		return nil, nil, fmt.Errorf("unable to create router %v", err)
-	}
+
 	if err := gossiper.Start(); err != nil {
 		cleanUpDb()
 		return nil, nil, fmt.Errorf("unable to start router: %v", err)
@@ -999,7 +1001,7 @@ func TestSignatureAnnouncementLocalFirst(t *testing.T) {
 	}
 
 	number := 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1032,7 +1034,7 @@ func TestSignatureAnnouncementLocalFirst(t *testing.T) {
 	}
 
 	number = 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1102,7 +1104,7 @@ func TestOrphanSignatureAnnouncement(t *testing.T) {
 	}
 
 	number := 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1242,7 +1244,7 @@ func TestOrphanSignatureAnnouncement(t *testing.T) {
 	}
 
 	number = 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(p *channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1412,7 +1414,7 @@ func TestSignatureAnnouncementRetry(t *testing.T) {
 	}
 
 	number := 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1467,7 +1469,7 @@ func TestSignatureAnnouncementRetry(t *testing.T) {
 	}
 
 	number = 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1630,7 +1632,7 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 	}
 
 	number := 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1646,7 +1648,7 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 	// Shut down gossiper, and restart. This should trigger a new attempt
 	// to send the message to the peer.
 	ctx.gossiper.Stop()
-	gossiper, err := New(Config{
+	gossiper := New(Config{
 		Notifier:  ctx.gossiper.cfg.Notifier,
 		Broadcast: ctx.gossiper.cfg.Broadcast,
 		SendToPeer: func(target *btcec.PublicKey,
@@ -1657,12 +1659,12 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 			connectedChan chan<- lnpeer.Peer) {
 			notifyPeers <- connectedChan
 		},
-		Router:           ctx.gossiper.cfg.Router,
-		TrickleDelay:     trickleDelay,
-		RetransmitDelay:  retransmitDelay,
-		ProofMatureDelta: proofMatureDelta,
-		DB:               ctx.gossiper.cfg.DB,
-		MessageStore:     ctx.gossiper.cfg.MessageStore,
+		Router:            ctx.gossiper.cfg.Router,
+		TrickleDelay:      trickleDelay,
+		RetransmitDelay:   retransmitDelay,
+		ProofMatureDelta:  proofMatureDelta,
+		WaitingProofStore: ctx.gossiper.cfg.WaitingProofStore,
+		MessageStore:      ctx.gossiper.cfg.MessageStore,
 	}, ctx.gossiper.selfKey)
 	if err != nil {
 		t.Fatalf("unable to recreate gossiper: %v", err)
@@ -1729,7 +1731,7 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 	}
 
 	number = 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -1918,7 +1920,7 @@ func TestSignatureAnnouncementFullProofWhenRemoteProof(t *testing.T) {
 	}
 
 	number := 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -2500,7 +2502,7 @@ func TestReceiveRemoteChannelUpdateFirst(t *testing.T) {
 	}
 
 	number := 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil
@@ -2529,7 +2531,7 @@ func TestReceiveRemoteChannelUpdateFirst(t *testing.T) {
 	}
 
 	number = 0
-	if err := ctx.gossiper.waitingProofs.ForAll(
+	if err := ctx.gossiper.cfg.WaitingProofStore.ForAll(
 		func(*channeldb.WaitingProof) error {
 			number++
 			return nil

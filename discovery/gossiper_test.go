@@ -593,6 +593,12 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 		return nil, nil, err
 	}
 
+	gossipMessageStore, err := NewMessageStore(db)
+	if err != nil {
+		cleanUpDb()
+		return nil, nil, err
+	}
+
 	broadcastedMessage := make(chan msgWithSenders, 10)
 	gossiper, err := New(Config{
 		Notifier: notifier,
@@ -619,6 +625,7 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 		RetransmitDelay:  retransmitDelay,
 		ProofMatureDelta: proofMatureDelta,
 		DB:               db,
+		MessageStore:     gossipMessageStore,
 	}, nodeKeyPub1)
 	if err != nil {
 		cleanUpDb()
@@ -1655,6 +1662,7 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 		RetransmitDelay:  retransmitDelay,
 		ProofMatureDelta: proofMatureDelta,
 		DB:               ctx.gossiper.cfg.DB,
+		MessageStore:     ctx.gossiper.cfg.MessageStore,
 	}, ctx.gossiper.selfKey)
 	if err != nil {
 		t.Fatalf("unable to recreate gossiper: %v", err)

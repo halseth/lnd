@@ -284,7 +284,7 @@ func (r *ChannelReservation) SetNumConfsRequired(numConfs uint16) {
 // if the parameters are seemed unsound.
 func (r *ChannelReservation) CommitConstraints(csvDelay, maxHtlcs uint16,
 	maxValueInFlight, minHtlc lnwire.MilliSatoshi,
-	chanReserve, dustLimit btcutil.Amount) error {
+	chanReserve, dustLimit, capacity btcutil.Amount) error {
 
 	r.Lock()
 	defer r.Unlock()
@@ -335,6 +335,13 @@ func (r *ChannelReservation) CommitConstraints(csvDelay, maxHtlcs uint16,
 	if maxValueInFlight < minNumHtlc*minHtlc {
 		return ErrMaxValueInFlightTooSmall(maxValueInFlight,
 			minNumHtlc*minHtlc)
+	}
+
+	// Fail if the maxValueInFlight is greater than the channel capacity.
+	capacityMsat := lnwire.NewMSatFromSatoshis(capacity)
+	if maxValueInFlight > capacityMsat {
+		return ErrMaxValueInFlightTooLarge(maxValueInFlight,
+			capacityMsat)
 	}
 
 	// Our dust limit should always be less than or equal our proposed

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -2537,5 +2538,71 @@ func TestFundingManagerRejectPush(t *testing.T) {
 	if "Non-zero push amounts are disabled" != string(err.Data) {
 		t.Fatalf("expected ErrNonZeroPushAmount error, got \"%v\"",
 			string(err.Data))
+	}
+}
+
+// TestFundingManagerRejectInvalidMaxValueInFlight makes sure that the funding
+// manager will act accordingly when the remote is requiring us to use a
+// max_value_in_flight larger than the channel capacity.
+func TestFundingManagerRejectInvalidMaxValueInFlight(t *testing.T) {
+	alice, bob := setupFundingManagers(t, defaultMaxPendingChannels)
+	defer tearDownFundingManagers(t, alice, bob)
+
+	localAmt := btcutil.Amount(500000)
+	pushAmt := btcutil.Amount(0)
+	capacity := localAmt + pushAmt
+
+	// Make Alice require a max_htlc_value_in_flight greater than the
+	// channel capacity.
+	alice.fundingMgr.cfg.RequiredRemoteMaxValue = func(
+		_ btcutil.Amount) lnwire.MilliSatoshi {
+		return lnwire.NewMSatFromSatoshis(capacity) + 100
+	}
+
+	// Create a funding request and start the workflow.
+	updateChan := make(chan *lnrpc.OpenStatusUpdate)
+	errChan := make(chan error, 1)
+	initReq := &openChanReq{
+		targetPubkey:    bob.privKey.PubKey(),
+		chainHash:       *activeNetParams.GenesisHash,
+		localFundingAmt: 500000,
+		pushAmt:         lnwire.NewMSatFromSatoshis(10),
+		private:         true,
+		updates:         updateChan,
+		err:             errChan,
+	}
+
+	alice.fundingMgr.initFundingWorkflow(bob, initReq)
+
+	// Alice should have sent the OpenChannel message to Bob.
+	var aliceMsg lnwire.Message
+	select {
+	case aliceMsg = <-alice.msgChan:
+	case err := <-initReq.err:
+		t.Fatalf("error init funding workflow: %v", err)
+	case <-time.After(time.Second * 5):
+		t.Fatalf("alice did not send OpenChannel message")
+	}
+
+	openChannelReq, ok := aliceMsg.(*lnwire.OpenChannel)
+	if !ok {
+		errorMsg, gotError := aliceMsg.(*lnwire.Error)
+		if gotError {
+			t.Fatalf("expected OpenChannel to be sent "+
+				"from bob, instead got error: %v",
+				lnwire.ErrorCode(errorMsg.Data[0]))
+		}
+		t.Fatalf("expected OpenChannel to be sent from "+
+			"alice, instead got %T", aliceMsg)
+	}
+
+	// Let Bob handle the init message.
+	bob.fundingMgr.processFundingOpen(openChannelReq, alice)
+
+	// Assert Bob responded with an ErrMaxValueInFlightTooLarge error.
+	err := assertFundingMsgSent(t, bob.msgChan, "Error").(*lnwire.Error)
+	if !strings.Contains(string(err.Data), "maxValueInFlight too large") {
+		t.Fatalf("expected ErrMaxValueInFlightTooLarge error, "+
+			"got \"%v\"", string(err.Data))
 	}
 }

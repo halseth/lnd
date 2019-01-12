@@ -3698,7 +3698,7 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 			MinHtlc:          int64(c1.MinHTLC),
 			FeeBaseMsat:      int64(c1.FeeBaseMSat),
 			FeeRateMilliMsat: int64(c1.FeeProportionalMillionths),
-			Disabled:         c1.Flags&lnwire.ChanUpdateDisabled != 0,
+			Disabled:         c1.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
 		}
 	}
 
@@ -3708,7 +3708,7 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 			MinHtlc:          int64(c2.MinHTLC),
 			FeeBaseMsat:      int64(c2.FeeBaseMSat),
 			FeeRateMilliMsat: int64(c2.FeeProportionalMillionths),
-			Disabled:         c2.Flags&lnwire.ChanUpdateDisabled != 0,
+			Disabled:         c2.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
 		}
 	}
 

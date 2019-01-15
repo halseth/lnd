@@ -361,24 +361,28 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 		return zeroPreimage, err
 	}
 
-	// Create payment and add to the map of payment in order later to be
-	// able to retrieve it and return response to the user.
-	payment := &pendingPayment{
-		err:          make(chan error, 1),
-		preimage:     make(chan [sha256.Size]byte, 1),
-		paymentHash:  htlc.PaymentHash,
-		amount:       htlc.Amount,
-		deobfuscator: deobfuscator,
-	}
-
 	paymentID, err := s.paymentSequencer.NextID()
 	if err != nil {
 		return zeroPreimage, err
 	}
 
-	s.pendingMutex.Lock()
-	s.pendingPayments[paymentID] = payment
-	s.pendingMutex.Unlock()
+	// If the payment was successfully forwarded to the network, we'll mark
+	// it as in progress.
+	existingPreimg, err := s.cfg.DB.GetPreimage(paymentID)
+	switch {
+
+	// This payment already completed, so we can return the preimage
+	// immediately.
+	case err == nil:
+		return existingPreimg, nil
+
+	// The payment ID is new, so we will go on to forward it.
+	case err == channeldb.ErrPaymentIDNotFound:
+		break
+
+	case err != nil:
+		return zeroPreimage, err
+	}
 
 	// Generate and send new update packet, if error will be received on
 	// this stage it means that packet haven't left boundaries of our
@@ -390,14 +394,29 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 		htlc:           htlc,
 	}
 
-	if err := s.forward(packet); err != nil {
-		s.removePendingPayment(paymentID)
+	// If the returned error is a duplicate add, then we can ignore it, as
+	// our HTLC was already forwarded by the switch.
+	if err := s.forward(packet); err != nil && err != ErrDuplicateAdd {
 		if err := s.control.Fail(htlc.PaymentHash); err != nil {
 			return zeroPreimage, err
 		}
 
 		return zeroPreimage, err
 	}
+
+	// Create payment and add to the map of payment in order later to be
+	// able to retrieve it and return response to the user.
+	payment := &pendingPayment{
+		err:          make(chan error, 1),
+		preimage:     make(chan [sha256.Size]byte, 1),
+		paymentHash:  htlc.PaymentHash,
+		amount:       htlc.Amount,
+		deobfuscator: deobfuscator,
+	}
+
+	s.pendingMutex.Lock()
+	s.pendingPayments[paymentID] = payment
+	s.pendingMutex.Unlock()
 
 	// Returns channels so that other subsystem might wait/skip the
 	// waiting of handling of payment.
@@ -833,6 +852,19 @@ func (s *Switch) handleLocalDispatch(pkt *htlcPacket) error {
 // NOTE: This method MUST be spawned as a goroutine.
 func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	defer s.wg.Done()
+
+	paymentID := pkt.incomingHTLCID
+
+	// Before tearing down the circuit store the preimage if this was a
+	// success.
+	switch htlc := pkt.htlc.(type) {
+	case *lnwire.UpdateFulfillHTLC:
+		err := s.cfg.DB.StorePreimage(paymentID, htlc.PaymentPreimage)
+		if err != nil {
+			log.Errorf("unable to store payment: %v", err)
+			return
+		}
+	}
 
 	// First, we'll clean up any fwdpkg references, circuit entries, and
 	// mark in our db that the payment for this payment hash has either

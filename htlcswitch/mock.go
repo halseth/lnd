@@ -857,7 +857,7 @@ type mockControlTower struct{}
 
 var _ ControlTower = (*mockControlTower)(nil)
 
-func (m *mockControlTower) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
+func (m *mockControlTower) ClearForTakeoff(paymentHash [32]byte) error {
 	return nil
 }
 

@@ -19,9 +19,17 @@ var (
 	// feature is used for generating monotonically increasing id.
 	paymentBucket = []byte("payments")
 
-	// paymentStatusBucket is the name of the bucket within the database that
-	// stores the status of a payment indexed by the payment's preimage.
+	// paymentStatusBucket is the name of the bucket within the database
+	// that stores the status of a payment indexed by the payment's payment
+	// hash.
 	paymentStatusBucket = []byte("payment-status")
+
+	// maps: pid -> preimage
+	preimageBucket = []byte("pid-preimages")
+
+	// ErrPaymentIDNotFound is an error returned if we cannot find the
+	// given paymentID in the database.
+	ErrPaymentIDNotFound = errors.New("paymentID not found")
 )
 
 // PaymentStatus represent current status of payment
@@ -137,6 +145,54 @@ func (db *DB) AddPayment(payment *OutgoingPayment) error {
 		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
 
 		return payments.Put(paymentIDBytes, paymentBytes)
+	})
+}
+
+func (db *DB) GetPreimage(paymentID uint64) ([32]byte, error) {
+
+	var preimage [32]byte
+	var existingErr error
+	err := db.Batch(func(tx *bbolt.Tx) error {
+		existingErr = nil
+
+		preimages, err := tx.CreateBucketIfNotExists(preimageBucket)
+		if err != nil {
+			return err
+		}
+
+		// We use BigEndian for keys as it orders keys in
+		// ascending order. This allows bucket scans to order payments
+		// in the order in which they were created.
+		paymentIDBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
+
+		// We first check whether the payment already exists.
+		v := preimages.Get(paymentIDBytes)
+		if v == nil {
+			existingErr = ErrPaymentIDNotFound
+			return nil
+		}
+
+		copy(preimage[:], v[:])
+		return nil
+	})
+	if err != nil {
+		return preimage, err
+	}
+	return preimage, existingErr
+}
+
+func (db *DB) StorePreimage(paymentID uint64, preimage [32]byte) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
+		preimages := tx.Bucket(preimageBucket)
+		if preimages == nil {
+			return ErrNoPaymentsCreated
+		}
+
+		paymentIDBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
+
+		return preimages.Put(paymentIDBytes, preimage[:])
 	})
 }
 

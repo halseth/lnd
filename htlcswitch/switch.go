@@ -210,8 +210,6 @@ type Switch struct {
 	pendingMutex    sync.RWMutex
 	paymentIDMtx    *multimutex.Mutex
 
-	paymentSequencer Sequencer
-
 	// control provides verification of sending htlc mesages
 	control ControlTower
 
@@ -290,16 +288,10 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		return nil, err
 	}
 
-	sequencer, err := NewPersistentSequencer(cfg.DB)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Switch{
 		bestHeight:        currentHeight,
 		cfg:               &cfg,
 		circuits:          circuitMap,
-		paymentSequencer:  sequencer,
 		control:           NewPaymentControl(false, cfg.DB),
 		linkIndex:         make(map[lnwire.ChannelID]ChannelLink),
 		mailOrchestrator:  newMailOrchestrator(),
@@ -353,7 +345,7 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
 // package in order to send the htlc update.
-func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
+func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	htlc *lnwire.UpdateAddHTLC,
 	deobfuscator ErrorDecrypter) ([sha256.Size]byte, error) {
 
@@ -361,11 +353,6 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID,
 	// in-flight payment to this payment hash, or 2) a complete payment for
 	// the same hash.
 	if err := s.control.ClearForTakeoff(htlc); err != nil {
-		return zeroPreimage, err
-	}
-
-	paymentID, err := s.paymentSequencer.NextID()
-	if err != nil {
 		return zeroPreimage, err
 	}
 

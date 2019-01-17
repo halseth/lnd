@@ -13061,6 +13061,7 @@ var testsCases = []*testCase{
 		test: testFailingChannel,
 	},
 	{
+		// flake hit.
 		name: "garbage collect link nodes",
 		test: testGarbageCollectLinkNodes,
 	},
@@ -13069,6 +13070,7 @@ var testsCases = []*testCase{
 		test: testAbandonChannel,
 	},
 	{
+		// flake hit
 		name: "revoked uncooperative close retribution zero value remote output",
 		test: testRevokedCloseRetributionZeroValueRemoteOutput,
 	},
@@ -13081,6 +13083,7 @@ var testsCases = []*testCase{
 		test: testDataLossProtection,
 	},
 	{
+		// flakse hit
 		name: "query routes",
 		test: testQueryRoutes,
 	},

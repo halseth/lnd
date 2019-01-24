@@ -2032,3 +2032,57 @@ func TestMultiHopPaymentForwardingEvents(t *testing.T) {
 		}
 	}
 }
+
+// TestSwitchSendPaymentKnownPreimage checks that the switch immediately
+// returns when we attempt to send a payment where the preimage is already
+// found in the preimage cache.
+func TestSwitchSendPaymentKnownPreimage(t *testing.T) {
+	t.Parallel()
+
+	pCache := &mockPreimageCache{
+		preimageMap: make(map[[32]byte][]byte),
+	}
+
+	// Create and start the switch, then set the preimage cache to the one
+	// we created above.
+	s, err := initSwitchWithDB(testStartingHeight, nil)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	s.cfg.PreimageCache = pCache
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer s.Stop()
+
+	// Create a preimage and add it directly to the preimage cache.
+	preimage, err := genPreimage()
+	if err != nil {
+		t.Fatalf("unable to generate preimage: %v", err)
+	}
+
+	if err := pCache.AddPreimage(preimage[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now create an HTLC paying to this preimage's hash.
+	rhash := fastsha256.Sum256(preimage[:])
+	update := &lnwire.UpdateAddHTLC{
+		PaymentHash: rhash,
+		Amount:      1,
+	}
+
+	// We send the payment, and expect the switch to respond immediately
+	// with the preimage.
+	cid := lnwire.ShortChannelID{}
+	pre, err := s.SendHTLC(cid, 0, update, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if pre != preimage {
+		t.Fatalf("expected to retrieve preimage %x, got %x", preimage,
+			pre)
+	}
+}

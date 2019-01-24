@@ -32,16 +32,22 @@ import (
 type mockPreimageCache struct {
 	sync.Mutex
 	preimageMap map[[32]byte][]byte
+
+	// lookupDelay is used to delay the preimage lookup after the mutex is
+	// released.
+	lookupDelay time.Duration
 }
 
 func (m *mockPreimageCache) LookupPreimage(hash []byte) ([]byte, bool) {
 	m.Lock()
-	defer m.Unlock()
 
 	var h [32]byte
 	copy(h[:], hash)
 
 	p, ok := m.preimageMap[h]
+	m.Unlock()
+
+	<-time.After(m.lookupDelay)
 	return p, ok
 }
 

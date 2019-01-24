@@ -36,9 +36,17 @@ type mockPreimageCache struct {
 	// lookupDelay is used to delay the preimage lookup after the mutex is
 	// released.
 	lookupDelay time.Duration
+
+	// lookupEnter is used to signal when the mockPreimageCache's
+	// LookupPreimage is called.
+	lookupEnter chan struct{}
 }
 
 func (m *mockPreimageCache) LookupPreimage(hash []byte) ([]byte, bool) {
+	if m.lookupEnter != nil {
+		m.lookupEnter <- struct{}{}
+	}
+
 	m.Lock()
 
 	var h [32]byte

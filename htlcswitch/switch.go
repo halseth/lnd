@@ -391,7 +391,10 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 		htlc:           htlc,
 	}
 
-	if err := s.forward(packet); err != nil {
+	// If the returned error is a duplicate add, then we can ignore it, as
+	// our HTLC was already forwarded by the switch.
+	err := s.forward(packet)
+	if err != nil && err != ErrDuplicateAdd {
 		s.removePendingPayment(paymentID)
 		if err := s.control.Fail(htlc.PaymentHash); err != nil {
 			return zeroPreimage, err
@@ -403,7 +406,6 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	// Returns channels so that other subsystem might wait/skip the
 	// waiting of handling of payment.
 	var preimage [sha256.Size]byte
-	var err error
 
 	select {
 	case e := <-payment.err:

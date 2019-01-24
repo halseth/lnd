@@ -2251,3 +2251,186 @@ func TestSwitchSendDuplicatePayment(t *testing.T) {
 		t.Fatal("wrong amount of pending payments")
 	}
 }
+
+// TestSwitchSendDuplicateSettledPayment makes sure the switch handle the case
+// where it attempts to resend an HTLC after a restart, but concurrently a
+// settle for this HTLC comes back.
+func TestSwitchSendDuplicateSettledPayment(t *testing.T) {
+	t.Parallel()
+
+	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	if err != nil {
+		t.Fatalf("unable to create alice server: %v", err)
+	}
+
+	// We'll setup a preimage cache having a "lookup delay" of 100ms. This
+	// is used to delay the switch after it looks up a payment hash in the
+	// preimage cache, such that we can trigger the situation where the
+	// preimage is added immediately after lookup, but before the HTLC is
+	// forwarded.
+	pCache := &mockPreimageCache{
+		preimageMap: make(map[[32]byte][]byte),
+		lookupDelay: 100 * time.Millisecond,
+	}
+
+	// Create a DB that we will use across restarts.
+	db, err := initDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create and start the switch with the DB and preimage cache.
+	s, err := initSwitchWithDB(testStartingHeight, db)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	s.cfg.PreimageCache = pCache
+
+	// For now we use a mock ControlTower to allow payment hash reuses.
+	s.control = &mockControlTower{}
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer s.Stop()
+
+	chanID1, _, aliceChanID, _ := genIDs()
+	aliceChannelLink := newMockChannelLink(
+		s, chanID1, aliceChanID, alicePeer, true,
+	)
+	if err := s.AddLink(aliceChannelLink); err != nil {
+		t.Fatalf("unable to add link: %v", err)
+	}
+
+	// Create a preimage that we will attempt to send twice.
+	preimage, err := genPreimage()
+	if err != nil {
+		t.Fatalf("unable to generate preimage: %v", err)
+	}
+	rhash := fastsha256.Sum256(preimage[:])
+	update := &lnwire.UpdateAddHTLC{
+		PaymentHash: rhash,
+		Amount:      1,
+	}
+
+	// Send the HTLC and wait for it to be send to the link such that it
+	// can be committed.
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := s.SendHTLC(
+			aliceChannelLink.ShortChanID(), 0, update,
+			newMockDeobfuscator(),
+		)
+		errChan <- err
+	}()
+
+	select {
+	case packet := <-aliceChannelLink.packets:
+		if err := aliceChannelLink.completeCircuit(packet); err != nil {
+			t.Fatalf("unable to complete payment circuit: %v", err)
+		}
+
+	case err := <-errChan:
+		t.Fatalf("unable to send payment: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("request was not propagated to destination")
+	}
+
+	// The payment should now be pending, and the circuit open.
+	if s.numPendingPayments() != 1 {
+		t.Fatal("wrong amount of pending payments")
+	}
+
+	if s.circuits.NumOpen() != 1 {
+		t.Fatal("wrong amount of circuits")
+	}
+
+	// Shutdown the switch, and wait for an error to be returned.
+	s.Stop()
+
+	select {
+	case err := <-errChan:
+		if err != ErrSwitchExiting {
+			t.Fatalf("got unexpected error %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("did not receive error")
+	}
+
+	// We can now recreate the switch, using the same DB.
+	s, err = initSwitchWithDB(testStartingHeight, db)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	s.cfg.PreimageCache = pCache
+	s.control = &mockControlTower{}
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer s.Stop()
+
+	aliceChannelLink.htlcSwitch = s
+	if err := s.AddLink(aliceChannelLink); err != nil {
+		t.Fatalf("unable to add link: %v", err)
+	}
+
+	// Before continuing, we'll make sure the circuit is still open.
+	if s.circuits.NumOpen() != 1 {
+		t.Fatal("wrong amount of circuits")
+	}
+
+	// We send the HTLC once again.
+	errChan = make(chan error, 1)
+	preChan := make(chan [32]byte, 1)
+	go func() {
+		pre, err := s.SendHTLC(
+			aliceChannelLink.ShortChanID(), 0, update,
+			newMockDeobfuscator(),
+		)
+		preChan <- pre
+		errChan <- err
+	}()
+
+	// Concurrently with re-sending the payment we'll fulfill it. This
+	// triggers a race condition where the fulfill comes in after the
+	// re-sent payment has finished preimage lookup, but _before_ the HTLC
+	// is forwarded. We trigger this situation by the "lookup delay" we sat
+	// above, which makes the switch wait a bit after preimage lookup, but
+	// before re-forwarding. This gives the Settle enough time to tear down
+	// the circuit and attempt to deliver the preimage before the switch
+	// calls forward again.
+	packet := &htlcPacket{
+		outgoingChanID: aliceChannelLink.ShortChanID(),
+		outgoingHTLCID: 0,
+		amount:         1,
+		htlc: &lnwire.UpdateFulfillHTLC{
+			PaymentPreimage: preimage,
+		},
+	}
+
+	if err := s.forward(packet); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+
+	// Make sure the switch doesn't reforward the HTLC:
+	select {
+	case p := <-aliceChannelLink.packets:
+		t.Fatalf("packet was forwarded again: %T", p.htlc)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// And we should reciev the preimage on the preimg channel.
+	select {
+	case pre := <-preChan:
+		if pre != preimage {
+			t.Fatalf("received incorrect preimage")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response wasn't received")
+	}
+
+	if s.numPendingPayments() != 0 {
+		t.Fatal("wrong amount of pending payments")
+	}
+}

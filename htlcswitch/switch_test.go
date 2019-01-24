@@ -2086,3 +2086,168 @@ func TestSwitchSendPaymentKnownPreimage(t *testing.T) {
 			pre)
 	}
 }
+
+// TestSwtichSendDuplicatePayment checks that if a payment is resent after a
+// restart, it will still progress as if it was the first time it was sent.
+func TestSwitchSendDuplicatePayment(t *testing.T) {
+	t.Parallel()
+
+	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	if err != nil {
+		t.Fatalf("unable to create alice server: %v", err)
+	}
+
+	// Create a DB that we will use across restarts.
+	db, err := initDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create and start the switch with the DB.
+	s, err := initSwitchWithDB(testStartingHeight, db)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	// For now we use a mock ControlTower to allow payment hash reuses.
+	s.control = &mockControlTower{}
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer s.Stop()
+
+	chanID1, _, aliceChanID, _ := genIDs()
+	aliceChannelLink := newMockChannelLink(
+		s, chanID1, aliceChanID, alicePeer, true,
+	)
+	if err := s.AddLink(aliceChannelLink); err != nil {
+		t.Fatalf("unable to add link: %v", err)
+	}
+
+	// Create a preimage that we will attempt to send twice.
+	preimage, err := genPreimage()
+	if err != nil {
+		t.Fatalf("unable to generate preimage: %v", err)
+	}
+	rhash := fastsha256.Sum256(preimage[:])
+	update := &lnwire.UpdateAddHTLC{
+		PaymentHash: rhash,
+		Amount:      1,
+	}
+
+	// Send the HTLC and wait for it to be send to the link such that it
+	// can be committed.
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := s.SendHTLC(
+			aliceChannelLink.ShortChanID(), 0, update,
+			newMockDeobfuscator(),
+		)
+		errChan <- err
+	}()
+
+	select {
+	case packet := <-aliceChannelLink.packets:
+		if err := aliceChannelLink.completeCircuit(packet); err != nil {
+			t.Fatalf("unable to complete payment circuit: %v", err)
+		}
+
+	case err := <-errChan:
+		t.Fatalf("unable to send payment: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("request was not propagated to destination")
+	}
+
+	// The payment should now be pending, and the circuit open.
+	if s.numPendingPayments() != 1 {
+		t.Fatal("wrong amount of pending payments")
+	}
+
+	if s.circuits.NumOpen() != 1 {
+		t.Fatal("wrong amount of circuits")
+	}
+
+	// Shutdown the switch, and wait for an error to be returned.
+	s.Stop()
+
+	select {
+	case err := <-errChan:
+		if err != ErrSwitchExiting {
+			t.Fatalf("got unexpected error %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("did not receive error")
+	}
+
+	// We can now recreate the switch, using the same DB.
+	s, err = initSwitchWithDB(testStartingHeight, db)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	s.control = &mockControlTower{}
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer s.Stop()
+
+	aliceChannelLink.htlcSwitch = s
+	if err := s.AddLink(aliceChannelLink); err != nil {
+		t.Fatalf("unable to add link: %v", err)
+	}
+
+	// Before continuing, we'll make sure the circuit is still open.
+	if s.circuits.NumOpen() != 1 {
+		t.Fatal("wrong amount of circuits")
+	}
+
+	// We send the HTLC once again.
+	errChan = make(chan error, 1)
+	preChan := make(chan [32]byte, 1)
+	go func() {
+		pre, err := s.SendHTLC(
+			aliceChannelLink.ShortChanID(), 0, update,
+			newMockDeobfuscator(),
+		)
+		preChan <- pre
+		errChan <- err
+	}()
+
+	// Since the HTLC was already forwarded, it shouldn't be forwarded
+	// again.
+	select {
+	case <-aliceChannelLink.packets:
+		t.Fatalf("received duplicate: %v", err)
+	case err := <-errChan:
+		t.Fatalf("unable to send payment: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Now fulfill the payment.
+	packet := &htlcPacket{
+		outgoingChanID: aliceChannelLink.ShortChanID(),
+		outgoingHTLCID: 0,
+		amount:         1,
+		htlc: &lnwire.UpdateFulfillHTLC{
+			PaymentPreimage: preimage,
+		},
+	}
+
+	if err := s.forward(packet); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+
+	// And we should recieve the preimage on the preimg channel.
+	select {
+	case pre := <-preChan:
+		if pre != preimage {
+			t.Fatalf("received incorrect preimage")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response wasn't received")
+	}
+
+	if s.numPendingPayments() != 0 {
+		t.Fatal("wrong amount of pending payments")
+	}
+}

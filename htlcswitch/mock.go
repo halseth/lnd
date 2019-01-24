@@ -838,3 +838,19 @@ func (m *mockNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint, _ []byte,
 		Spend: make(chan *chainntnfs.SpendDetail),
 	}, nil
 }
+
+type mockControlTower struct{}
+
+var _ ControlTower = (*mockControlTower)(nil)
+
+func (m *mockControlTower) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
+	return nil
+}
+
+func (m *mockControlTower) Success(paymentHash [32]byte) error {
+	return nil
+}
+
+func (m *mockControlTower) Fail(paymentHash [32]byte) error {
+	return nil
+}

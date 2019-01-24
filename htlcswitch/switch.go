@@ -884,12 +884,12 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 			pkt.inKey(), err)
 		return
 	}
-	s.paymentIDMtx.Unlock(paymentID)
 
 	// Locate the pending payment to notify the application that this
 	// payment has failed. If one is not found, it likely means the daemon
 	// has been restarted since sending the payment.
-	payment := s.findPayment(paymentID)
+	payment := s.findAndRemovePayment(paymentID)
+	s.paymentIDMtx.Unlock(paymentID)
 
 	var (
 		preimage   [32]byte
@@ -938,7 +938,6 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	if payment != nil {
 		payment.err <- paymentErr
 		payment.preimage <- preimage
-		s.removePendingPayment(paymentID)
 	}
 }
 
@@ -2160,18 +2159,19 @@ func (s *Switch) removePendingPayment(paymentID uint64) {
 	delete(s.pendingPayments, paymentID)
 }
 
-// findPayment is the helper function which find the payment.
-func (s *Switch) findPayment(paymentID uint64) *pendingPayment {
-	s.pendingMutex.RLock()
-	defer s.pendingMutex.RUnlock()
+// findAndRemovePayment is a helper function which finds the payment and
+// removes it from the pendingPayments map.
+func (s *Switch) findAndRemovePayment(paymentID uint64) *pendingPayment {
+	s.pendingMutex.Lock()
+	defer s.pendingMutex.Unlock()
 
 	payment, ok := s.pendingPayments[paymentID]
 	if !ok {
 		log.Errorf("Cannot find pending payment with ID %d",
 			paymentID)
-		return nil
 	}
 
+	delete(s.pendingPayments, paymentID)
 	return payment
 }
 

@@ -2325,11 +2325,7 @@ func (d *AuthenticatedGossiper) fetchNodeAnn(
 type peerMsg struct {
 	// msgChan is a channel used to stream the reliable message send
 	// requests to the peer's peerMsgHandler.
-	msgChan chan lnwire.Message
-
-	// doneChan is a channel that will be closed to signal when the peer's
-	// peerMsgHandler has terminated for whatever reason.
-	doneChan chan struct{}
+	newMsgSignal chan struct{}
 }
 
 // sendMsgReliably constructs a request to send a message reliably to a peer. In
@@ -2350,13 +2346,11 @@ func (d *AuthenticatedGossiper) sendMsgReliably(msg lnwire.Message,
 
 	// We'll first check if a peerMsgHandler already exists for the
 	// given peer. If there isn't one, we'll launch one now.
-spawnHandler:
 	d.peerMsgHandlersMtx.Lock()
 	pMsg, ok := d.peerMsgHandlers[peerPubKey]
 	if !ok {
 		pMsg = peerMsg{
-			msgChan:  make(chan lnwire.Message),
-			doneChan: make(chan struct{}),
+			newMsgSignal: make(chan struct{}, 1),
 		}
 		d.peerMsgHandlers[peerPubKey] = pMsg
 		d.peerMsgHandlersMtx.Unlock()
@@ -2369,11 +2363,8 @@ spawnHandler:
 	d.peerMsgHandlersMtx.Unlock()
 
 	select {
-	case pMsg.msgChan <- msg:
-	case <-pMsg.doneChan:
-		goto spawnHandler
-	case <-d.quit:
-		return ErrGossiperShuttingDown
+	case pMsg.newMsgSignal <- struct{}{}:
+	default:
 	}
 
 	return nil
@@ -2399,20 +2390,10 @@ waitUntilOnline:
 
 	d.cfg.NotifyWhenOnline(pubKey, peerChan)
 
-out:
-	for {
-		select {
-		// While we're waiting, we'll also consume any messages that
-		// must be sent to prevent blocking the caller. These can be
-		// ignored for now since the peer is currently offline. Once
-		// they reconnect, the messages will be sent since they should
-		// have been persisted to disk.
-		case _ = <-pMsg.msgChan:
-		case peer = <-peerChan:
-			break out
-		case <-d.quit:
-			return
-		}
+	select {
+	case peer = <-peerChan:
+	case <-d.quit:
+		return
 	}
 
 	log.Debugf("Peer=%x is now online, proceeding to send pending messages",
@@ -2432,9 +2413,10 @@ out:
 			"peer %x: %v", peerPubKey, err)
 	}
 
+	// TODO(halseth): do we need to send first to make sure they are sent at least once?
+
 	// With the peer online, we can now proceed to send our pending messages
 	// for them.
-	allMsgsStale := true
 	for _, msg := range pendingMsgs {
 		// Retrieve the short channel ID for which this message applies
 		// for logging purposes. The error can be ignored as the store
@@ -2458,24 +2440,53 @@ out:
 
 			continue
 		}
+	}
 
-		allMsgsStale = false
+	// Make sure that the peer has not disconnected by this point.
+	// If they have, we'll wait until they reconnect.
+	select {
+	case <-offlineChan:
+		goto waitUntilOnline
+	case <-d.quit:
+		return
+	default:
+	}
 
-		// Make sure that the peer has not disconnected by this point.
-		// If they have, we'll wait until they reconnect.
-		select {
-		case <-offlineChan:
-			goto waitUntilOnline
-		case <-d.quit:
-			return
-		default:
-		}
+	pendingMsgs, err = d.cfg.MessageStore.MessagesForPeer(peerPubKey)
+	if err != nil {
+		log.Errorf("Unable to retrieve pending messages for "+
+			"peer %x: %v", peerPubKey, err)
+
+		// TODO(halseth): go to start? exit?
+	}
+
+	// If all of our messages were stale, then there's no need for this
+	// handler to continue running, so we can exit now.
+	if len(pendingMsgs) == 0 {
+		log.Debugf("All pending messages for peer=%x were stale",
+			peerPubKey)
+
+		d.peerMsgHandlersMtx.Lock()
+		delete(d.peerMsgHandlers, peerPubKey)
+		d.peerMsgHandlersMtx.Unlock()
+
+		return
+	}
+
+	// With the peer online, we can now proceed to send our pending messages
+	// for them.
+	for _, msg := range pendingMsgs {
+		// Retrieve the short channel ID for which this message applies
+		// for logging purposes. The error can be ignored as the store
+		// can only contain messages which have a ShortChannelID field.
+		shortChanID, _ := msgShortChanID(msg)
 
 		if err := peer.SendMessage(false, msg); err != nil {
 			log.Errorf("Unable to send %v message for channel=%v "+
 				"to %x: %v", msg.MsgType(), shortChanID,
 				peerPubKey, err)
 
+			// TODO(halseth): Go back to start on error? exit?
 			continue
 		}
 
@@ -2484,37 +2495,12 @@ out:
 			peerPubKey)
 	}
 
-	// If all of our messages were stale, then there's no need for this
-	// handler to continue running, so we can exit now.
-	if allMsgsStale {
-		log.Debugf("All pending messages for peer=%x were stale",
-			peerPubKey)
-
-		d.peerMsgHandlersMtx.Lock()
-		delete(d.peerMsgHandlers, peerPubKey)
-		d.peerMsgHandlersMtx.Unlock()
-
-		close(pMsg.doneChan)
-
-		return
-	}
-
 	// Once the pending messages are sent, we can continue to send any
 	// future messages while the peer remains connected.
 	for {
 		select {
-		case msg := <-pMsg.msgChan:
-			// Retrieve the short channel ID for which this message
-			// applies for logging purposes. The error can be
-			// ignored as the store can only contain messages which
-			// have a ShortChannelID field.
-			shortChanID, _ := msgShortChanID(msg)
-
-			if err := peer.SendMessage(false, msg); err != nil {
-				log.Errorf("Unable to send %v message for "+
-					"channel=%v to %x: %v", msg.MsgType(),
-					shortChanID, peerPubKey, err)
-			}
+		case <-pMsg.newMsgSignal:
+			goto waitUntilOnline
 
 		case <-offlineChan:
 			goto waitUntilOnline

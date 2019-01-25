@@ -428,6 +428,8 @@ service Lightning {
     */
     rpc SendPayment (stream SendRequest) returns (stream SendResponse);
 
+    rpc CancelPayment (CancelPaymentRequest) returns (CancelPaymentResponse);
+
     /**
     SendPaymentSync is the synchronous non-streaming version of SendPayment.
     This RPC is intended to be consumed by clients of the REST proxy.
@@ -777,6 +779,20 @@ message SendResponse {
     Route payment_route = 3 [json_name = "payment_route"];
     bytes payment_hash = 4 [json_name = "payment_hash"];
 }
+
+
+message CancelPaymentRequest {
+    /// The hash to use within the payment's HTLC
+    bytes payment_hash = 1;
+
+    /// The hex-encoded hash to use within the payment's HTLC
+    string payment_hash_string = 2;
+}
+
+message CancelPaymentResponse {
+    bool canceled = 1;
+}
+
 
 message SendToRouteRequest {
     /// The payment hash to use for the HTLC.

@@ -1284,6 +1284,15 @@
       "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)",
       "title": "* \n`AddressType` has to be one of:"
     },
+    "lnrpcCancelPaymentResponse": {
+      "type": "object",
+      "properties": {
+        "canceled": {
+          "type": "boolean",
+          "format": "boolean"
+        }
+      }
+    },
     "lnrpcChain": {
       "type": "object",
       "properties": {

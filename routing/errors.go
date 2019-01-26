@@ -47,6 +47,7 @@ const (
 	// ErrPaymentAttemptTimeout is an error that indicates that a payment
 	// attempt timed out before we were able to successfully route an HTLC.
 	ErrPaymentAttemptTimeout
+	ErrPaymentAttemptCanceled
 
 	// ErrFeeLimitExceeded is returned when the total fees of a route exceed
 	// the user-specified fee limit.

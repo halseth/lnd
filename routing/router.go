@@ -339,6 +339,9 @@ type ChannelRouter struct {
 
 	payAttempts *payAttemptStore
 
+	ongoingPayments    map[[32]byte]chan<- struct{}
+	ongoingPaymentsMtx sync.Mutex
+
 	// channelEdgeMtx is a mutex we use to make sure we process only one
 	// ChannelEdgePolicy at a time for a given channelID, to ensure
 	// consistency between the various database accesses.
@@ -378,6 +381,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		payAttempts:       &payAttemptStore{cfg.DB},
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
+		ongoingPayments:   make(map[[32]byte]chan<- struct{}),
 		routeCache:        make(map[routeTuple][]*Route),
 		rejectCache:       make(map[uint64]struct{}),
 		quit:              make(chan struct{}),
@@ -1697,6 +1701,25 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 	return r.sendPayment(payment, paySession)
 }
 
+func (r *ChannelRouter) CancelPayment(payHash [32]byte) error {
+
+	r.ongoingPaymentsMtx.Lock()
+	cancel, ok := r.ongoingPayments[payHash]
+	delete(r.ongoingPayments, payHash)
+	r.ongoingPaymentsMtx.Unlock()
+	if !ok {
+		return fmt.Errorf("payment not found")
+	}
+
+	select {
+	case cancel <- struct{}{}:
+	case <-r.quit:
+		return ErrRouterShuttingDown
+	}
+
+	return nil
+}
+
 // sendPayment attempts to send a payment as described within the passed
 // LightningPayment. This function is blocking and will return either: when the
 // payment is successful, or all candidates routes have been attempted and
@@ -1724,19 +1747,32 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}),
 	)
 
-	var (
-		preImage  [32]byte
-		sendError error
-	)
-
 	// Before sending, double check that we don't already have 1)
 	// an in-flight payment to this payment hash, or 2) a complete
 	// payment for the same hash.
 	// TODO: do atomically with storing payment, as if we crash before
 	// storing now, we won't be allowed to retry this payment hash.
 	if err := r.control.ClearForTakeoff(payment.PaymentHash); err != nil {
-		return preImage, nil, err
+		return [32]byte{}, nil, err
 	}
+
+	// Store LightningPayment (and PaymentSession?) to disk.
+	return r.paymentLoop(paySession, payment)
+}
+
+func (r *ChannelRouter) paymentLoop(paySession *paymentSession,
+	payment *LightningPayment) ([32]byte, *Route, error) {
+
+	var (
+		preImage  [32]byte
+		sendError error
+	)
+
+	cancelChan := make(chan struct{})
+
+	r.ongoingPaymentsMtx.Lock()
+	r.ongoingPayments[payment.PaymentHash] = cancelChan
+	r.ongoingPaymentsMtx.Unlock()
 
 	// We'll also fetch the current block height so we can properly
 	// calculate the required HTLC time locks within the route.
@@ -1770,11 +1806,17 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// attempt short.
 		select {
 		case <-timeoutChan:
-			errStr := fmt.Sprintf("payment attempt not completed "+
-				"before timeout of %v", payAttemptTimeout)
+			errStr := fmt.Sprintf("payment attempt not completed " +
+				"before timeout")
 
 			return preImage, nil, newErr(
 				ErrPaymentAttemptTimeout, errStr,
+			)
+
+		case <-cancelChan:
+			errStr := fmt.Sprintf("payment attempt was canceled")
+			return preImage, nil, newErr(
+				ErrPaymentAttemptCanceled, errStr,
 			)
 
 		case <-r.quit:

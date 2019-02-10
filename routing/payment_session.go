@@ -186,6 +186,51 @@ func newPaymentSession(p *LightningPayment,
 	}, nil
 }
 
+// EdgeLocatorOfEdgePolicy returns the edge locator corresponding to
+// the channel edge policy
+func EdgeLocatorOfEdgePolicy(ep *channeldb.ChannelEdgePolicy) *EdgeLocator {
+	return &EdgeLocator{
+		ChannelID: ep.ChannelID,
+		Direction: edgePolicyDirection(ep),
+	}
+}
+
+// edgePolicyDirection returns the direction of the edge policy in the format
+// used  by edge locators (i.e. 1 if lnwire.ChanUpdateDirection is set)
+func edgePolicyDirection(ep *channeldb.ChannelEdgePolicy) uint8 {
+	if ep.ChannelFlags&lnwire.ChanUpdateDirection == 0 {
+		return 0
+	}
+	return 1
+}
+
+// updateEdgePolicy updates the channel edge policy parameters
+func updateEdgePolicy(up *lnwire.ChannelUpdate,
+	ep *channeldb.ChannelEdgePolicy) {
+
+	ep.FeeBaseMSat = lnwire.MilliSatoshi(up.BaseFee)
+	ep.FeeProportionalMillionths = lnwire.MilliSatoshi(up.FeeRate)
+	ep.TimeLockDelta = up.TimeLockDelta
+	ep.MinHTLC = lnwire.MilliSatoshi(up.HtlcMinimumMsat)
+}
+
+// UpdateEdgePolicy updates edge policy of the routing hints kept in the
+// payment session.
+func (p *paymentSession) UpdateEdgePolicy(el *EdgeLocator,
+	update *lnwire.ChannelUpdate) {
+
+	log.Debugf("Updating edge %v policy in Mission Control", el)
+
+	// Run over hints and update policy if edge id and direction match.
+	for _, edges := range p.additionalEdges {
+		for _, edge := range edges {
+			if *el == *EdgeLocatorOfEdgePolicy(edge) {
+				updateEdgePolicy(update, edge)
+			}
+		}
+	}
+}
+
 // RequestRoute returns a route which is likely to be capable for successfully
 // routing the specified HTLC payment to the target node. Initially the first
 // set of paths returned from this method may encounter routing failure along

@@ -3,6 +3,7 @@ package routing
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -1338,15 +1339,19 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 		// Now that we know this isn't a stale update, we'll apply the
 		// new edge policy to the proper directional edge within the
 		// channel graph.
-		if err = r.cfg.Graph.UpdateEdgePolicy(msg); err != nil {
-			err := errors.Errorf("unable to add channel: %v", err)
-			log.Error(err)
-			return err
-		}
+		if exists {
+			err = r.cfg.Graph.UpdateEdgePolicy(msg)
+			if err != nil {
+				err := errors.Errorf("unable to update "+
+					"channel policy: %v", err)
+				log.Error(err)
+				return err
+			}
 
-		log.Tracef("New channel update applied: %v",
-			newLogClosure(func() string { return spew.Sdump(msg) }))
-		r.stats.incNumChannelUpdates()
+			log.Tracef("New channel update applied: %v",
+				newLogClosure(func() string { return spew.Sdump(msg) }))
+			r.stats.incNumChannelUpdates()
+		}
 
 	default:
 		return errors.Errorf("wrong routing update message type")
@@ -2052,13 +2057,21 @@ func (r *ChannelRouter) extractChannelUpdate(
 func (r *ChannelRouter) applyChannelUpdate(msg *lnwire.ChannelUpdate,
 	pubKey *btcec.PublicKey) bool {
 
-	ch, _, _, err := r.GetChannelByID(msg.ShortChannelID)
-	if err != nil {
-		log.Errorf("Unable to retrieve channel by id: %v", err)
+	// Verify update signature validates.
+	if err := ValidateChannelUpdateAnn(pubKey, math.MaxInt64, msg); err != nil {
+		log.Errorf("Failed to validate channel update: %v", err)
 		return false
 	}
 
-	if err := ValidateChannelUpdateAnn(pubKey, ch.Capacity, msg); err != nil {
+	// If channel is in database, do further checks. Else, the
+	// update is for an additional private edge added by hints.
+	ch, _, _, err := r.GetChannelByID(msg.ShortChannelID)
+	if err != nil {
+		log.Errorf("Unable to retrieve channel by id: %v", err)
+		return true
+	}
+
+	if err := ValidateOptionalFields(ch.Capacity, msg); err != nil {
 		log.Errorf("Unable to validate channel update: %v", err)
 		return false
 	}

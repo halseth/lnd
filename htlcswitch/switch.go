@@ -354,9 +354,16 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 // SendHTLC across restarts as long as the same paymentID is used. In case the
 // paymentID is reused for a already settled payment after a restart, the
 // caller is guaranteed to receive the preimage that settled it.
+//
+// This method is asynchronous, and in case of a successful HTLC settle the
+// preimage will be delivered on the returned channel. In case an error is
+// encountered during forwarding, it will be returned on the error channel.
 func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	htlc *lnwire.UpdateAddHTLC,
-	deobfuscator ErrorDecrypter) ([sha256.Size]byte, error) {
+	deobfuscator ErrorDecrypter) (chan [sha256.Size]byte, chan error) {
+
+	preimageChan := make(chan [sha256.Size]byte, 1)
+	errChan := make(chan error, 1)
 
 	// Generate and send new update packet, if error will be received on
 	// this stage it means that packet haven't left boundaries of our

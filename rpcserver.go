@@ -3094,6 +3094,13 @@ func (r *rpcServer) sendPayment(stream *paymentStream) error {
 	}
 }
 
+func (r *rpcServer) CancelPayment(ctx context.Context,
+	req *lnrpc.CancelPaymentRequest) (*lnrpc.CancelPaymentResponse, error) {
+
+	resp := &lnrpc.CancelPaymentResponse{}
+	return resp, nil
+}
+
 // SendPaymentSync is the synchronous non-streaming version of SendPayment.
 // This RPC is intended to be consumed by clients of the REST proxy.
 // Additionally, this RPC expects the destination's public key and the payment

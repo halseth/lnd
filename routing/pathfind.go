@@ -421,8 +421,8 @@ type restrictParams struct {
 	feeLimit lnwire.MilliSatoshi
 
 	// outgoingChannelID is the channel that needs to be taken to the first
-	// hop. If nil, any channel may be used.
-	outgoingChannelID *uint64
+	// hop. If zero, any channel may be used.
+	outgoingChannelID uint64
 }
 
 // findPath attempts to find a path from the source node within the
@@ -543,8 +543,7 @@ func findPath(g *graphParams, r *restrictParams,
 
 		// If we have an outgoing channel restriction and this is not
 		// the specified channel, skip it.
-		if isSourceChan && r.outgoingChannelID != nil &&
-			*r.outgoingChannelID != edge.ChannelID {
+		if isSourceChan && r.outgoingChannelID != edge.ChannelID {
 
 			return
 		}

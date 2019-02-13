@@ -36,7 +36,7 @@ type paymentSession struct {
 
 	finalCltvDelta    uint16
 	feeLimit          lnwire.MilliSatoshi
-	outgoingChannelID *uint64
+	outgoingChannelID uint64
 
 	target *btcec.PublicKey
 	amount lnwire.MilliSatoshi

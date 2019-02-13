@@ -41,9 +41,6 @@ type paymentSession struct {
 	errFailedPolicyChans map[edgeLocator]struct{}
 
 	mc *missionControl
-
-	haveRoutes     bool
-	preBuiltRoutes []*Route
 }
 
 // ReportVertexFailure adds a vertex to the graph prune view after a client
@@ -122,22 +119,6 @@ func (p *paymentSession) ReportEdgePolicyFailure(
 func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	height uint32, finalCltvDelta uint16) (*Route, error) {
 
-	switch {
-	// If we have a set of pre-built routes, then we'll just pop off the
-	// next route from the queue, and use it directly.
-	case p.haveRoutes && len(p.preBuiltRoutes) > 0:
-		nextRoute := p.preBuiltRoutes[0]
-		p.preBuiltRoutes[0] = nil // Set to nil to avoid GC leak.
-		p.preBuiltRoutes = p.preBuiltRoutes[1:]
-
-		return nextRoute, nil
-
-	// If we were instantiated with a set of pre-built routes, and we've
-	// run out, then we'll return a terminal error.
-	case p.haveRoutes && len(p.preBuiltRoutes) == 0:
-		return nil, fmt.Errorf("pre-built routes exhausted")
-	}
-
 	// Otherwise we actually need to perform path finding, so we'll obtain
 	// our current prune view snapshot. This view will only ever grow
 	// during the duration of this payment session, never shrinking.
@@ -184,4 +165,62 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	}
 
 	return route, err
+}
+
+type prebuiltPaymentSession struct {
+	preBuiltRoutes []*Route
+}
+
+// ReportVertexFailure adds a vertex to the graph prune view after a client
+// reports a routing failure localized to the vertex. The time the vertex was
+// added is noted, as it'll be pruned from the shared view after a period of
+// vertexDecay. However, the vertex will remain pruned for the *local* session.
+// This ensures we don't retry this vertex during the payment attempt.
+func (p *prebuiltPaymentSession) ReportVertexFailure(v Vertex) {
+}
+
+// ReportChannelFailure adds a channel to the graph prune view. The time the
+// channel was added is noted, as it'll be pruned from the global view after a
+// period of edgeDecay. However, the edge will remain pruned for the duration
+// of the *local* session. This ensures that we don't flap by continually
+// retrying an edge after its pruning has expired.
+//
+// TODO(roasbeef): also add value attempted to send and capacity of channel
+func (p *prebuiltPaymentSession) ReportEdgeFailure(e *edgeLocator) {
+}
+
+// ReportChannelPolicyFailure handles a failure message that relates to a
+// channel policy. For these types of failures, the policy is updated and we
+// want to keep it included during path finding. This function does mark the
+// edge as 'policy failed once'. The next time it fails, the whole node will be
+// pruned. This is to prevent nodes from keeping us busy by continuously sending
+// new channel updates.
+func (p *prebuiltPaymentSession) ReportEdgePolicyFailure(
+	errSource Vertex, failedEdge *edgeLocator) {
+}
+
+// RequestRoute returns a route which is likely to be capable for successfully
+// routing the specified HTLC payment to the target node. Initially the first
+// set of paths returned from this method may encounter routing failure along
+// the way, however as more payments are sent, mission control will start to
+// build an up to date view of the network itself. With each payment a new area
+// will be explored, which feeds into the recommendations made for routing.
+//
+// NOTE: This function is safe for concurrent access.
+func (p *prebuiltPaymentSession) RequestRoute(payment *LightningPayment,
+	height uint32, finalCltvDelta uint16) (*Route, error) {
+
+	// If we have a set of pre-built routes, then we'll just pop off the
+	// next route from the queue, and use it directly.
+	if len(p.preBuiltRoutes) > 0 {
+		nextRoute := p.preBuiltRoutes[0]
+		p.preBuiltRoutes[0] = nil // Set to nil to avoid GC leak.
+		p.preBuiltRoutes = p.preBuiltRoutes[1:]
+
+		return nextRoute, nil
+	}
+
+	// If we were instantiated with a set of pre-built routes, and we've
+	// run out, then we'll return a terminal error.
+	return nil, fmt.Errorf("pre-built routes exhausted")
 }

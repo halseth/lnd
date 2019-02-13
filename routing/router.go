@@ -1593,36 +1593,6 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(payment, paySession)
-}
-
-// SendToRoute attempts to send a payment as described within the passed
-// LightningPayment through the provided routes. This function is blocking
-// and will return either: when the payment is successful, or all routes
-// have been attempted and resulted in a failed payment. If the payment
-// succeeds, then a non-nil Route will be returned which describes the
-// path the successful payment traversed within the network to reach the
-// destination. Additionally, the payment preimage will also be returned.
-func (r *ChannelRouter) SendToRoute(routes []*Route,
-	payment *LightningPayment) ([32]byte, *Route, error) {
-
-	paySession := r.missionControl.NewPaymentSessionFromRoutes(
-		routes,
-	)
-
-	return r.sendPayment(payment, paySession)
-}
-
-// sendPayment attempts to send a payment as described within the passed
-// LightningPayment. This function is blocking and will return either: when the
-// payment is successful, or all candidates routes have been attempted and
-// resulted in a failed payment. If the payment succeeds, then a non-nil Route
-// will be returned which describes the path the successful payment traversed
-// within the network to reach the destination. Additionally, the payment
-// preimage will also be returned.
-func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession PaymentSession) ([32]byte, *Route, error) {
-
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
 			// Remove the public key curve parameters when logging
@@ -1640,6 +1610,44 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}),
 	)
 
+	var payAttemptTimeout time.Duration
+	if payment.PayAttemptTimeout == time.Duration(0) {
+		payAttemptTimeout = defaultPayAttemptTimeout
+	} else {
+		payAttemptTimeout = payment.PayAttemptTimeout
+	}
+
+	return r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
+}
+
+// SendToRoute attempts to send a payment as described within the passed
+// LightningPayment through the provided routes. This function is blocking
+// and will return either: when the payment is successful, or all routes
+// have been attempted and resulted in a failed payment. If the payment
+// succeeds, then a non-nil Route will be returned which describes the
+// path the successful payment traversed within the network to reach the
+// destination. Additionally, the payment preimage will also be returned.
+func (r *ChannelRouter) SendToRoute(routes []*Route,
+	payment *LightningPayment) ([32]byte, *Route, error) {
+
+	paySession := r.missionControl.NewPaymentSessionFromRoutes(
+		routes,
+	)
+
+	return r.sendPayment(payment.PaymentHash, defaultPayAttemptTimeout, paySession)
+}
+
+// sendPayment attempts to send a payment as described within the passed
+// LightningPayment. This function is blocking and will return either: when the
+// payment is successful, or all candidates routes have been attempted and
+// resulted in a failed payment. If the payment succeeds, then a non-nil Route
+// will be returned which describes the path the successful payment traversed
+// within the network to reach the destination. Additionally, the payment
+// preimage will also be returned.
+func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
+	payAttemptTimeout time.Duration,
+	paySession PaymentSession) ([32]byte, *Route, error) {
+
 	var (
 		preImage  [32]byte
 		sendError error
@@ -1651,14 +1659,6 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 	if err != nil {
 		return [32]byte{}, nil, err
 	}
-
-	var payAttemptTimeout time.Duration
-	if payment.PayAttemptTimeout == time.Duration(0) {
-		payAttemptTimeout = defaultPayAttemptTimeout
-	} else {
-		payAttemptTimeout = payment.PayAttemptTimeout
-	}
-
 	timeoutChan := time.After(payAttemptTimeout)
 
 	// We'll continue until either our payment succeeds, or we encounter a
@@ -1699,7 +1699,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}
 
 		log.Tracef("Attempting to send payment %x, using route: %v",
-			payment.PaymentHash, newLogClosure(func() string {
+			paymentHash, newLogClosure(func() string {
 				return spew.Sdump(route)
 			}),
 		)
@@ -1708,7 +1708,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// with the htlcAdd message that we send directly to the
 		// switch.
 		onionBlob, circuit, err := generateSphinxPacket(
-			route, payment.PaymentHash[:],
+			route, paymentHash[:],
 		)
 		if err != nil {
 			return preImage, nil, err
@@ -1720,14 +1720,14 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		htlcAdd := &lnwire.UpdateAddHTLC{
 			Amount:      route.TotalAmount,
 			Expiry:      route.TotalTimeLock,
-			PaymentHash: payment.PaymentHash,
+			PaymentHash: paymentHash,
 		}
 		copy(htlcAdd.OnionBlob[:], onionBlob)
 
 		// Before sending, double check that we don't already have 1)
 		// an in-flight payment to this payment hash, or 2) a complete
 		// payment for the same hash.
-		if err := r.control.ClearForTakeoff(payment.PaymentHash); err != nil {
+		if err := r.control.ClearForTakeoff(paymentHash); err != nil {
 			return [32]byte{}, nil, err
 		}
 
@@ -1753,10 +1753,10 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// Persistently mark that a payment to this payment
 			// hash failed. This will permit us to make another
 			// attempt at a successful payment.
-			err := r.control.Fail(payment.PaymentHash)
+			err := r.control.Fail(paymentHash)
 			if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
 				log.Warnf("Unable to ground payment %x: %v",
-					payment.PaymentHash, err)
+					paymentHash, err)
 			}
 
 			// An error occurred when attempting to send the
@@ -1764,7 +1764,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// continue to send using alternative routes, or simply
 			// terminate this attempt.
 			log.Errorf("Attempt to send payment %x failed: %v",
-				payment.PaymentHash, sendError)
+				paymentHash, sendError)
 
 			fErr, ok := sendError.(*htlcswitch.ForwardingError)
 			if !ok {
@@ -1775,7 +1775,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			errVertex := NewVertex(errSource)
 
 			log.Tracef("node=%x reported failure when sending "+
-				"htlc=%x", errVertex, payment.PaymentHash[:])
+				"htlc=%x", errVertex, paymentHash[:])
 
 			// Always determine chan id ourselves, because a channel
 			// update with id may not be available.
@@ -1989,10 +1989,10 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// Persistently mark that a payment to this payment hash
 		// succeeded. This will prevent us from ever making another
 		// payment to this hash.
-		err = r.control.Success(payment.PaymentHash)
+		err = r.control.Success(paymentHash)
 		if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
 			log.Warnf("Unable to mark completed payment %x: %v",
-				payment.PaymentHash, err)
+				paymentHash, err)
 		}
 
 		return preImage, route, nil

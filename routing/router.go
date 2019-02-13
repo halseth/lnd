@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
@@ -335,10 +336,11 @@ type ChannelRouter struct {
 	// gained to the next execution.
 	missionControl *missionControl
 
-	// control works as a checkpoint that makes sure we won't attempt to
 	// pay to a paymenthash which has a payment in-flight.
 	//TODO(halseth): move to package routing?
 	control htlcswitch.ControlTower
+
+	payAttempts *payAttemptStore
 
 	// channelEdgeMtx is a mutex we use to make sure we process only one
 	// ChannelEdgePolicy at a time for a given channelID, to ensure
@@ -376,6 +378,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		topologyClients:   make(map[uint64]*topologyClient),
 		ntfnClientUpdates: make(chan *topologyClientUpdate),
 		control:           htlcswitch.NewPaymentControl(false, cfg.DB),
+		payAttempts:       &payAttemptStore{cfg.DB},
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
 		routeCache:        make(map[routeTuple][]*Route),
@@ -468,6 +471,39 @@ func (r *ChannelRouter) Start() error {
 	err = r.cfg.Graph.PruneGraphNodes()
 	if err != nil && err != channeldb.ErrGraphNodesNotFound {
 		return err
+	}
+
+	// If any payment attempts are lingering in the store, we resend them
+	// to the switch, to make sure they are forwarded to the network.
+	payments, err := r.payAttempts.fetchPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range payments {
+		log.Infof("Resending payment with hash %x", p.paymentHash)
+		r.wg.Add(1)
+		go func(p *storedPayment) {
+			defer r.wg.Done()
+
+			if p.payment != nil {
+				_, _, err := r.SendPayment(p.payment)
+				if err != nil {
+					log.Errorf("resenfing payment with hash %v "+
+						"failed: %v", p.paymentHash, err)
+					return
+				}
+			} else if len(p.routes) > 0 {
+				_, _, err := r.SendToRoute(p.routes, p.paymentHash)
+				if err != nil {
+					log.Errorf("resenfing payment with hash %v "+
+						"failed: %v", p.paymentHash, err)
+					return
+				}
+			}
+
+			log.Infof("Resent payment with hash %x.", p.paymentHash)
+		}(p)
 	}
 
 	r.wg.Add(1)
@@ -1568,7 +1604,23 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		payAttemptTimeout = payment.PayAttemptTimeout
 	}
 
-	return r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
+	if err := r.payAttempts.initSendPayment(payment); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	preimg, route, sendErr := r.sendPayment(
+		payment.PaymentHash, payAttemptTimeout, paySession,
+	)
+	if sendErr != ErrRouterShuttingDown {
+		// We'll delete the payment from the database now that a result
+		// is in. Note that in case we are shutting down we don't
+		// delete it, so we'll continue sending it when we restart.
+		if err := r.payAttempts.deletePayment(payment.PaymentHash); err != nil {
+			log.Errorf("unable to delete payment: %v", err)
+		}
+	}
+
+	return preimg, route, sendErr
 }
 
 // SendToRoute attempts to send a payment as described within the passed
@@ -1585,7 +1637,23 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 		routes,
 	)
 
-	return r.sendPayment(paymentHash, defaultPayAttemptTimeout, paySession)
+	if err := r.payAttempts.initSendToRoute(paymentHash, routes); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	preimg, route, sendErr := r.sendPayment(
+		paymentHash, defaultPayAttemptTimeout, paySession,
+	)
+	if sendErr != ErrRouterShuttingDown {
+		// We'll delete the payment from the database now that a result
+		// is in. Note that in case we are shutting down we don't
+		// delete it, so we'll continue sending it when we restart.
+		if err := r.payAttempts.deletePayment(paymentHash); err != nil {
+			log.Errorf("unable to delete payment: %v", err)
+		}
+	}
+
+	return preimg, route, sendErr
 }
 
 // sendPayment attempts to send a payment as described within the passed
@@ -1602,6 +1670,7 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 	var (
 		preImage  [32]byte
 		sendError error
+		err       error
 	)
 
 	// We'll also fetch the current block height so we can properly
@@ -1636,75 +1705,82 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 			// are expiring.
 		}
 
-		route, err := paySession.RequestRoute(uint32(currentHeight))
-		if err != nil {
-			// If we're unable to successfully make a payment using
-			// any of the routes we've found, then return an error.
-			if sendError != nil {
-				return [32]byte{}, nil, fmt.Errorf("unable to "+
-					"route payment to destination: %v",
-					sendError)
+		var route *Route
+		p, err := r.payAttempts.fetchPayAttempt(paymentHash)
+		switch {
+
+		// In case no payment attempt was found for this payment, we
+		// create one now.
+		case err == ErrNotFound:
+			route, err = paySession.RequestRoute(
+				uint32(currentHeight),
+			)
+			if err != nil {
+				// If we're unable to successfully make a payment using
+				// any of the routes we've found, then return an error.
+				if sendError != nil {
+					return [32]byte{}, nil, fmt.Errorf("unable to "+
+						"route payment to destination: %v",
+						sendError)
+				}
+
+				return preImage, nil, err
 			}
 
+			// Generate the raw encoded sphinx packet to be included along
+			// with the htlcAdd message that we send directly to the
+			// switch.
+			onionBlob, circuit, err := generateSphinxPacket(
+				route, paymentHash[:],
+			)
+			if err != nil {
+				return preImage, nil, err
+			}
+
+			// Craft an HTLC packet to send to the layer 2 switch. The
+			// metadata within this packet will be used to route the
+			// payment through the network, starting with the first-hop.
+			htlcAdd := &lnwire.UpdateAddHTLC{
+				Amount:      route.TotalAmount,
+				Expiry:      route.TotalTimeLock,
+				PaymentHash: paymentHash,
+			}
+			copy(htlcAdd.OnionBlob[:], onionBlob)
+
+			// We generate a new, unique payment ID that we will use for
+			// this HTLC.
+			paymentID, err := r.cfg.NextPaymentID()
+			if err != nil {
+				return preImage, nil, err
+			}
+
+			firstHop := lnwire.NewShortChanIDFromInt(
+				route.Hops[0].ChannelID,
+			)
+
+			p = &payAttempt{
+				paymentID: paymentID,
+				firstHop:  firstHop,
+				htlcAdd:   htlcAdd,
+				circuit:   circuit,
+			}
+
+		case err != nil:
 			return preImage, nil, err
 		}
 
+		// TODO: store route?
 		log.Tracef("Attempting to send payment %x, using route: %v",
 			paymentHash, newLogClosure(func() string {
 				return spew.Sdump(route)
 			}),
 		)
 
-		// Generate the raw encoded sphinx packet to be included along
-		// with the htlcAdd message that we send directly to the
-		// switch.
-		onionBlob, circuit, err := generateSphinxPacket(
-			route, paymentHash[:],
-		)
-		if err != nil {
-			return preImage, nil, err
-		}
-
-		// Craft an HTLC packet to send to the layer 2 switch. The
-		// metadata within this packet will be used to route the
-		// payment through the network, starting with the first-hop.
-		htlcAdd := &lnwire.UpdateAddHTLC{
-			Amount:      route.TotalAmount,
-			Expiry:      route.TotalTimeLock,
-			PaymentHash: paymentHash,
-		}
-		copy(htlcAdd.OnionBlob[:], onionBlob)
-
-		// Before sending, double check that we don't already have 1)
-		// an in-flight payment to this payment hash, or 2) a complete
-		// payment for the same hash.
-		if err := r.control.ClearForTakeoff(paymentHash); err != nil {
-			return [32]byte{}, nil, err
-		}
-
-		// We generate a new, unique payment ID that we will use for
-		// this HTLC.
-		paymentID, err := r.cfg.NextPaymentID()
-		if err != nil {
-			return preImage, nil, err
-		}
-
 		// Attempt to send this payment through the network to complete
 		// the payment. If this attempt fails, then we'll continue on
 		// to the next available route.
-		firstHop := lnwire.NewShortChanIDFromInt(
-			route.Hops[0].ChannelID,
-		)
-
-		p := &payAttempt{
-			paymentID: paymentID,
-			firstHop:  firstHop,
-			htlcAdd:   htlcAdd,
-			circuit:   circuit,
-		}
-
 		preImage, sendError = r.sendPayAttemptToSwitch(
-			p, route, route.TotalFees,
+			paymentHash, p, route, route.TotalFees,
 		)
 		if sendError == htlcswitch.ErrSwitchExiting {
 			return preImage, nil, sendError
@@ -1959,12 +2035,29 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 }
 
 // NOTE: route can be nil
-func (r *ChannelRouter) sendPayAttemptToSwitch(p *payAttempt, route *Route,
+func (r *ChannelRouter) sendPayAttemptToSwitch(pHash lntypes.Hash,
+	p *payAttempt, route *Route,
 	totalFees lnwire.MilliSatoshi) ([32]byte, error) {
+
+	// Before sending this HTLC to the switch, we checkpoint it to the DB.
+	// This lets us resend it on startup in case we go down, to get the
+	// result of the attempt.
+	if err := r.payAttempts.storePayAttempt(pHash, p); err != nil {
+		return [32]byte{}, err
+	}
 
 	preImage, sendError := r.cfg.SendToSwitch(
 		p.firstHop, p.paymentID, p.htlcAdd, p.circuit,
 	)
+
+	if sendError == htlcswitch.ErrSwitchExiting {
+		return preImage, ErrRouterShuttingDown
+	}
+
+	delErr := r.payAttempts.deletePayAttempt(pHash)
+	if delErr != nil {
+		log.Errorf("Unable to delete payment attempt: %v", delErr)
+	}
 
 	return preImage, sendError
 }

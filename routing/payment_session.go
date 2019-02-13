@@ -8,6 +8,17 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
+type PaymentSession interface {
+	ReportVertexFailure(v Vertex)
+
+	ReportEdgeFailure(e *edgeLocator)
+
+	ReportEdgePolicyFailure(errSource Vertex, failedEdge *edgeLocator)
+
+	RequestRoute(payment *LightningPayment,
+		height uint32, finalCltvDelta uint16) (*Route, error)
+}
+
 // paymentSession is used during an HTLC routings session to prune the local
 // chain view in response to failures, and also report those failures back to
 // missionControl. The snapshot copied for this session will only ever grow,

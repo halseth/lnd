@@ -212,18 +212,11 @@ func (m *missionControl) NewPaymentSession(payment *LightningPayment) (
 		return nil, err
 	}
 
-	var finalCLTVDelta uint16
-	if payment.FinalCLTVDelta == nil {
-		finalCLTVDelta = DefaultFinalCLTVDelta
-	} else {
-		finalCLTVDelta = *payment.FinalCLTVDelta
-	}
-
 	return &paymentSession{
 		pruneViewSnapshot:    viewSnapshot,
 		additionalEdges:      edges,
 		bandwidthHints:       bandwidthHints,
-		finalCltvDelta:       finalCLTVDelta,
+		finalCltvDelta:       payment.FinalCLTVDelta,
 		feeLimit:             payment.FeeLimit,
 		outgoingChannelID:    payment.OutgoingChannelID,
 		target:               payment.Target,

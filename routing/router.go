@@ -1550,7 +1550,7 @@ type LightningPayment struct {
 	// of at least: currentHeight + FinalCLTVDelta. If this value is
 	// unspecified, then a default value of DefaultFinalCLTVDelta will be
 	// used.
-	FinalCLTVDelta *uint16
+	FinalCLTVDelta uint16
 
 	// PayAttemptTimeout is a timeout value that we'll use to determine
 	// when we should should abandon the payment attempt after consecutive

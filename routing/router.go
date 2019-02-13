@@ -1623,6 +1623,11 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 	return preimg, route, sendErr
 }
 
+func (r *ChannelRouter) StartPayment(payment *LightningPayment) error {
+
+	return nil
+}
+
 // SendToRoute attempts to send a payment as described within the passed
 // LightningPayment through the provided routes. This function is blocking
 // and will return either: when the payment is successful, or all routes

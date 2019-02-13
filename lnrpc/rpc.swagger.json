@@ -1267,6 +1267,28 @@
     "lnrpcAbandonChannelResponse": {
       "type": "object"
     },
+    "lnrpcActivePayment": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/lnrpcActivePaymentStatus"
+        },
+        "payment_hash": {
+          "type": "string"
+        }
+      }
+    },
+    "lnrpcActivePaymentStatus": {
+      "type": "string",
+      "enum": [
+        "ACTIVE",
+        "CANCELED",
+        "COMPLETED",
+        "FAILED",
+        "TIMEOUT"
+      ],
+      "default": "ACTIVE"
+    },
     "lnrpcAddInvoiceResponse": {
       "type": "object",
       "properties": {
@@ -2236,6 +2258,17 @@
       },
       "description": "*\nAn individual vertex/node within the channel graph. A node is\nconnected to other nodes by one or more channel edges emanating from it. As the\ngraph is directed, a node will also have an incoming edge attached to it for\neach outgoing edge."
     },
+    "lnrpcListActivePaymentsResponse": {
+      "type": "object",
+      "properties": {
+        "payments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcActivePayment"
+          }
+        }
+      }
+    },
     "lnrpcListChannelsResponse": {
       "type": "object",
       "properties": {
@@ -2982,6 +3015,9 @@
           "title": "/ The signature for the given message"
         }
       }
+    },
+    "lnrpcStartPaymentResponse": {
+      "type": "object"
     },
     "lnrpcStopResponse": {
       "type": "object"

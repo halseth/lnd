@@ -436,6 +436,10 @@ service Lightning {
     */
     rpc SendPayment (stream SendRequest) returns (stream SendResponse);
 
+    rpc StartPayment (SendRequest) returns (StartPaymentResponse);
+
+    rpc ListActivePayments (ListActivePaymentsRequest) returns (ListActivePaymentsResponse);
+
     rpc CancelPayment (CancelPaymentRequest) returns (CancelPaymentResponse);
 
     /**
@@ -783,6 +787,7 @@ message SendRequest {
     */
     uint64 outgoing_chan_id = 9;
 }
+
 message SendResponse {
     string payment_error = 1 [json_name = "payment_error"];
     bytes payment_preimage = 2 [json_name = "payment_preimage"];
@@ -790,6 +795,29 @@ message SendResponse {
     bytes payment_hash = 4 [json_name = "payment_hash"];
 }
 
+message StartPaymentResponse {
+}
+
+enum ActivePaymentStatus {
+    ACTIVE = 0; 
+    CANCELED = 1;
+    COMPLETED = 2;
+    FAILED = 3;
+    TIMEOUT = 4;
+}
+
+    
+message ActivePayment {
+    ActivePaymentStatus status = 1;
+
+    string payment_hash = 2;
+}
+
+message ListActivePaymentsRequest {
+}
+message ListActivePaymentsResponse {
+    repeated ActivePayment payments = 1;
+}
 
 message CancelPaymentRequest {
     /// The hash to use within the payment's HTLC

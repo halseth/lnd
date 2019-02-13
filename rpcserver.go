@@ -2633,6 +2633,16 @@ func (r *rpcServer) SendPayment(stream lnrpc.Lightning_SendPaymentServer) error 
 	})
 }
 
+func (r *rpcServer) StartPayment(ctx context.Context, in *lnrpc.SendRequest) (
+	*lnrpc.StartPaymentResponse, error) {
+	return nil, nil
+}
+
+func (r *rpcServer) ListActivePayments(ctx context.Context,
+	in *lnrpc.ListActivePaymentsRequest) (*lnrpc.ListActivePaymentsResponse, error) {
+	return nil, nil
+}
+
 // SendToRoute dispatches a bi-directional streaming RPC for sending payments
 // through the Lightning Network via predefined routes passed in. A single RPC
 // invocation creates a persistent bi-directional stream allowing clients to

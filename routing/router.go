@@ -148,6 +148,8 @@ type ChannelPolicy struct {
 // the configuration MUST be non-nil for the ChannelRouter to carry out its
 // duties.
 type Config struct {
+	DB *channeldb.DB
+
 	// Graph is the channel graph that the ChannelRouter will use to gather
 	// metrics from and also to carry out path finding queries.
 	// TODO(roasbeef): make into an interface
@@ -329,6 +331,11 @@ type ChannelRouter struct {
 	// gained to the next execution.
 	missionControl *missionControl
 
+	// control works as a checkpoint that makes sure we won't attempt to
+	// pay to a paymenthash which has a payment in-flight.
+	//TODO(halseth): move to package routing?
+	control htlcswitch.ControlTower
+
 	// channelEdgeMtx is a mutex we use to make sure we process only one
 	// ChannelEdgePolicy at a time for a given channelID, to ensure
 	// consistency between the various database accesses.
@@ -364,6 +371,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		networkUpdates:    make(chan *routingMsg),
 		topologyClients:   make(map[uint64]*topologyClient),
 		ntfnClientUpdates: make(chan *topologyClientUpdate),
+		control:           htlcswitch.NewPaymentControl(false, cfg.DB),
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
 		routeCache:        make(map[routeTuple][]*Route),
@@ -1571,6 +1579,14 @@ type LightningPayment struct {
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
 func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route, error) {
+
+	// Before sending, double check that we don't already have 1)
+	// an in-flight payment to this payment hash, or 2) a complete
+	// payment for the same hash.
+	if err := r.control.ClearForTakeoff(payment.PaymentHash); err != nil {
+		return [32]byte{}, nil, err
+	}
+
 	// Before starting the HTLC routing attempt, we'll create a fresh
 	// payment session which will report our errors back to mission
 	// control.
@@ -1581,7 +1597,32 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(payment, paySession)
+	preimage, route, err := r.sendPayment(payment, paySession)
+	if err != nil {
+		// TODO: dangerous, fix this.
+		if err != htlcswitch.ErrSwitchExiting {
+			// Persistently mark that a payment to this payment
+			// hash failed. This will permit us to make another
+			// attempt at a successful payment.
+			err := r.control.Fail(payment.PaymentHash)
+			if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+				log.Warnf("Unable to ground payment %x: %v",
+					payment.PaymentHash, err)
+			}
+		}
+
+		return [32]byte{}, nil, err
+	}
+
+	// Persistently mark that a payment to this payment hash succeeded.
+	// This will prevent us from ever making another payment to this hash.
+	err = r.control.Success(payment.PaymentHash)
+	if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+		log.Warnf("Unable to mark completed payment %x: %v",
+			payment.PaymentHash, err)
+	}
+
+	return preimage, route, nil
 }
 
 // SendToRoute attempts to send a payment as described within the passed
@@ -1594,11 +1635,43 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 func (r *ChannelRouter) SendToRoute(routes []*Route,
 	payment *LightningPayment) ([32]byte, *Route, error) {
 
+	// Before sending, double check that we don't already have 1)
+	// an in-flight payment to this payment hash, or 2) a complete
+	// payment for the same hash.
+	if err := r.control.ClearForTakeoff(payment.PaymentHash); err != nil {
+		return [32]byte{}, nil, err
+	}
+
 	paySession := r.missionControl.NewPaymentSessionFromRoutes(
 		routes,
 	)
 
-	return r.sendPayment(payment, paySession)
+	preimage, route, err := r.sendPayment(payment, paySession)
+	if err != nil {
+		// TODO: dangerous, fix this.
+		if err != htlcswitch.ErrSwitchExiting {
+			// Persistently mark that a payment to this payment
+			// hash failed. This will permit us to make another
+			// attempt at a successful payment.
+			err := r.control.Fail(payment.PaymentHash)
+			if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+				log.Warnf("Unable to ground payment %x: %v",
+					payment.PaymentHash, err)
+			}
+		}
+
+		return [32]byte{}, nil, err
+	}
+
+	// Persistently mark that a payment to this payment hash succeeded.
+	// This will prevent us from ever making another payment to this hash.
+	err = r.control.Success(payment.PaymentHash)
+	if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+		log.Warnf("Unable to mark completed payment %x: %v",
+			payment.PaymentHash, err)
+	}
+
+	return preimage, route, nil
 }
 
 // sendPayment attempts to send a payment as described within the passed

@@ -547,6 +547,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 	}
 
 	s.chanRouter, err = routing.New(routing.Config{
+		DB:        chanDB,
 		Graph:     chanGraph,
 		Chain:     cc.chainIO,
 		ChainView: cc.chainView,

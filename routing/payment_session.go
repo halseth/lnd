@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
@@ -14,8 +15,7 @@ import (
 type PaymentSession interface {
 	// RequestRoute returns the next route to attempt for routing the
 	// specified HTLC payment to the target node.
-	RequestRoute(payment *LightningPayment,
-		height uint32, finalCltvDelta uint16) (*Route, error)
+	RequestRoute(height uint32) (*Route, error)
 
 	// ReportVertexFailure reports to the PaymentSession that the passsed
 	// vertex failed to route the previous payment attempt. The
@@ -52,6 +52,13 @@ type paymentSession struct {
 	additionalEdges map[Vertex][]*channeldb.ChannelEdgePolicy
 
 	bandwidthHints map[uint64]lnwire.MilliSatoshi
+
+	finalCltvDelta    uint16
+	feeLimit          lnwire.MilliSatoshi
+	outgoingChannelID *uint64
+
+	target *btcec.PublicKey
+	amount lnwire.MilliSatoshi
 
 	// errFailedFeeChans is a map of the short channel IDs that were the
 	// source of policy related routing failures during this payment attempt.
@@ -142,9 +149,7 @@ func (p *paymentSession) ReportEdgePolicyFailure(
 //
 // NOTE: This function is safe for concurrent access.
 // NOTE: Part of the PaymentSession interface.
-func (p *paymentSession) RequestRoute(payment *LightningPayment,
-	height uint32, finalCltvDelta uint16) (*Route, error) {
-
+func (p *paymentSession) RequestRoute(height uint32) (*Route, error) {
 	// Otherwise we actually need to perform path finding, so we'll obtain
 	// our current prune view snapshot. This view will only ever grow
 	// during the duration of this payment session, never shrinking.
@@ -168,10 +173,10 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 		&restrictParams{
 			ignoredNodes:      pruneView.vertexes,
 			ignoredEdges:      pruneView.edges,
-			feeLimit:          payment.FeeLimit,
-			outgoingChannelID: payment.OutgoingChannelID,
+			feeLimit:          p.feeLimit,
+			outgoingChannelID: p.outgoingChannelID,
 		},
-		p.mc.selfNode, payment.Target, payment.Amount,
+		p.mc.selfNode, p.target, p.amount,
 	)
 	if err != nil {
 		return nil, err
@@ -181,8 +186,8 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	// a route by applying the time-lock and fee requirements.
 	sourceVertex := Vertex(p.mc.selfNode.PubKeyBytes)
 	route, err := newRoute(
-		payment.Amount, payment.FeeLimit, sourceVertex, path, height,
-		finalCltvDelta,
+		p.amount, p.feeLimit, sourceVertex, path, height,
+		p.finalCltvDelta,
 	)
 	if err != nil {
 		// TODO(roasbeef): return which edge/vertex didn't work
@@ -223,8 +228,7 @@ func (p *prebuiltPaymentSession) ReportEdgePolicyFailure(
 // prebuiltPaymentSession was initialized with.
 //
 // NOTE: Part of the PaymentSession interface.
-func (p *prebuiltPaymentSession) RequestRoute(payment *LightningPayment,
-	height uint32, finalCltvDelta uint16) (*Route, error) {
+func (p *prebuiltPaymentSession) RequestRoute(height uint32) (*Route, error) {
 
 	// If we have a set of pre-built routes, then we'll just pop off the
 	// next route from the queue, and use it directly.

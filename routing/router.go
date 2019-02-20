@@ -1618,7 +1618,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 // path the successful payment traversed within the network to reach the
 // destination. Additionally, the payment preimage will also be returned.
 func (r *ChannelRouter) SendToRoute(routes []*Route,
-	payment *LightningPayment) ([32]byte, *Route, error) {
+	paymentHash [32]byte) ([32]byte, *Route, error) {
 
 	paySession := r.missionControl.NewPaymentSessionFromRoutes(
 		routes,
@@ -1631,7 +1631,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 	)
 
 	return r.sendPayment(
-		payment.PaymentHash, defaultPayAttemptTimeout, paySession,
+		paymentHash, defaultPayAttemptTimeout, paySession,
 	)
 }
 

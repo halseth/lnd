@@ -1795,8 +1795,17 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 	firstHop := lnwire.NewShortChanIDFromInt(
 		route.Hops[0].ChannelID,
 	)
-	err = r.cfg.SendToSwitch(
-		firstHop, paymentID, htlcAdd, circuit,
+
+	p := &payAttempt{
+		paymentID: paymentID,
+		firstHop:  firstHop,
+		htlcAdd:   htlcAdd,
+		route:     route,
+		circuit:   circuit,
+	}
+
+	err = r.sendPayAttemptToSwitch(
+		p, route, route.TotalFees,
 	)
 	if err != nil {
 		return [32]byte{}, err
@@ -2031,6 +2040,17 @@ func (r *ChannelRouter) processSendError(paySession PaymentSession,
 	default:
 		return true
 	}
+}
+
+// NOTE: route can be nil
+func (r *ChannelRouter) sendPayAttemptToSwitch(p *payAttempt, route *Route,
+	totalFees lnwire.MilliSatoshi) error {
+
+	sendError := r.cfg.SendToSwitch(
+		p.firstHop, p.paymentID, p.htlcAdd, p.circuit,
+	)
+
+	return sendError
 }
 
 // getFailedEdge tries to locate the failing channel given a route and the

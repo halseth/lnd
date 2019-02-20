@@ -43,6 +43,10 @@ var (
 	// construct a new sphinx packet, but provides an empty set of hops for
 	// each route.
 	ErrNoRouteHopsProvided = fmt.Errorf("empty route hops provided")
+
+	// ErrRouterShuttingDown is returned if the router is in the process of
+	// shutting down.
+	ErrRouterShuttingDown = fmt.Errorf("router shutting down")
 )
 
 // ChannelGraphSource represents the source of information about the topology
@@ -1744,7 +1748,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			)
 
 		case <-r.quit:
-			return [32]byte{}, nil, fmt.Errorf("router shutting down")
+			return [32]byte{}, nil, ErrRouterShuttingDown
 
 		default:
 			// Fall through if we haven't hit our time limit, or
@@ -2178,10 +2182,10 @@ func (r *ChannelRouter) AddNode(node *channeldb.LightningNode) error {
 		case err := <-rMsg.err:
 			return err
 		case <-r.quit:
-			return errors.New("router has been shut down")
+			return ErrRouterShuttingDown
 		}
 	case <-r.quit:
-		return errors.New("router has been shut down")
+		return ErrRouterShuttingDown
 	}
 }
 
@@ -2202,10 +2206,10 @@ func (r *ChannelRouter) AddEdge(edge *channeldb.ChannelEdgeInfo) error {
 		case err := <-rMsg.err:
 			return err
 		case <-r.quit:
-			return errors.New("router has been shut down")
+			return ErrRouterShuttingDown
 		}
 	case <-r.quit:
-		return errors.New("router has been shut down")
+		return ErrRouterShuttingDown
 	}
 }
 
@@ -2225,10 +2229,10 @@ func (r *ChannelRouter) UpdateEdge(update *channeldb.ChannelEdgePolicy) error {
 		case err := <-rMsg.err:
 			return err
 		case <-r.quit:
-			return errors.New("router has been shut down")
+			return ErrRouterShuttingDown
 		}
 	case <-r.quit:
-		return errors.New("router has been shut down")
+		return ErrRouterShuttingDown
 	}
 }
 

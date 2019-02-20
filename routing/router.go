@@ -1761,6 +1761,17 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession PaymentSession, p *payAtte
 			log.Errorf("Unable to delete payment attempt: %v", delErr)
 		}
 
+		amt := p.htlcAdd.Amount - route.TotalFees
+
+		// TODO: make db delete/save atomic?
+		saveErr := r.savePayment(route, amt, preimage[:])
+		if saveErr != nil {
+			log.Errorf("unable to save successful payment")
+
+			// TODO: return nil err?
+			return preimage, true, saveErr
+		}
+
 		return preimage, true, nil
 	}
 
@@ -2063,6 +2074,43 @@ func (r *ChannelRouter) getPayAttempt(paymentHash [32]byte, nextRoute func() (*R
 		circuit:   circuit,
 	}
 	return p, route, nil
+}
+
+// savePayment saves a successfully completed payment to the database for
+// historical record keeping.
+func (r *ChannelRouter) savePayment(route *Route,
+	amount lnwire.MilliSatoshi, preImage []byte) error {
+
+	var (
+		paymentPath   [][33]byte
+		totalFees     lnwire.MilliSatoshi
+		totalTimeLock uint32
+	)
+
+	if route != nil {
+		paymentPath = make([][33]byte, len(route.Hops))
+		for i, hop := range route.Hops {
+			hopPub := hop.PubKeyBytes
+			copy(paymentPath[i][:], hopPub[:])
+		}
+		totalFees = route.TotalFees
+		totalTimeLock = route.TotalTimeLock
+	}
+
+	payment := &channeldb.OutgoingPayment{
+		Invoice: channeldb.Invoice{
+			Terms: channeldb.ContractTerm{
+				Value: amount,
+			},
+			CreationDate: time.Now(),
+		},
+		Path:           paymentPath,
+		Fee:            totalFees,
+		TimeLockLength: totalTimeLock,
+	}
+	copy(payment.PaymentPreimage[:], preImage)
+
+	return r.cfg.DB.AddPayment(payment)
 }
 
 // getFailedEdge tries to locate the failing channel given a route and the

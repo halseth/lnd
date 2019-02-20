@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
@@ -335,10 +336,11 @@ type ChannelRouter struct {
 	// gained to the next execution.
 	missionControl *missionControl
 
-	// control works as a checkpoint that makes sure we won't attempt to
 	// pay to a paymenthash which has a payment in-flight.
 	//TODO(halseth): move to package routing?
 	control htlcswitch.ControlTower
+
+	payAttempts *payAttemptStore
 
 	// channelEdgeMtx is a mutex we use to make sure we process only one
 	// ChannelEdgePolicy at a time for a given channelID, to ensure
@@ -376,6 +378,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		topologyClients:   make(map[uint64]*topologyClient),
 		ntfnClientUpdates: make(chan *topologyClientUpdate),
 		control:           htlcswitch.NewPaymentControl(false, cfg.DB),
+		payAttempts:       &payAttemptStore{cfg.DB},
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
 		routeCache:        make(map[routeTuple][]*Route),
@@ -468,6 +471,39 @@ func (r *ChannelRouter) Start() error {
 	err = r.cfg.Graph.PruneGraphNodes()
 	if err != nil && err != channeldb.ErrGraphNodesNotFound {
 		return err
+	}
+
+	// If any payment attempts are lingering in the store, we resend them
+	// to the switch, to make sure they are forwarded to the network.
+	payments, err := r.payAttempts.fetchPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range payments {
+		log.Infof("Resending payment with hash %x", p.paymentHash)
+		r.wg.Add(1)
+		go func(p *storedPayment) {
+			defer r.wg.Done()
+
+			if p.payment != nil {
+				_, _, err := r.SendPayment(p.payment)
+				if err != nil {
+					log.Errorf("resenfing payment with hash %v "+
+						"failed: %v", p.paymentHash, err)
+					return
+				}
+			} else if len(p.routes) > 0 {
+				_, _, err := r.SendToRoute(p.routes, p.paymentHash)
+				if err != nil {
+					log.Errorf("resenfing payment with hash %v "+
+						"failed: %v", p.paymentHash, err)
+					return
+				}
+			}
+
+			log.Infof("Resent payment with hash %x.", p.paymentHash)
+		}(p)
 	}
 
 	r.wg.Add(1)
@@ -1566,7 +1602,49 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		payAttemptTimeout = payment.PayAttemptTimeout
 	}
 
-	return r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
+	// Before sending, double check that we don't already have 1)
+	// an in-flight payment to this payment hash, or 2) a complete
+	// payment for the same hash.
+	if err := r.control.ClearForTakeoff(payment.PaymentHash); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	if err := r.payAttempts.initSendPayment(payment); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	preimg, route, sendErr := r.sendPayment(
+		payment.PaymentHash, payAttemptTimeout, paySession,
+	)
+	if sendErr != ErrRouterShuttingDown {
+		// We'll delete the payment from the database now that a result
+		// is in. Note that in case we are shutting down we don't
+		// delete it, so we'll continue sending it when we restart.
+		if err := r.payAttempts.deletePayment(payment.PaymentHash); err != nil {
+			log.Errorf("unable to delete payment: %v", err)
+		}
+
+		// Persistently mark that a payment to this payment
+		// hash failed. This will permit us to make another
+		// attempt at a successful payment.
+		err := r.control.Fail(payment.PaymentHash)
+		if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+			log.Warnf("Unable to ground payment %x: %v",
+				payment.PaymentHash, err)
+		}
+
+	}
+
+	// Persistently mark that a payment to this payment hash
+	// succeeded. This will prevent us from ever making another
+	// payment to this hash.
+	err = r.control.Success(payment.PaymentHash)
+	if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+		log.Warnf("Unable to mark completed payment %x: %v",
+			payment.PaymentHash, err)
+	}
+
+	return preimg, route, sendErr
 }
 
 // SendToRoute attempts to send a payment as described within the passed
@@ -1589,7 +1667,49 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 		}),
 	)
 
-	return r.sendPayment(paymentHash, defaultPayAttemptTimeout, paySession)
+	// Before sending, double check that we don't already have 1)
+	// an in-flight payment to this payment hash, or 2) a complete
+	// payment for the same hash.
+	if err := r.control.ClearForTakeoff(paymentHash); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	if err := r.payAttempts.initSendToRoute(paymentHash, routes); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	preimg, route, sendErr := r.sendPayment(
+		paymentHash, defaultPayAttemptTimeout, paySession,
+	)
+	if sendErr != ErrRouterShuttingDown {
+		// We'll delete the payment from the database now that a result
+		// is in. Note that in case we are shutting down we don't
+		// delete it, so we'll continue sending it when we restart.
+		if err := r.payAttempts.deletePayment(paymentHash); err != nil {
+			log.Errorf("unable to delete payment: %v", err)
+		}
+
+		// Persistently mark that a payment to this payment
+		// hash failed. This will permit us to make another
+		// attempt at a successful payment.
+		err := r.control.Fail(paymentHash)
+		if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+			log.Warnf("Unable to ground payment %x: %v",
+				paymentHash, err)
+		}
+
+	}
+
+	// Persistently mark that a payment to this payment hash
+	// succeeded. This will prevent us from ever making another
+	// payment to this hash.
+	err := r.control.Success(paymentHash)
+	if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
+		log.Warnf("Unable to mark completed payment %x: %v",
+			paymentHash, err)
+	}
+
+	return preimg, route, sendErr
 }
 
 // sendPayment attempts to send a payment as described within the passed
@@ -1606,6 +1726,7 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 	var (
 		preImage  [32]byte
 		sendError error
+		err       error
 	)
 
 	// We'll also fetch the current block height so we can properly
@@ -1640,13 +1761,6 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 			// are expiring.
 		}
 
-		// Before sending, double check that we don't already have 1)
-		// an in-flight payment to this payment hash, or 2) a complete
-		// payment for the same hash.
-		if err := r.control.ClearForTakeoff(paymentHash); err != nil {
-			return [32]byte{}, nil, err
-		}
-
 		p, route, err := r.getPayAttempt(
 			paymentHash, func() (*Route, error) {
 				return paySession.RequestRoute(
@@ -1665,6 +1779,7 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 			return preImage, nil, err
 		}
 
+		// TODO: store route?
 		log.Tracef("Attempting to send payment %x, using route: %v",
 			paymentHash, newLogClosure(func() string {
 				return spew.Sdump(route)
@@ -1672,20 +1787,11 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 		)
 
 		preImage, sendError = r.sendPayAttemptToSwitch(
-			p, route, route.TotalFees,
+			paymentHash, p, route, route.TotalFees,
 		)
 		if sendError == htlcswitch.ErrSwitchExiting {
 			return preImage, nil, sendError
 		} else if sendError != nil {
-			// Persistently mark that a payment to this payment
-			// hash failed. This will permit us to make another
-			// attempt at a successful payment.
-			err := r.control.Fail(paymentHash)
-			if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
-				log.Warnf("Unable to ground payment %x: %v",
-					paymentHash, err)
-			}
-
 			// An error occurred when attempting to send the
 			// payment, depending on the error type, we'll either
 			// continue to send using alternative routes, or simply
@@ -1913,20 +2019,18 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 			}
 		}
 
-		// Persistently mark that a payment to this payment hash
-		// succeeded. This will prevent us from ever making another
-		// payment to this hash.
-		err = r.control.Success(paymentHash)
-		if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
-			log.Warnf("Unable to mark completed payment %x: %v",
-				paymentHash, err)
-		}
-
 		return preImage, route, nil
 	}
 }
 
 func (r *ChannelRouter) getPayAttempt(paymentHash [32]byte, nextRoute func() (*Route, error)) (*payAttempt, *Route, error) {
+
+	if p, err := r.payAttempts.fetchPayAttempt(paymentHash); err == nil {
+		// TODO: store route.
+		return p, nil, nil
+	} else if err != ErrNotFound {
+		return nil, nil, err
+	}
 
 	route, err := nextRoute()
 	if err != nil {
@@ -1977,12 +2081,29 @@ func (r *ChannelRouter) getPayAttempt(paymentHash [32]byte, nextRoute func() (*R
 }
 
 // NOTE: route can be nil
-func (r *ChannelRouter) sendPayAttemptToSwitch(p *payAttempt, route *Route,
+func (r *ChannelRouter) sendPayAttemptToSwitch(pHash lntypes.Hash,
+	p *payAttempt, route *Route,
 	totalFees lnwire.MilliSatoshi) ([32]byte, error) {
+
+	// Before sending this HTLC to the switch, we checkpoint it to the DB.
+	// This lets us resend it on startup in case we go down, to get the
+	// result of the attempt.
+	if err := r.payAttempts.storePayAttempt(pHash, p); err != nil {
+		return [32]byte{}, err
+	}
 
 	preImage, sendError := r.cfg.SendToSwitch(
 		p.firstHop, p.paymentID, p.htlcAdd, p.circuit,
 	)
+
+	if sendError == htlcswitch.ErrSwitchExiting {
+		return preImage, ErrRouterShuttingDown
+	}
+
+	delErr := r.payAttempts.deletePayAttempt(pHash)
+	if delErr != nil {
+		log.Errorf("Unable to delete payment attempt: %v", delErr)
+	}
 
 	return preImage, sendError
 }

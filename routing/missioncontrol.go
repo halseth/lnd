@@ -222,17 +222,15 @@ func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
 	}, nil
 }
 
-// NewPaymentSessionFromRoutes creates a new paymentSession instance that will
+// NewPaymentSessionFromRoutes creates a new PaymentSession instance that will
 // skip all path finding, and will instead utilize a set of pre-built routes.
 // This constructor allows callers to specify their own routes which can be
 // used for things like channel rebalancing, and swaps.
-func (m *missionControl) NewPaymentSessionFromRoutes(routes []*Route) *paymentSession {
-	return &paymentSession{
-		pruneViewSnapshot:    m.GraphPruneView(),
-		haveRoutes:           true,
-		preBuiltRoutes:       routes,
-		errFailedPolicyChans: make(map[edgeLocator]struct{}),
-		mc:                   m,
+func (m *missionControl) NewPaymentSessionFromRoutes(
+	routes []*Route) *prebuiltPaymentSession {
+
+	return &prebuiltPaymentSession{
+		preBuiltRoutes: routes,
 	}
 }
 

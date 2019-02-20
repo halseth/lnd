@@ -1688,7 +1688,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
 func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession *paymentSession) ([32]byte, *Route, error) {
+	paySession PaymentSession) ([32]byte, *Route, error) {
 
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
@@ -1787,7 +1787,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 // successful, it returns the obtained preimage. If an error occurs, the last
 // bool parameter indicates whether this is a final outcome or more attempts
 // should be made.
-func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
+func (r *ChannelRouter) sendPaymentAttempt(paySession PaymentSession,
 	route *Route, paymentHash [32]byte) ([32]byte, bool, error) {
 
 	log.Tracef("Attempting to send payment %x, using route: %v",
@@ -1862,7 +1862,7 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 // error type, this error is either the final outcome of the payment or we need
 // to continue with an alternative route. This is indicated by the boolean
 // return value.
-func (r *ChannelRouter) processSendError(paySession *paymentSession,
+func (r *ChannelRouter) processSendError(paySession PaymentSession,
 	route *Route, err error) bool {
 
 	fErr, ok := err.(*htlcswitch.ForwardingError)

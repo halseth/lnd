@@ -55,7 +55,7 @@ type paymentSession struct {
 
 	finalCltvDelta    uint16
 	feeLimit          lnwire.MilliSatoshi
-	outgoingChannelID *uint64
+	outgoingChannelID uint64
 
 	target *btcec.PublicKey
 	amount lnwire.MilliSatoshi
@@ -164,6 +164,10 @@ func (p *paymentSession) RequestRoute(height uint32) (*Route, error) {
 	// Taking into account this prune view, we'll attempt to locate a path
 	// to our destination, respecting the recommendations from
 	// missionControl.
+	var outgoingChanID *uint64
+	if p.outgoingChannelID != 0 {
+		outgoingChanID = &p.outgoingChannelID
+	}
 	path, err := findPath(
 		&graphParams{
 			graph:           p.mc.graph,
@@ -174,7 +178,7 @@ func (p *paymentSession) RequestRoute(height uint32) (*Route, error) {
 			ignoredNodes:      pruneView.vertexes,
 			ignoredEdges:      pruneView.edges,
 			feeLimit:          p.feeLimit,
-			outgoingChannelID: p.outgoingChannelID,
+			outgoingChannelID: outgoingChanID,
 		},
 		p.mc.selfNode, p.target, p.amount,
 	)

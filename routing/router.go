@@ -1601,7 +1601,31 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		return [32]byte{}, nil, err
 	}
 
-	preimage, route, err := r.sendPayment(payment, paySession)
+	log.Tracef("Dispatching SendPayment for lightning payment: %v",
+		newLogClosure(func() string {
+			// Remove the public key curve parameters when logging
+			// the route to prevent spamming the logs.
+			if payment.Target != nil {
+				payment.Target.Curve = nil
+			}
+
+			for _, routeHint := range payment.RouteHints {
+				for _, hopHint := range routeHint {
+					hopHint.NodeID.Curve = nil
+				}
+			}
+			return spew.Sdump(payment)
+		}),
+	)
+
+	var payAttemptTimeout time.Duration
+	if payment.PayAttemptTimeout == time.Duration(0) {
+		payAttemptTimeout = defaultPayAttemptTimeout
+	} else {
+		payAttemptTimeout = payment.PayAttemptTimeout
+	}
+
+	preimage, route, err := r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
 	if err != nil {
 		// TODO: dangerous, fix this.
 		if err != htlcswitch.ErrSwitchExiting {
@@ -1650,7 +1674,15 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 		routes,
 	)
 
-	preimage, route, err := r.sendPayment(payment, paySession)
+	log.Tracef("Dispatching SendToRoute using routes: %v",
+		newLogClosure(func() string {
+			return spew.Sdump(routes)
+		}),
+	)
+
+	preimage, route, err := r.sendPayment(
+		payment.PaymentHash, defaultPayAttemptTimeout, paySession,
+	)
 	if err != nil {
 		// TODO: dangerous, fix this.
 		if err != htlcswitch.ErrSwitchExiting {
@@ -1685,25 +1717,9 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // will be returned which describes the path the successful payment traversed
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
-func (r *ChannelRouter) sendPayment(payment *LightningPayment,
+func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
+	payAttemptTimeout time.Duration,
 	paySession PaymentSession) ([32]byte, *Route, error) {
-
-	log.Tracef("Dispatching route for lightning payment: %v",
-		newLogClosure(func() string {
-			// Remove the public key curve parameters when logging
-			// the route to prevent spamming the logs.
-			if payment.Target != nil {
-				payment.Target.Curve = nil
-			}
-
-			for _, routeHint := range payment.RouteHints {
-				for _, hopHint := range routeHint {
-					hopHint.NodeID.Curve = nil
-				}
-			}
-			return spew.Sdump(payment)
-		}),
-	)
 
 	// We'll also fetch the current block height so we can properly
 	// calculate the required HTLC time locks within the route.
@@ -1711,14 +1727,6 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 	if err != nil {
 		return [32]byte{}, nil, err
 	}
-
-	var payAttemptTimeout time.Duration
-	if payment.PayAttemptTimeout == time.Duration(0) {
-		payAttemptTimeout = defaultPayAttemptTimeout
-	} else {
-		payAttemptTimeout = payment.PayAttemptTimeout
-	}
-
 	timeoutChan := time.After(payAttemptTimeout)
 
 	// We'll continue until either our payment succeeds, or we encounter a
@@ -1762,7 +1770,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// Send payment attempt. It will return a final boolean
 		// indicating if more attempts are needed.
 		preimage, final, err := r.sendPaymentAttempt(
-			paySession, route, payment.PaymentHash,
+			paySession, route, paymentHash,
 		)
 		if final {
 			return preimage, route, err

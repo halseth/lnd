@@ -1661,12 +1661,12 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 // path the successful payment traversed within the network to reach the
 // destination. Additionally, the payment preimage will also be returned.
 func (r *ChannelRouter) SendToRoute(routes []*Route,
-	payment *LightningPayment) ([32]byte, *Route, error) {
+	paymentHash [32]byte) ([32]byte, *Route, error) {
 
 	// Before sending, double check that we don't already have 1)
 	// an in-flight payment to this payment hash, or 2) a complete
 	// payment for the same hash.
-	if err := r.control.ClearForTakeoff(payment.PaymentHash); err != nil {
+	if err := r.control.ClearForTakeoff(paymentHash); err != nil {
 		return [32]byte{}, nil, err
 	}
 
@@ -1681,7 +1681,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 	)
 
 	preimage, route, err := r.sendPayment(
-		payment.PaymentHash, defaultPayAttemptTimeout, paySession,
+		paymentHash, defaultPayAttemptTimeout, paySession,
 	)
 	if err != nil {
 		// TODO: dangerous, fix this.
@@ -1689,10 +1689,10 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 			// Persistently mark that a payment to this payment
 			// hash failed. This will permit us to make another
 			// attempt at a successful payment.
-			err := r.control.Fail(payment.PaymentHash)
+			err := r.control.Fail(paymentHash)
 			if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
 				log.Warnf("Unable to ground payment %x: %v",
-					payment.PaymentHash, err)
+					paymentHash, err)
 			}
 		}
 
@@ -1701,10 +1701,10 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 
 	// Persistently mark that a payment to this payment hash succeeded.
 	// This will prevent us from ever making another payment to this hash.
-	err = r.control.Success(payment.PaymentHash)
+	err = r.control.Success(paymentHash)
 	if err != nil && err != htlcswitch.ErrPaymentAlreadyCompleted {
 		log.Warnf("Unable to mark completed payment %x: %v",
-			payment.PaymentHash, err)
+			paymentHash, err)
 	}
 
 	return preimage, route, nil

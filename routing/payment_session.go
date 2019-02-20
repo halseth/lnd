@@ -60,9 +60,6 @@ type paymentSession struct {
 	errFailedPolicyChans map[edgeLocator]struct{}
 
 	mc *missionControl
-
-	haveRoutes     bool
-	preBuiltRoutes []*Route
 }
 
 // ReportVertexFailure adds a vertex to the graph prune view after a client
@@ -148,22 +145,6 @@ func (p *paymentSession) ReportEdgePolicyFailure(
 func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	height uint32, finalCltvDelta uint16) (*Route, error) {
 
-	switch {
-	// If we have a set of pre-built routes, then we'll just pop off the
-	// next route from the queue, and use it directly.
-	case p.haveRoutes && len(p.preBuiltRoutes) > 0:
-		nextRoute := p.preBuiltRoutes[0]
-		p.preBuiltRoutes[0] = nil // Set to nil to avoid GC leak.
-		p.preBuiltRoutes = p.preBuiltRoutes[1:]
-
-		return nextRoute, nil
-
-	// If we were instantiated with a set of pre-built routes, and we've
-	// run out, then we'll return a terminal error.
-	case p.haveRoutes && len(p.preBuiltRoutes) == 0:
-		return nil, fmt.Errorf("pre-built routes exhausted")
-	}
-
 	// Otherwise we actually need to perform path finding, so we'll obtain
 	// our current prune view snapshot. This view will only ever grow
 	// during the duration of this payment session, never shrinking.
@@ -210,4 +191,52 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	}
 
 	return route, err
+}
+
+// prebuiltPaymentSession is a simple implementation of the PaymentSession
+// interface that will provide the caller with a prebuilt set of routes during
+// payment attempts.
+type prebuiltPaymentSession struct {
+	preBuiltRoutes []*Route
+}
+
+// ReportVertexFailure has no effect for the prebuiltPaymentSession.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *prebuiltPaymentSession) ReportVertexFailure(v Vertex) {
+}
+
+// ReportEdgeFailure has no effect for the prebuiltPaymentSession.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *prebuiltPaymentSession) ReportEdgeFailure(e *edgeLocator) {
+}
+
+// ReportEdgePolicyFailure has no effect for the prebuiltPaymentSession.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *prebuiltPaymentSession) ReportEdgePolicyFailure(
+	errSource Vertex, failedEdge *edgeLocator) {
+}
+
+// RequestRoute returns the next route from the set of prebuilt routes this
+// prebuiltPaymentSession was initialized with.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *prebuiltPaymentSession) RequestRoute(payment *LightningPayment,
+	height uint32, finalCltvDelta uint16) (*Route, error) {
+
+	// If we have a set of pre-built routes, then we'll just pop off the
+	// next route from the queue, and use it directly.
+	if len(p.preBuiltRoutes) > 0 {
+		nextRoute := p.preBuiltRoutes[0]
+		p.preBuiltRoutes[0] = nil // Set to nil to avoid GC leak.
+		p.preBuiltRoutes = p.preBuiltRoutes[1:]
+
+		return nextRoute, nil
+	}
+
+	// If we've run out of prebuilt routes, then we'll return a terminal
+	// error.
+	return nil, fmt.Errorf("pre-built routes exhausted")
 }

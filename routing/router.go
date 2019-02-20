@@ -1720,8 +1720,17 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 	firstHop := lnwire.NewShortChanIDFromInt(
 		route.Hops[0].ChannelID,
 	)
+
+	p := &payAttempt{
+		paymentID: paymentID,
+		firstHop:  firstHop,
+		htlcAdd:   htlcAdd,
+		route:     route,
+		circuit:   circuit,
+	}
+
 	return r.cfg.SendToSwitch(
-		firstHop, paymentID, htlcAdd, circuit,
+		p.firstHop, p.paymentID, p.htlcAdd, p.circuit,
 	)
 }
 

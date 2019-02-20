@@ -1583,37 +1583,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(payment, paySession)
-}
-
-// SendToRoute attempts to send a payment as described within the passed
-// LightningPayment through the provided routes. This function is blocking
-// and will return either: when the payment is successful, or all routes
-// have been attempted and resulted in a failed payment. If the payment
-// succeeds, then a non-nil Route will be returned which describes the
-// path the successful payment traversed within the network to reach the
-// destination. Additionally, the payment preimage will also be returned.
-func (r *ChannelRouter) SendToRoute(routes []*Route,
-	payment *LightningPayment) ([32]byte, *Route, error) {
-
-	paySession := r.missionControl.NewPaymentSessionFromRoutes(
-		routes,
-	)
-
-	return r.sendPayment(payment, paySession)
-}
-
-// sendPayment attempts to send a payment as described within the passed
-// LightningPayment. This function is blocking and will return either: when the
-// payment is successful, or all candidates routes have been attempted and
-// resulted in a failed payment. If the payment succeeds, then a non-nil Route
-// will be returned which describes the path the successful payment traversed
-// within the network to reach the destination. Additionally, the payment
-// preimage will also be returned.
-func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession PaymentSession) ([32]byte, *Route, error) {
-
-	log.Tracef("Dispatching route for lightning payment: %v",
+	log.Tracef("Dispatching SendPayment for lightning payment: %v",
 		newLogClosure(func() string {
 			// Remove the public key curve parameters when logging
 			// the route to prevent spamming the logs.
@@ -1630,13 +1600,6 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}),
 	)
 
-	// We'll also fetch the current block height so we can properly
-	// calculate the required HTLC time locks within the route.
-	_, currentHeight, err := r.cfg.Chain.GetBestBlock()
-	if err != nil {
-		return [32]byte{}, nil, err
-	}
-
 	var payAttemptTimeout time.Duration
 	if payment.PayAttemptTimeout == time.Duration(0) {
 		payAttemptTimeout = defaultPayAttemptTimeout
@@ -1644,6 +1607,51 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		payAttemptTimeout = payment.PayAttemptTimeout
 	}
 
+	return r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
+}
+
+// SendToRoute attempts to send a payment as described within the passed
+// LightningPayment through the provided routes. This function is blocking
+// and will return either: when the payment is successful, or all routes
+// have been attempted and resulted in a failed payment. If the payment
+// succeeds, then a non-nil Route will be returned which describes the
+// path the successful payment traversed within the network to reach the
+// destination. Additionally, the payment preimage will also be returned.
+func (r *ChannelRouter) SendToRoute(routes []*Route,
+	payment *LightningPayment) ([32]byte, *Route, error) {
+
+	paySession := r.missionControl.NewPaymentSessionFromRoutes(
+		routes,
+	)
+
+	log.Tracef("Dispatching SendToRoute using routes: %v",
+		newLogClosure(func() string {
+			return spew.Sdump(routes)
+		}),
+	)
+
+	return r.sendPayment(
+		payment.PaymentHash, defaultPayAttemptTimeout, paySession,
+	)
+}
+
+// sendPayment attempts to send a payment as described within the passed
+// LightningPayment. This function is blocking and will return either: when the
+// payment is successful, or all candidates routes have been attempted and
+// resulted in a failed payment. If the payment succeeds, then a non-nil Route
+// will be returned which describes the path the successful payment traversed
+// within the network to reach the destination. Additionally, the payment
+// preimage will also be returned.
+func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
+	payAttemptTimeout time.Duration,
+	paySession PaymentSession) ([32]byte, *Route, error) {
+
+	// We'll also fetch the current block height so we can properly
+	// calculate the required HTLC time locks within the route.
+	_, currentHeight, err := r.cfg.Chain.GetBestBlock()
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
 	timeoutChan := time.After(payAttemptTimeout)
 
 	// We'll continue until either our payment succeeds, or we encounter a
@@ -1687,7 +1695,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// Send payment attempt. It will return a final boolean
 		// indicating if more attempts are needed.
 		preimage, final, err := r.sendPaymentAttempt(
-			paySession, route, payment.PaymentHash,
+			paySession, route, paymentHash,
 		)
 		if final {
 			return preimage, route, err

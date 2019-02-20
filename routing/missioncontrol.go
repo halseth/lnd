@@ -4,7 +4,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -152,8 +151,8 @@ func (m *missionControl) GraphPruneView() graphPruneView {
 // view from Mission Control. An optional set of routing hints can be provided
 // in order to populate additional edges to explore when finding a path to the
 // payment's destination.
-func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
-	target *btcec.PublicKey) (*paymentSession, error) {
+func (m *missionControl) NewPaymentSession(payment *LightningPayment) (
+	*paymentSession, error) {
 
 	viewSnapshot := m.GraphPruneView()
 
@@ -162,7 +161,7 @@ func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
 	// Traverse through all of the available hop hints and include them in
 	// our edges map, indexed by the public key of the channel's starting
 	// node.
-	for _, routeHint := range routeHints {
+	for _, routeHint := range payment.RouteHints {
 		// If multiple hop hints are provided within a single route
 		// hint, we'll assume they must be chained together and sorted
 		// in forward order in order to reach the target successfully.
@@ -175,7 +174,7 @@ func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
 			if i != len(routeHint)-1 {
 				endNode.AddPubKey(routeHint[i+1].NodeID)
 			} else {
-				endNode.AddPubKey(target)
+				endNode.AddPubKey(payment.Target)
 			}
 
 			// Finally, create the channel edge from the hop hint
@@ -213,10 +212,22 @@ func (m *missionControl) NewPaymentSession(routeHints [][]HopHint,
 		return nil, err
 	}
 
+	var finalCLTVDelta uint16
+	if payment.FinalCLTVDelta == nil {
+		finalCLTVDelta = DefaultFinalCLTVDelta
+	} else {
+		finalCLTVDelta = *payment.FinalCLTVDelta
+	}
+
 	return &paymentSession{
 		pruneViewSnapshot:    viewSnapshot,
 		additionalEdges:      edges,
 		bandwidthHints:       bandwidthHints,
+		finalCltvDelta:       finalCLTVDelta,
+		feeLimit:             payment.FeeLimit,
+		outgoingChannelID:    payment.OutgoingChannelID,
+		target:               payment.Target,
+		amount:               payment.Amount,
 		errFailedPolicyChans: make(map[edgeLocator]struct{}),
 		mc:                   m,
 	}, nil

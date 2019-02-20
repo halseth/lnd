@@ -3,6 +3,7 @@ package routing
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -32,6 +33,28 @@ type Hop struct {
 	// hop. This value is less than the value that the incoming HTLC
 	// carries as a fee will be subtracted by the hop.
 	AmtToForward lnwire.MilliSatoshi
+}
+
+func serializeHop(w io.Writer, h *Hop) error {
+	if err := channeldb.WriteElements(w,
+		h.PubKeyBytes, h.ChannelID, h.OutgoingTimeLock, h.AmtToForward,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deserializeHop(r io.Reader) (*Hop, error) {
+	h := &Hop{}
+	if err := channeldb.ReadElements(r,
+		&h.PubKeyBytes, &h.ChannelID, &h.OutgoingTimeLock,
+		&h.AmtToForward,
+	); err != nil {
+		return nil, err
+	}
+
+	return h, nil
 }
 
 // Route represents a path through the channel graph which runs over one or
@@ -256,6 +279,53 @@ func NewRouteFromHops(amtToSend lnwire.MilliSatoshi, timeLock uint32,
 		TotalAmount:   amtToSend,
 		TotalFees:     amtToSend - hops[len(hops)-1].AmtToForward,
 	}
+
+	return route, nil
+}
+
+func serializeRoute(w io.Writer, r *Route) error {
+	if err := channeldb.WriteElements(w,
+		r.TotalTimeLock, r.TotalFees, r.TotalAmount, r.SourcePubKey,
+	); err != nil {
+		return err
+	}
+
+	if err := channeldb.WriteElements(w, uint32(len(r.Hops))); err != nil {
+		return err
+	}
+
+	for _, h := range r.Hops {
+		if err := serializeHop(w, h); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func deserializeRoute(r io.Reader) (*Route, error) {
+	route := &Route{}
+	if err := channeldb.ReadElements(r,
+		&route.TotalTimeLock, &route.TotalFees, &route.TotalAmount,
+		&route.SourcePubKey,
+	); err != nil {
+		return nil, err
+	}
+
+	var numHops uint32
+	if err := channeldb.ReadElements(r, &numHops); err != nil {
+		return nil, err
+	}
+
+	var hops []*Hop
+	for i := uint32(0); i < numHops; i++ {
+		hop, err := deserializeHop(r)
+		if err != nil {
+			return nil, err
+		}
+		hops = append(hops, hop)
+	}
+	route.Hops = hops
 
 	return route, nil
 }

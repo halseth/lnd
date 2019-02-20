@@ -2931,6 +2931,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			Amount:            payIntent.msat,
 			FeeLimit:          payIntent.feeLimit,
 			PaymentHash:       payIntent.rHash,
+			FinalCLTVDelta:    routing.DefaultFinalCLTVDelta,
 			RouteHints:        payIntent.routeHints,
 			OutgoingChannelID: payIntent.outgoingChannelID,
 		}
@@ -2938,7 +2939,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 		// If the final CLTV value was specified, then we'll use that
 		// rather than the default.
 		if payIntent.cltvDelta != 0 {
-			payment.FinalCLTVDelta = &payIntent.cltvDelta
+			payment.FinalCLTVDelta = payIntent.cltvDelta
 		}
 
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(

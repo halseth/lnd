@@ -1830,6 +1830,30 @@ func handleBatchFwdErrs(errChan chan error) {
 	}
 }
 
+func (s *Switch) reforwardPendingPayments() error {
+
+	pendingPayments, err := s.pendingPayments.FetchPendingPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range pendingPayments {
+		packet := &htlcPacket{
+			incomingChanID: sourceHop,
+			incomingHTLCID: p.PaymentID,
+			outgoingChanID: p.FirstHop,
+			htlc:           p.HtlcAdd,
+		}
+
+		err := s.forward(packet)
+		if err != nil && err != ErrDuplicateAdd {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Stop gracefully stops all active helper goroutines, then waits until they've
 // exited.
 func (s *Switch) Stop() error {

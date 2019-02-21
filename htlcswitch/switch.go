@@ -1830,6 +1830,42 @@ func handleBatchFwdErrs(errChan chan error) {
 	}
 }
 
+func (s *Switch) reforwardPendingPayments() error {
+
+	pendingPayments, err := s.pendingPayments.FetchPendingPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range pendingPayments {
+
+		// TODO: abstract out this method
+		s.wg.Add(1)
+		go func(p *PendingPayment) {
+			defer s.wg.Done()
+
+			// Generate and send new update packet, if error will be received on
+			// this stage it means that packet haven't left boundaries of our
+			// system and something wrong happened.
+			packet := &htlcPacket{
+				incomingChanID: sourceHop,
+				incomingHTLCID: p.PaymentID,
+				outgoingChanID: p.FirstHop,
+				htlc:           p.HtlcAdd,
+			}
+
+			if err := s.forward(packet); err != nil {
+				// TODO: add error to db,
+
+				//	s.removePendingPayment(paymentID)
+				//		return zeroPreimage, err
+			}
+		}(p)
+	}
+
+	return nil
+}
+
 // Stop gracefully stops all active helper goroutines, then waits until they've
 // exited.
 func (s *Switch) Stop() error {

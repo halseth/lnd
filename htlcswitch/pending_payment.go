@@ -332,3 +332,50 @@ func (store *pendingPaymentStore) GetPaymentResult(pid uint64) (
 
 	return resultChan, nil
 }
+
+func (store *pendingPaymentStore) FetchPendingPayments() (
+	[]*PendingPayment, error) {
+
+	var ps []*PendingPayment
+	err := store.db.View(func(tx *bbolt.Tx) error {
+		preimages := tx.Bucket(preimageBucket)
+		if preimages == nil {
+			return nil
+		}
+
+		preimages.ForEach(func(k, v []byte) error {
+			// Skip non-buckets.
+			if v != nil {
+				return nil
+			}
+
+			bucket := preimages.Bucket(k)
+			if bucket == nil {
+				// wat
+				return nil
+			}
+
+			pendingBytes := bucket.Get(pendingPaymentKey)
+			if pendingBytes == nil {
+				return ErrPaymentIDNotFound
+			}
+
+			var err error
+			r := bytes.NewReader(pendingBytes)
+			p, err := deserializePayAttempt(r)
+			if err != nil {
+				return err
+			}
+
+			ps = append(ps, p)
+			return nil
+		})
+		return nil
+
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return ps, nil
+}

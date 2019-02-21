@@ -341,6 +341,40 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 	return nil
 }
 
+func (s *Switch) GetPaymentResult(paymentID uint64) ([sha256.Size]byte, error) {
+
+	s.pendingMutex.Lock()
+	payment, ok := s.pendingPayments[paymentID]
+	s.pendingMutex.Unlock()
+
+	if !ok {
+		return zeroPreimage, fmt.Errorf("not found")
+	}
+
+	// Returns channels so that other subsystem might wait/skip the
+	// waiting of handling of payment.
+	var preimage [sha256.Size]byte
+	var err error
+
+	select {
+	case e := <-payment.err:
+		err = e
+	case <-s.quit:
+		return zeroPreimage, ErrSwitchExiting
+	}
+
+	select {
+	case p := <-payment.preimage:
+		preimage = p
+	case <-s.quit:
+		return zeroPreimage, ErrSwitchExiting
+	}
+
+	return preimage, err
+
+	return zeroPreimage, ErrSwitchExiting
+}
+
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
 // package in order to send the htlc update. The paymentID used MUST be unique
 // for this HTLC, to ensure it is not sent twice on the network. As long as the
@@ -348,7 +382,7 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 // after a restart.
 func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	htlc *lnwire.UpdateAddHTLC,
-	deobfuscator ErrorDecrypter) ([sha256.Size]byte, error) {
+	deobfuscator ErrorDecrypter) error {
 
 	// Create payment and add to the map of payment in order later to be
 	// able to retrieve it and return response to the user.
@@ -376,29 +410,10 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 
 	if err := s.forward(packet); err != nil {
 		s.removePendingPayment(paymentID)
-		return zeroPreimage, err
+		return err
 	}
 
-	// Returns channels so that other subsystem might wait/skip the
-	// waiting of handling of payment.
-	var preimage [sha256.Size]byte
-	var err error
-
-	select {
-	case e := <-payment.err:
-		err = e
-	case <-s.quit:
-		return zeroPreimage, ErrSwitchExiting
-	}
-
-	select {
-	case p := <-payment.preimage:
-		preimage = p
-	case <-s.quit:
-		return zeroPreimage, ErrSwitchExiting
-	}
-
-	return preimage, err
+	return nil
 }
 
 // UpdateForwardingPolicies sends a message to the switch to update the

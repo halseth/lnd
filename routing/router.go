@@ -152,6 +152,8 @@ type ChannelPolicy struct {
 // the configuration MUST be non-nil for the ChannelRouter to carry out its
 // duties.
 type Config struct {
+	DB *channeldb.DB
+
 	// Graph is the channel graph that the ChannelRouter will use to gather
 	// metrics from and also to carry out path finding queries.
 	// TODO(roasbeef): make into an interface
@@ -333,6 +335,8 @@ type ChannelRouter struct {
 	// gained to the next execution.
 	missionControl *missionControl
 
+	payAttempts *payAttemptStore
+
 	// channelEdgeMtx is a mutex we use to make sure we process only one
 	// ChannelEdgePolicy at a time for a given channelID, to ensure
 	// consistency between the various database accesses.
@@ -368,6 +372,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		networkUpdates:    make(chan *routingMsg),
 		topologyClients:   make(map[uint64]*topologyClient),
 		ntfnClientUpdates: make(chan *topologyClientUpdate),
+		payAttempts:       &payAttemptStore{cfg.DB},
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
 		routeCache:        make(map[routeTuple][]*Route),
@@ -460,6 +465,39 @@ func (r *ChannelRouter) Start() error {
 	err = r.cfg.Graph.PruneGraphNodes()
 	if err != nil && err != channeldb.ErrGraphNodesNotFound {
 		return err
+	}
+
+	// If any payment attempts are lingering in the store, we resend them
+	// to the switch, to make sure they are forwarded to the network.
+	payments, err := r.payAttempts.fetchPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range payments {
+		log.Infof("Resending payment with hash %x", p.paymentHash)
+		r.wg.Add(1)
+		go func(p *storedPayment) {
+			defer r.wg.Done()
+
+			if p.payment != nil {
+				_, _, err := r.SendPayment(p.payment)
+				if err != nil {
+					log.Errorf("resenfing payment with hash %v "+
+						"failed: %v", p.paymentHash, err)
+					return
+				}
+			} else if len(p.routes) > 0 {
+				_, _, err := r.SendToRoute(p.routes, p.paymentHash)
+				if err != nil {
+					log.Errorf("resenfing payment with hash %v "+
+						"failed: %v", p.paymentHash, err)
+					return
+				}
+			}
+
+			log.Infof("Resent payment with hash %x.", p.paymentHash)
+		}(p)
 	}
 
 	r.wg.Add(1)
@@ -1520,7 +1558,7 @@ func generateSphinxPacket(route *Route, paymentHash []byte) ([]byte,
 
 // SendPayment attempts to send a payment as described within the passed
 // LightningPayment. This function is blocking and will return either: when the
-// payment is successful, or all candidates routes have been attempted and
+// payment is successful, it or all candidates routes have been attempted and
 // resulted in a failed payment. If the payment succeeds, then a non-nil Route
 // will be returned which describes the path the successful payment traversed
 // within the network to reach the destination. Additionally, the payment
@@ -1558,16 +1596,24 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		payAttemptTimeout = payment.PayAttemptTimeout
 	}
 
-	return r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
+	if err := r.payAttempts.initSendPayment(payment); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	preimg, route, sendErr := r.send(
+		payment.PaymentHash, payAttemptTimeout, paySession,
+	)
+
+	return preimg, route, sendErr
 }
 
-// SendToRoute attempts to send a payment as described within the passed
-// LightningPayment through the provided routes. This function is blocking
-// and will return either: when the payment is successful, or all routes
-// have been attempted and resulted in a failed payment. If the payment
-// succeeds, then a non-nil Route will be returned which describes the
-// path the successful payment traversed within the network to reach the
-// destination. Additionally, the payment preimage will also be returned.
+// SendToRoute attempts to send a payment through one of the provided routes.
+// This function is blocking and will return either: when the payment is
+// successful, or all routes have been attempted and resulted in a failed
+// payment. If the payment succeeds, then a non-nil Route will be returned
+// which describes the path the successful payment traversed within the network
+// to reach the destination. Additionally, the payment preimage will also be
+// returned.
 func (r *ChannelRouter) SendToRoute(routes []*Route,
 	paymentHash [32]byte) ([32]byte, *Route, error) {
 
@@ -1581,19 +1627,43 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 		}),
 	)
 
-	return r.sendPayment(
+	if err := r.payAttempts.initSendToRoute(paymentHash, routes); err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	return r.send(
 		paymentHash, defaultPayAttemptTimeout, paySession,
 	)
 }
 
-// sendPayment attempts to send a payment as described within the passed
-// LightningPayment. This function is blocking and will return either: when the
-// payment is successful, or all candidates routes have been attempted and
-// resulted in a failed payment. If the payment succeeds, then a non-nil Route
-// will be returned which describes the path the successful payment traversed
-// within the network to reach the destination. Additionally, the payment
-// preimage will also be returned.
-func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
+func (r *ChannelRouter) send(paymentHash [32]byte, payAttemptTimeout time.Duration,
+	paySession PaymentSession) ([32]byte, *Route, error) {
+
+	preimg, route, sendErr := r.payToHash(
+		paymentHash, payAttemptTimeout, paySession,
+	)
+
+	// TODO: dangerous, fix this. Also must delete on success.
+	if sendErr != ErrRouterShuttingDown {
+		// We'll delete the payment from the database now that a result
+		// is in. Note that in case we are shutting down we don't
+		// delete it, so we'll continue sending it when we restart.
+		if err := r.payAttempts.deletePayment(paymentHash); err != nil {
+			log.Errorf("unable to delete payment: %v", err)
+		}
+	}
+	return preimg, route, sendErr
+}
+
+// payToHash attempts to send a payment to the given payment hash using the
+// routes produced by the given payment session. This function is blocking and
+// will return either: when the payment is successful, the payment times out,
+// or all candidates routes have been attempted and resulted in a failed
+// payment. If the payment succeeds, then a non-nil Route will be returned
+// which describes the path the successful payment traversed within the network
+// to reach the destination. Additionally, the payment preimage will also be
+// returned.
+func (r *ChannelRouter) payToHash(paymentHash [32]byte,
 	payAttemptTimeout time.Duration,
 	paySession PaymentSession) ([32]byte, *Route, error) {
 
@@ -1668,17 +1738,37 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 func (r *ChannelRouter) sendPaymentAttempt(paySession PaymentSession, p *payAttempt,
 	route *Route, paymentHash [32]byte) ([32]byte, bool, error) {
 
+	// TODO: store route.
 	log.Tracef("Attempting to send payment %x, using route: %v",
 		paymentHash, newLogClosure(func() string {
 			return spew.Sdump(route)
 		}),
 	)
 
+	// Before sending this HTLC to the switch, we checkpoint it to the DB.
+	// This lets us resend it on startup in case we go down, to get the
+	// result of the attempt.
+	if err := r.payAttempts.storePayAttempt(paymentHash, p); err != nil {
+		return [32]byte{}, true, err
+	}
+
 	preimage, err := r.cfg.SendToSwitch(
 		p.firstHop, p.paymentID, p.htlcAdd, p.circuit,
 	)
 	if err == nil {
+		delErr := r.payAttempts.deletePayAttempt(paymentHash)
+		if delErr != nil {
+			log.Errorf("Unable to delete payment attempt: %v", delErr)
+		}
+
 		return preimage, true, nil
+	}
+
+	if err != htlcswitch.ErrSwitchExiting {
+		delErr := r.payAttempts.deletePayAttempt(paymentHash)
+		if delErr != nil {
+			log.Errorf("Unable to delete payment attempt: %v", delErr)
+		}
 	}
 
 	log.Errorf("Attempt to send payment %x failed: %v",
@@ -1918,6 +2008,13 @@ func (r *ChannelRouter) processSendError(paySession PaymentSession,
 }
 
 func (r *ChannelRouter) getPayAttempt(paymentHash [32]byte, nextRoute func() (*Route, error)) (*payAttempt, *Route, error) {
+
+	if p, err := r.payAttempts.fetchPayAttempt(paymentHash); err == nil {
+		// TODO: store route.
+		return p, nil, nil
+	} else if err != ErrNotFound {
+		return nil, nil, err
+	}
 
 	route, err := nextRoute()
 	if err != nil {

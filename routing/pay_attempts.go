@@ -95,15 +95,45 @@ func (s *payAttemptStore) deletePayment(pHash [32]byte) error {
 	})
 }
 
+type StoredPayment interface {
+	PaymentHash() [32]byte
+	InitWithPaymentStore(store *payAttemptStore) error
+}
+
+type lightningPayment struct {
+	*LightningPayment
+}
+
+func (p *lightningPayment) PaymentHash() [32]byte {
+	return p.LightningPayment.PaymentHash
+}
+
+func (p *lightningPayment) InitWithPaymentStore(store *payAttemptStore) error {
+	return store.initSendPayment(p.LightningPayment)
+}
+
+type routePayment struct {
+	paymentHash [32]byte
+	routes      []*Route
+}
+
+func (p *routePayment) PaymentHash() [32]byte {
+	return p.paymentHash
+}
+
+func (p *routePayment) InitWithPaymentStore(store *payAttemptStore) error {
+	return store.initSendToRoute(p.paymentHash, p.routes)
+}
+
 type storedPayment struct {
 	paymentHash [32]byte
 	payment     *LightningPayment
 	routes      []*Route
 }
 
-func (s *payAttemptStore) fetchPayments() ([]*storedPayment, error) {
+func (s *payAttemptStore) fetchPayments() ([]StoredPayment, error) {
 
-	var payments []*storedPayment
+	var payments []StoredPayment
 	err := s.DB.View(func(tx *bbolt.Tx) error {
 		paymentsBucket := tx.Bucket(lightningPaymentsBucket)
 		if paymentsBucket == nil {
@@ -118,8 +148,7 @@ func (s *payAttemptStore) fetchPayments() ([]*storedPayment, error) {
 				return err
 			}
 
-			payment := &storedPayment{}
-			copy(payment.paymentHash[:], k[:])
+			var payment StoredPayment
 
 			switch t {
 			case typeSendPayment:
@@ -128,7 +157,7 @@ func (s *payAttemptStore) fetchPayments() ([]*storedPayment, error) {
 				if err != nil {
 					return err
 				}
-				payment.payment = l
+				payment = &lightningPayment{l}
 
 			case typeSendToRoute:
 				var numRoutes uint32
@@ -145,7 +174,11 @@ func (s *payAttemptStore) fetchPayments() ([]*storedPayment, error) {
 					}
 					routes = append(routes, route)
 				}
-				payment.routes = routes
+				r := &routePayment{
+					routes: routes,
+				}
+				copy(r.paymentHash[:], k[:])
+				payment = r
 
 			default:
 				// TODO: return nil for forwards compat?

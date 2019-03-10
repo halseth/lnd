@@ -1588,10 +1588,9 @@ type LightningPayment struct {
 
 	// FinalCLTVDelta is the CTLV expiry delta to use for the _final_ hop
 	// in the route. This means that the final hop will have a CLTV delta
-	// of at least: currentHeight + FinalCLTVDelta. If this value is
-	// unspecified, then a default value of DefaultFinalCLTVDelta will be
-	// used.
-	FinalCLTVDelta *uint16
+	// of at least: currentHeight + FinalCLTVDelta. If this value is zero,
+	// then a default value of DefaultFinalCLTVDelta will be used.
+	FinalCLTVDelta uint16
 
 	// PayAttemptTimeout is a timeout value that we'll use to determine
 	// when we should should abandon the payment attempt after consecutive

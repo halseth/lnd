@@ -20,6 +20,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
@@ -472,6 +473,42 @@ func (r *ChannelRouter) Start() error {
 	err = r.cfg.Graph.PruneGraphNodes()
 	if err != nil && err != channeldb.ErrGraphNodesNotFound {
 		return err
+	}
+
+	// If any payments are still active in the payment state machine, we
+	// resume, to make sure their results are properly handled.
+	payments, err := r.paymentStates.fetchActivePayments()
+	if err != nil {
+		return err
+	}
+
+	for _, paymentHash := range payments {
+		log.Infof("Resuming payment with hash %x", paymentHash)
+
+		r.wg.Add(1)
+		go func(paymentHash lntypes.Hash) {
+			defer r.wg.Done()
+
+			// We create a dummy, empty payment session such that
+			// we won't attempt another payment attempt when the
+			// result for this payment is received.
+			paySession := r.missionControl.NewPaymentSessionFromRoutes(
+				nil,
+			)
+
+			payment := &LightningPayment{
+				PaymentHash: paymentHash,
+			}
+			_, _, err := r.sendPayment(payment, paySession)
+			if err != nil {
+				log.Errorf("Resuming payment with hash %v "+
+					"failed: %v.", paymentHash, err)
+				return
+			}
+
+			log.Infof("Resumed payment with hash %x completed.",
+				paymentHash)
+		}(paymentHash)
 	}
 
 	r.wg.Add(1)

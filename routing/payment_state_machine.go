@@ -396,6 +396,50 @@ func (s *paymentStateMachine) fetchLastError(pHash lntypes.Hash) (
 	return lastError, nil
 }
 
+// fetchActivePayments fetches all payments that are active (in states
+// paymentStateIntended or paymentStateAttemptSent).
+func (s *paymentStateMachine) fetchActivePayments() ([]lntypes.Hash, error) {
+	var payments []lntypes.Hash
+
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		paymentsBucket := tx.Bucket(paymentsBucketKey)
+		if paymentsBucket == nil {
+			return nil
+		}
+
+		return paymentsBucket.ForEach(func(k, _ []byte) error {
+			var pHash lntypes.Hash
+			copy(pHash[:], k[:])
+
+			bucket := paymentsBucket.Bucket(k)
+			if bucket == nil {
+				return fmt.Errorf("could not get bucket")
+			}
+
+			v := bucket.Get(paymentStateKey)
+			if v == nil {
+				return fmt.Errorf("no payment state set for "+
+					"hash %v", pHash)
+			}
+
+			state := paymentState(v[0])
+
+			// Only return payments in states that should be
+			// retried.
+			if state == paymentStateIntended || state == paymentStateAttemptSent {
+				payments = append(payments, pHash)
+			}
+
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return payments, nil
+}
+
 func (s *paymentStateMachine) putPaymentState(bucket *bbolt.Bucket,
 	state paymentState) error {
 

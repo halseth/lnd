@@ -1928,16 +1928,6 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 	}
 }
 
-// paymentAttempt holds all the information needed to send a HTLC to the
-// switch, and handle the result.
-type paymentAttempt struct {
-	paymentID uint64
-	firstHop  lnwire.ShortChannelID
-	htlcAdd   *lnwire.UpdateAddHTLC
-	route     *Route
-	circuit   *sphinx.Circuit
-}
-
 // createPaymentAttempt generates a new paymentAttempt for the given payment,
 // such that it can be sent to the switch.
 func (r *ChannelRouter) createPaymentAttempt(paymentHash [32]byte,

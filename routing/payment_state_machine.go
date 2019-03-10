@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/coreos/bbolt"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 var (
@@ -43,6 +46,71 @@ var (
 // the ChannelRouter was restarted.
 type paymentStateMachine struct {
 	db *channeldb.DB
+}
+
+// paymentAttempt holds all the information needed to send a HTLC to the
+// switch, and handle the result.
+type paymentAttempt struct {
+	paymentID uint64
+	firstHop  lnwire.ShortChannelID
+	htlcAdd   *lnwire.UpdateAddHTLC
+
+	// maybe not store? only for
+	route *Route
+
+	// TODO: possibly not needed here.
+	circuit *sphinx.Circuit
+}
+
+func serializePayAttempt(w io.Writer, p *paymentAttempt) error {
+	if err := channeldb.WriteElements(w,
+		p.paymentID, p.firstHop,
+	); err != nil {
+		return err
+	}
+
+	if err := p.htlcAdd.Encode(w, 0); err != nil {
+		return err
+	}
+
+	if err := serializeRoute(w, p.route); err != nil {
+		return err
+	}
+
+	if err := p.circuit.Encode(w); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deserializePayAttempt(r io.Reader) (*paymentAttempt, error) {
+	p := &paymentAttempt{}
+	if err := channeldb.ReadElements(r,
+		&p.paymentID, &p.firstHop,
+	); err != nil {
+		return nil, err
+	}
+
+	htlc := &lnwire.UpdateAddHTLC{}
+	if err := htlc.Decode(r, 0); err != nil {
+		return nil, err
+	}
+	p.htlcAdd = htlc
+
+	route, err := deserializeRoute(r)
+	if err != nil {
+		return nil, err
+	}
+	p.route = route
+
+	circuit := &sphinx.Circuit{}
+	if err := circuit.Decode(r); err != nil {
+		return nil, err
+	}
+	p.circuit = circuit
+
+	return p, nil
 }
 
 // paymentState is the type used to indicate which state a given payment has in

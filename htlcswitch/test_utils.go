@@ -758,7 +758,7 @@ func preparePayment(sendingPeer, receivingPeer lnpeer.Peer,
 	// Send payment and expose err channel.
 	return invoice, func() error {
 		err := sender.htlcSwitch.SendHTLC(
-			firstHop, pid, htlc, newMockDeobfuscator(),
+			firstHop, pid, htlc, nil,
 		)
 		if err != nil {
 			return err

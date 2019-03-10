@@ -495,7 +495,11 @@ func (r *ChannelRouter) Start() error {
 			paySession := r.missionControl.NewPaymentSessionFromRoutes(
 				nil,
 			)
-			_, _, err := r.sendPayment(paymentHash, 0, paySession)
+
+			deadline := time.Now()
+			_, _, err := r.sendPayment(
+				paymentHash, deadline, paySession,
+			)
 			if err != nil {
 				log.Errorf("Resuming payment with hash %v "+
 					"failed: %v.", paymentHash, err)
@@ -1652,13 +1656,17 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		payAttemptTimeout = payment.PayAttemptTimeout
 	}
 
+	deadline := time.Now().Add(payAttemptTimeout)
+
 	// Record this payment hash with the payment state machine, ensuring it
 	// is not already active.
 	if err := r.paymentStates.initPayment(payment.PaymentHash); err != nil {
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(payment.PaymentHash, payAttemptTimeout, paySession)
+	return r.sendPayment(
+		payment.PaymentHash, deadline, paySession,
+	)
 }
 
 // SendToRoute attempts to send a payment through one of the provided routes.
@@ -1680,6 +1688,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 			return spew.Sdump(routes)
 		}),
 	)
+	deadline := time.Now().Add(defaultPayAttemptTimeout)
 
 	// Record this payment hash with the payment state machine, ensuring it
 	// is not already active.
@@ -1687,9 +1696,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(
-		paymentHash, defaultPayAttemptTimeout, paySession,
-	)
+	return r.sendPayment(paymentHash, deadline, paySession)
 }
 
 // sendPayment attempts to send a payment to the given payment hash using the
@@ -1705,7 +1712,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // carry out its execution. After restarts it is safe, and assumed, that the
 // router will call this method for every payment still active.
 func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
-	payAttemptTimeout time.Duration,
+	deadline time.Time,
 	paySession PaymentSession) ([32]byte, *Route, error) {
 
 	// We'll also fetch the current block height so we can properly
@@ -1714,7 +1721,12 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 	if err != nil {
 		return [32]byte{}, nil, err
 	}
-	timeoutChan := time.After(payAttemptTimeout)
+
+	timeout := deadline.Sub(time.Now())
+	if timeout < 0 {
+		timeout = 0
+	}
+	timeoutChan := time.After(timeout)
 
 	// Get the current state of this payment, such that we can resume where
 	// we left off.
@@ -1739,7 +1751,7 @@ func (r *ChannelRouter) sendPayment(paymentHash [32]byte,
 			select {
 			case <-timeoutChan:
 				errStr := fmt.Sprintf("payment attempt not completed "+
-					"before timeout of %v", payAttemptTimeout)
+					"before timeout of %v", timeout)
 
 				deadlineErr := newErr(
 					ErrPaymentAttemptTimeout, errStr,

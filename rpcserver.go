@@ -2948,12 +2948,8 @@ func (r *rpcServer) dispatchPaymentIntent(
 			payment,
 		)
 	} else {
-		payment := &routing.LightningPayment{
-			PaymentHash: payIntent.rHash,
-		}
-
 		preImage, route, routerErr = r.server.chanRouter.SendToRoute(
-			payIntent.routes, payment,
+			payIntent.routes, payIntent.rHash,
 		)
 	}
 

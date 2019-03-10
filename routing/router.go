@@ -1678,7 +1678,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // carry out its execution. After restarts it is safe, and assumed, that the
 // router will call this method for every payment still active.
 func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession *paymentSession) ([32]byte, *Route, error) {
+	paySession PaymentSession) ([32]byte, *Route, error) {
 
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
@@ -1984,7 +1984,7 @@ type paymentAttempt struct {
 // createPaymentAttempt generates a new paymentAttempt for the given payment,
 // such that it can be sent to the switch.
 func (r *ChannelRouter) createPaymentAttempt(payment *LightningPayment,
-	paySession *paymentSession, currentHeight uint32,
+	paySession PaymentSession, currentHeight uint32,
 	finalCLTVDelta uint16) (*paymentAttempt, error) {
 
 	route, err := paySession.RequestRoute(
@@ -2044,7 +2044,7 @@ func (r *ChannelRouter) createPaymentAttempt(payment *LightningPayment,
 // error type, this error is either the final outcome of the payment or we need
 // to continue with an alternative route. This is indicated by the boolean
 // return value.
-func (r *ChannelRouter) processSendError(paySession *paymentSession,
+func (r *ChannelRouter) processSendError(paySession PaymentSession,
 	route *Route, fErr *htlcswitch.ForwardingError) bool {
 
 	errSource := fErr.ErrorSource

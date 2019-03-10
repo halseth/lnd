@@ -1627,9 +1627,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 	// Before starting the HTLC routing attempt, we'll create a fresh
 	// payment session which will report our errors back to mission
 	// control.
-	paySession, err := r.missionControl.NewPaymentSession(
-		payment.RouteHints, payment.Target,
-	)
+	paySession, err := r.missionControl.NewPaymentSession(payment)
 	if err != nil {
 		return [32]byte{}, nil, err
 	}
@@ -1704,13 +1702,6 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		return [32]byte{}, nil, err
 	}
 
-	var finalCLTVDelta uint16
-	if payment.FinalCLTVDelta == nil {
-		finalCLTVDelta = DefaultFinalCLTVDelta
-	} else {
-		finalCLTVDelta = *payment.FinalCLTVDelta
-	}
-
 	var payAttemptTimeout time.Duration
 	if payment.PayAttemptTimeout == time.Duration(0) {
 		payAttemptTimeout = defaultPayAttemptTimeout
@@ -1773,7 +1764,6 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// session.
 			p, err := r.createPaymentAttempt(
 				payment, paySession, uint32(currentHeight),
-				finalCLTVDelta,
 			)
 			if err != nil {
 				// If we're unable to successfully make a
@@ -1984,12 +1974,9 @@ type paymentAttempt struct {
 // createPaymentAttempt generates a new paymentAttempt for the given payment,
 // such that it can be sent to the switch.
 func (r *ChannelRouter) createPaymentAttempt(payment *LightningPayment,
-	paySession PaymentSession, currentHeight uint32,
-	finalCLTVDelta uint16) (*paymentAttempt, error) {
+	paySession PaymentSession, currentHeight uint32) (*paymentAttempt, error) {
 
-	route, err := paySession.RequestRoute(
-		payment, currentHeight, finalCLTVDelta,
-	)
+	route, err := paySession.RequestRoute(currentHeight)
 	if err != nil {
 		return nil, err
 	}

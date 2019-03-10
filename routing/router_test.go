@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"math/rand"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 // defaultNumRoutes is the default value for the maximum number of routes to
 // be returned by FindRoutes
 const defaultNumRoutes = 10
+
+var uniquePaymentID uint64 = 1 // to be used atomically
 
 type testCtx struct {
 	router *ChannelRouter
@@ -48,10 +51,9 @@ func (c *testCtx) RestartRouter() error {
 		Graph:     c.graph,
 		Chain:     c.chain,
 		ChainView: c.chainView,
-		SendToSwitch: func(_ lnwire.ShortChannelID,
-			_ uint64, _ *lnwire.UpdateAddHTLC,
-			_ *sphinx.Circuit) ([32]byte, error) {
-			return [32]byte{}, nil
+		SendToSwitch: func(_ lnwire.ShortChannelID, _ uint64,
+			_ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
+			return nil
 		},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
@@ -90,11 +92,9 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 		Graph:     graphInstance.graph,
 		Chain:     chain,
 		ChainView: chainView,
-		SendToSwitch: func(_ lnwire.ShortChannelID,
-			_ uint64, _ *lnwire.UpdateAddHTLC,
-			_ *sphinx.Circuit) ([32]byte, error) {
-
-			return [32]byte{}, nil
+		SendToSwitch: func(_ lnwire.ShortChannelID, _ uint64,
+			_ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
+			return nil
 		},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
@@ -102,7 +102,8 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 			return lnwire.NewMSatFromSatoshis(e.Capacity)
 		},
 		NextPaymentID: func() (uint64, error) {
-			return 0, nil
+			next := atomic.AddUint64(&uniquePaymentID, 1)
+			return next, nil
 		},
 	})
 	if err != nil {
@@ -311,24 +312,37 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 	// router's configuration to ignore the path that has luo ji as the
 	// first hop. This should force the router to instead take the
 	// available two hop path (through satoshi).
+	var pid uint64
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
+
+		if paymentID == pid {
+			return fmt.Errorf("duplicate pid")
+		}
 
 		roasbeefLuoji := lnwire.NewShortChanIDFromInt(689530843)
 		if firstHop == roasbeefLuoji {
+			pid = paymentID
+		}
+
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+
+		if paymentID == pid {
 			pub, err := sourceNode.PubKey()
 			if err != nil {
-				return preImage, err
+				return nil, err
 			}
-			return [32]byte{}, &htlcswitch.ForwardingError{
+			return &htlcswitch.PaymentFailure{&htlcswitch.ForwardingError{
 				ErrorSource: pub,
 				// TODO(roasbeef): temp node failure should be?
 				FailureMessage: &lnwire.FailTemporaryChannelFailure{},
-			}
+			}}, nil
 		}
-
-		return preImage, nil
+		return &htlcswitch.PaymentSuccess{preImage}, nil
 	}
 
 	// Send off the payment request to the router, route through satoshi
@@ -449,19 +463,17 @@ func TestChannelUpdateValidation(t *testing.T) {
 		Timestamp:      uint32(testTime.Add(time.Minute).Unix()),
 	}
 
-	// We'll modify the SendToSwitch method so that it simulates a failed
+	// We'll modify the GetPaymentResult method so that it simulates a failed
 	// payment with an error originating from the first hop of the route.
 	// The unsigned channel update is attached to the failure message.
-	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
-
-		return [32]byte{}, &htlcswitch.ForwardingError{
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		return &htlcswitch.PaymentFailure{&htlcswitch.ForwardingError{
 			ErrorSource: ctx.aliases["b"],
 			FailureMessage: &lnwire.FailFeeInsufficient{
 				Update: errChanUpdate,
 			},
-		}
+		}}, nil
 	}
 
 	// The payment parameter is mostly redundant in SendToRoute. Can be left
@@ -576,13 +588,26 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 	// We'll now modify the SendToSwitch method to return an error for the
 	// outgoing channel to Son goku. This will be a fee related error, so
 	// it should only cause the edge to be pruned after the second attempt.
+	var pid uint64
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
+
+		if paymentID == pid {
+			return fmt.Errorf("duplicate pid")
+		}
 
 		roasbeefSongoku := lnwire.NewShortChanIDFromInt(chanID)
 		if firstHop == roasbeefSongoku {
-			return [32]byte{}, &htlcswitch.ForwardingError{
+			pid = paymentID
+		}
+
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		if paymentID == pid {
+			return &htlcswitch.PaymentFailure{&htlcswitch.ForwardingError{
 				ErrorSource: sourceNode,
 
 				// Within our error, we'll add a channel update
@@ -591,10 +616,10 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 				FailureMessage: &lnwire.FailFeeInsufficient{
 					Update: errChanUpdate,
 				},
-			}
+			}}, nil
 		}
+		return &htlcswitch.PaymentSuccess{preImage}, nil
 
-		return preImage, nil
 	}
 
 	// Send off the payment request to the router, route through satoshi
@@ -686,20 +711,35 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	// outgoing channel to son goku. Since this is a time lock related
 	// error, we should fail the payment flow all together, as Goku is the
 	// only channel to Sophon.
+	var pid uint64
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
 
-		if firstHop == roasbeefSongoku {
-			return [32]byte{}, &htlcswitch.ForwardingError{
-				ErrorSource: sourceNode,
-				FailureMessage: &lnwire.FailExpiryTooSoon{
-					Update: errChanUpdate,
-				},
-			}
+		if paymentID == pid {
+			return fmt.Errorf("duplicate pid")
 		}
 
-		return preImage, nil
+		if firstHop == roasbeefSongoku {
+			pid = paymentID
+		}
+
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		if paymentID == pid {
+			return &htlcswitch.PaymentFailure{
+				&htlcswitch.ForwardingError{
+					ErrorSource: sourceNode,
+					FailureMessage: &lnwire.FailExpiryTooSoon{
+						Update: errChanUpdate,
+					},
+				},
+			}, nil
+		}
+		return &htlcswitch.PaymentSuccess{preImage}, nil
+
 	}
 
 	// assertExpectedPath is a helper function that asserts the returned
@@ -743,19 +783,33 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	// instead, this should result in the same behavior of roasbeef routing
 	// around the faulty Son Goku node.
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
 
-		if firstHop == roasbeefSongoku {
-			return [32]byte{}, &htlcswitch.ForwardingError{
-				ErrorSource: sourceNode,
-				FailureMessage: &lnwire.FailIncorrectCltvExpiry{
-					Update: errChanUpdate,
-				},
-			}
+		if paymentID == pid {
+			return fmt.Errorf("duplicate pid")
 		}
 
-		return preImage, nil
+		if firstHop == roasbeefSongoku {
+			pid = paymentID
+		}
+
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		if paymentID == pid {
+			return &htlcswitch.PaymentFailure{
+				&htlcswitch.ForwardingError{
+					ErrorSource: sourceNode,
+					FailureMessage: &lnwire.FailIncorrectCltvExpiry{
+						Update: errChanUpdate,
+					},
+				},
+			}, nil
+		}
+		return &htlcswitch.PaymentSuccess{preImage}, nil
+
 	}
 
 	// Once again, Roasbeef should route around Goku since they disagree
@@ -813,18 +867,19 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	//
 	// TODO(roasbeef): filtering should be intelligent enough so just not
 	// go through satoshi at all at this point.
+	var pid, pid2 uint64
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
+
+		if paymentID == pid || paymentID == pid2 {
+			return fmt.Errorf("duplicate pid")
+		}
 
 		if firstHop == roasbeefLuoji {
 			// We'll first simulate an error from the first
 			// outgoing link to simulate the channel from luo ji to
 			// roasbeef not having enough capacity.
-			return [32]byte{}, &htlcswitch.ForwardingError{
-				ErrorSource:    sourcePub,
-				FailureMessage: &lnwire.FailTemporaryChannelFailure{},
-			}
+			pid = paymentID
 		}
 
 		// Next, we'll create an error from satoshi to indicate
@@ -832,13 +887,34 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 		// prune out the rest of the routes.
 		roasbeefSatoshi := lnwire.NewShortChanIDFromInt(2340213491)
 		if firstHop == roasbeefSatoshi {
-			return [32]byte{}, &htlcswitch.ForwardingError{
-				ErrorSource:    ctx.aliases["satoshi"],
-				FailureMessage: &lnwire.FailUnknownNextPeer{},
-			}
+			pid2 = paymentID
 		}
 
-		return preImage, nil
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		if paymentID == pid {
+			return &htlcswitch.PaymentFailure{
+				&htlcswitch.ForwardingError{
+					ErrorSource:    sourcePub,
+					FailureMessage: &lnwire.FailTemporaryChannelFailure{},
+				},
+			}, nil
+		}
+
+		if paymentID == pid2 {
+			return &htlcswitch.PaymentFailure{
+				&htlcswitch.ForwardingError{
+					ErrorSource:    ctx.aliases["satoshi"],
+					FailureMessage: &lnwire.FailUnknownNextPeer{},
+				},
+			}, nil
+
+		}
+		return &htlcswitch.PaymentSuccess{preImage}, nil
+
 	}
 
 	ctx.router.missionControl.ResetHistory()
@@ -862,17 +938,31 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// wasn't originally online. This should also halt the send all
 	// together as all paths contain luoji and he can't be reached.
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
 
-		if firstHop == roasbeefLuoji {
-			return [32]byte{}, &htlcswitch.ForwardingError{
-				ErrorSource:    sourcePub,
-				FailureMessage: &lnwire.FailUnknownNextPeer{},
-			}
+		if paymentID == pid || paymentID == pid2 {
+			return fmt.Errorf("duplicate pid")
 		}
 
-		return preImage, nil
+		if firstHop == roasbeefLuoji {
+			pid = paymentID
+		}
+
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		if paymentID == pid {
+			return &htlcswitch.PaymentFailure{
+				&htlcswitch.ForwardingError{
+					ErrorSource:    sourcePub,
+					FailureMessage: &lnwire.FailUnknownNextPeer{},
+				},
+			}, nil
+		}
+		return &htlcswitch.PaymentSuccess{preImage}, nil
+
 	}
 
 	// This shouldn't return an error, as we'll make a payment attempt via
@@ -907,19 +997,34 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// roasbeef -> luoji channel has insufficient capacity. This should
 	// again cause us to instead go via the satoshi route.
 	ctx.router.cfg.SendToSwitch = func(firstHop lnwire.ShortChannelID,
-		_ uint64, _ *lnwire.UpdateAddHTLC,
-		_ *sphinx.Circuit) ([32]byte, error) {
+		paymentID uint64, _ *lnwire.UpdateAddHTLC, _ *sphinx.Circuit) error {
+
+		if paymentID == pid || paymentID == pid2 {
+			return fmt.Errorf("duplicate pid")
+		}
 
 		if firstHop == roasbeefLuoji {
 			// We'll first simulate an error from the first
 			// outgoing link to simulate the channel from luo ji to
 			// roasbeef not having enough capacity.
-			return [32]byte{}, &htlcswitch.ForwardingError{
-				ErrorSource:    sourcePub,
-				FailureMessage: &lnwire.FailTemporaryChannelFailure{},
-			}
+			pid = paymentID
 		}
-		return preImage, nil
+
+		return nil
+	}
+
+	ctx.router.cfg.GetPaymentResult = func(paymentID uint64) (
+		htlcswitch.PaymentResult, error) {
+		if paymentID == pid {
+			return &htlcswitch.PaymentFailure{
+				&htlcswitch.ForwardingError{
+					ErrorSource:    sourcePub,
+					FailureMessage: &lnwire.FailTemporaryChannelFailure{},
+				},
+			}, nil
+		}
+		return &htlcswitch.PaymentSuccess{preImage}, nil
+
 	}
 
 	paymentPreImage, route, err = ctx.router.SendPayment(&payment)
@@ -1564,8 +1669,8 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 		ChainView: ctx.chainView,
 		SendToSwitch: func(_ lnwire.ShortChannelID,
 			_ uint64, _ *lnwire.UpdateAddHTLC,
-			_ *sphinx.Circuit) ([32]byte, error) {
-			return [32]byte{}, nil
+			_ *sphinx.Circuit) error {
+			return nil
 		},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,

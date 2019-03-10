@@ -569,7 +569,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 		ChainView: cc.chainView,
 		SendToSwitch: func(firstHop lnwire.ShortChannelID, pid uint64,
 			htlcAdd *lnwire.UpdateAddHTLC,
-			circuit *sphinx.Circuit) ([32]byte, error) {
+			circuit *sphinx.Circuit) error {
 
 			// Using the created circuit, initialize the error
 			// decrypter so we can parse+decode any failures
@@ -582,6 +582,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 				firstHop, pid, htlcAdd, errorDecryptor,
 			)
 		},
+		GetPaymentResult:   s.htlcSwitch.GetPaymentResult,
 		ChannelPruneExpiry: time.Duration(time.Hour * 24 * 14),
 		GraphPruneInterval: time.Duration(time.Hour),
 		QueryBandwidth: func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {

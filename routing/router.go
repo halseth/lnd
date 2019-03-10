@@ -1680,8 +1680,8 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// are expiring.
 		}
 
-		route, err := paySession.RequestRoute(
-			payment, uint32(currentHeight), finalCLTVDelta,
+		p, err := r.createPaymentAttempt(
+			payment, paySession, uint32(currentHeight), finalCLTVDelta,
 		)
 		if err != nil {
 			// If we're unable to successfully make a payment using
@@ -1698,10 +1698,10 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// Send payment attempt. It will return a final boolean
 		// indicating if more attempts are needed.
 		preimage, final, err := r.sendPaymentAttempt(
-			paySession, route, payment.PaymentHash,
+			paySession, p, payment.PaymentHash,
 		)
 		if final {
-			return preimage, route, err
+			return preimage, p.route, err
 		}
 
 		lastError = err
@@ -1713,15 +1713,17 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 // bool parameter indicates whether this is a final outcome or more attempts
 // should be made.
 func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
-	route *Route, paymentHash [32]byte) ([32]byte, bool, error) {
+	p *paymentAttempt, paymentHash [32]byte) ([32]byte, bool, error) {
 
 	log.Tracef("Attempting to send payment %x, using route: %v",
 		paymentHash, newLogClosure(func() string {
-			return spew.Sdump(route)
+			return spew.Sdump(p.route)
 		}),
 	)
 
-	preimage, err := r.sendToSwitch(route, paymentHash)
+	preimage, err := r.cfg.SendToSwitch(
+		p.firstHop, p.paymentID, p.htlcAdd, p.circuit,
+	)
 	if err == nil {
 		return preimage, true, nil
 	}
@@ -1729,24 +1731,42 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 	log.Errorf("Attempt to send payment %x failed: %v",
 		paymentHash, err)
 
-	finalOutcome := r.processSendError(paySession, route, err)
+	finalOutcome := r.processSendError(paySession, p.route, err)
 
 	return [32]byte{}, finalOutcome, err
 }
 
-// sendToSwitch sends a payment along the specified route and returns the
-// obtained preimage.
-func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
-	[32]byte, error) {
+// paymentAttempt holds all the information needed to send a HTLC to the
+// switch, and handle the result.
+type paymentAttempt struct {
+	paymentID uint64
+	firstHop  lnwire.ShortChannelID
+	htlcAdd   *lnwire.UpdateAddHTLC
+	route     *Route
+	circuit   *sphinx.Circuit
+}
+
+// createPaymentAttempt generates a new paymentAttempt for the given payment,
+// such that it can be sent to the switch.
+func (r *ChannelRouter) createPaymentAttempt(payment *LightningPayment,
+	paySession *paymentSession, currentHeight uint32,
+	finalCLTVDelta uint16) (*paymentAttempt, error) {
+
+	route, err := paySession.RequestRoute(
+		payment, currentHeight, finalCLTVDelta,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Generate the raw encoded sphinx packet to be included along
 	// with the htlcAdd message that we send directly to the
 	// switch.
 	onionBlob, circuit, err := generateSphinxPacket(
-		route, paymentHash[:],
+		route, payment.PaymentHash[:],
 	)
 	if err != nil {
-		return [32]byte{}, err
+		return nil, err
 	}
 
 	// Craft an HTLC packet to send to the layer 2 switch. The
@@ -1755,7 +1775,7 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 	htlcAdd := &lnwire.UpdateAddHTLC{
 		Amount:      route.TotalAmount,
 		Expiry:      route.TotalTimeLock,
-		PaymentHash: paymentHash,
+		PaymentHash: payment.PaymentHash,
 	}
 	copy(htlcAdd.OnionBlob[:], onionBlob)
 
@@ -1763,7 +1783,7 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 	// this HTLC.
 	paymentID, err := r.cfg.NextPaymentID()
 	if err != nil {
-		return [32]byte{}, err
+		return nil, err
 	}
 
 	// Attempt to send this payment through the network to complete
@@ -1772,9 +1792,16 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 	firstHop := lnwire.NewShortChanIDFromInt(
 		route.Hops[0].ChannelID,
 	)
-	return r.cfg.SendToSwitch(
-		firstHop, paymentID, htlcAdd, circuit,
-	)
+
+	p := &paymentAttempt{
+		paymentID: paymentID,
+		firstHop:  firstHop,
+		htlcAdd:   htlcAdd,
+		route:     route,
+		circuit:   circuit,
+	}
+
+	return p, nil
 }
 
 // processSendError analyzes the error for the payment attempt received from the

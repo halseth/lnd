@@ -31,6 +31,7 @@ var uniquePaymentID uint64 = 1 // to be used atomically
 type testCtx struct {
 	router *ChannelRouter
 
+	db    *channeldb.DB
 	graph *channeldb.ChannelGraph
 
 	aliases map[string]*btcec.PublicKey
@@ -48,6 +49,7 @@ func (c *testCtx) RestartRouter() error {
 	// With the chainView reset, we'll now re-create the router itself, and
 	// start it.
 	router, err := New(Config{
+		DB:        c.db,
 		Graph:     c.graph,
 		Chain:     c.chain,
 		ChainView: c.chainView,
@@ -88,7 +90,14 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 	// be populated.
 	chain := newMockChain(startingHeight)
 	chainView := newMockChainView(chain)
+
+	cdb, cleanup, err := makeTestDB()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	router, err := New(Config{
+		DB:        cdb,
 		Graph:     graphInstance.graph,
 		Chain:     chain,
 		ChainView: chainView,
@@ -115,6 +124,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 
 	ctx := &testCtx{
 		router:    router,
+		db:        cdb,
 		graph:     graphInstance.graph,
 		aliases:   graphInstance.aliasMap,
 		chain:     chain,
@@ -124,6 +134,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 	cleanUp := func() {
 		ctx.router.Stop()
 		graphInstance.cleanUp()
+		cleanup()
 	}
 
 	return ctx, cleanUp, nil
@@ -1664,6 +1675,7 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 
 	// Create new router with same graph database.
 	router, err := New(Config{
+		DB:        ctx.db,
 		Graph:     ctx.graph,
 		Chain:     ctx.chain,
 		ChainView: ctx.chainView,

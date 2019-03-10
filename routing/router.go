@@ -151,6 +151,8 @@ type ChannelPolicy struct {
 // the configuration MUST be non-nil for the ChannelRouter to carry out its
 // duties.
 type Config struct {
+	DB *channeldb.DB
+
 	// Graph is the channel graph that the ChannelRouter will use to gather
 	// metrics from and also to carry out path finding queries.
 	// TODO(roasbeef): make into an interface
@@ -1744,7 +1746,14 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 
 	switch result := result.(type) {
 	case *htlcswitch.PaymentSuccess:
-		return result.Preimage, true, nil
+		preimage := result.Preimage
+		err := r.savePayment(p.route, preimage[:])
+		if err != nil {
+			log.Errorf("Unable to save payment: %v", err)
+			return preimage, true, err
+		}
+
+		return preimage, true, nil
 
 	case *htlcswitch.PaymentFailure:
 
@@ -2053,6 +2062,34 @@ func (r *ChannelRouter) processSendError(paySession *paymentSession,
 	default:
 		return true
 	}
+}
+
+// savePayment saves a successfully completed payment to the database for
+// historical record keeping.
+func (r *ChannelRouter) savePayment(route *Route, preImage []byte) error {
+	// Compute the final amount sent.
+	amt := route.TotalAmount - route.TotalFees
+
+	paymentPath := make([][33]byte, len(route.Hops))
+	for i, hop := range route.Hops {
+		hopPub := hop.PubKeyBytes
+		copy(paymentPath[i][:], hopPub[:])
+	}
+
+	payment := &channeldb.OutgoingPayment{
+		Invoice: channeldb.Invoice{
+			Terms: channeldb.ContractTerm{
+				Value: amt,
+			},
+			CreationDate: time.Now(),
+		},
+		Path:           paymentPath,
+		Fee:            route.TotalFees,
+		TimeLockLength: route.TotalTimeLock,
+	}
+	copy(payment.PaymentPreimage[:], preImage)
+
+	return r.cfg.DB.AddPayment(payment)
 }
 
 // getFailedEdge tries to locate the failing channel given a route and the

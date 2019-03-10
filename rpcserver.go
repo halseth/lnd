@@ -2741,7 +2741,7 @@ type rpcPaymentIntent struct {
 	rHash             [32]byte
 	cltvDelta         uint16
 	routeHints        [][]routing.HopHint
-	outgoingChannelID *uint64
+	outgoingChannelID uint64
 
 	routes []*routing.Route
 }
@@ -2778,7 +2778,7 @@ func extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPaymentIntent, error
 	// If there are no routes specified, pass along a outgoing channel
 	// restriction if specified.
 	if rpcPayReq.OutgoingChanId != 0 {
-		payIntent.outgoingChannelID = &rpcPayReq.OutgoingChanId
+		payIntent.outgoingChannelID = rpcPayReq.OutgoingChanId
 	}
 
 	// If the payment request field isn't blank, then the details of the

@@ -847,32 +847,39 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	// payment has failed. If one is not found, it likely means the daemon
 	// has been restarted since sending the payment.
 	payment := s.findPayment(pkt.incomingHTLCID)
+	if payment == nil {
+		return
+	}
 
-	var result PaymentResult
+	result, err := s.extractResult(payment.deobfuscator, pkt)
+	if err != nil {
+		return
+	}
+
+	// Deliver the payment error and preimage to the application, if it is
+	// waiting for a response.
+	payment.resultChan <- result
+	s.removePendingPayment(pkt.incomingHTLCID)
+}
+
+func (s *Switch) extractResult(deobfuscator ErrorDecrypter,
+	pkt *htlcPacket) (PaymentResult, error) {
 
 	switch htlc := pkt.htlc.(type) {
 
 	// We've received a settle update which means we can finalize the user
 	// payment and return successful response.
 	case *lnwire.UpdateFulfillHTLC:
-		result = &PaymentSuccess{htlc.PaymentPreimage}
+		return &PaymentSuccess{htlc.PaymentPreimage}, nil
 
 	// We've received a fail update which means we can finalize the user
 	// payment and return fail response.
 	case *lnwire.UpdateFailHTLC:
-		paymentErr := s.parseFailedPayment(payment, pkt, htlc)
-		result = &PaymentFailure{paymentErr}
+		paymentErr := s.parseFailedPayment(deobfuscator, pkt, htlc)
+		return &PaymentFailure{paymentErr}, nil
 
 	default:
-		log.Warnf("Received unknown response type: %T", pkt.htlc)
-		return
-	}
-
-	// Deliver the payment error and preimage to the application, if it is
-	// waiting for a response.
-	if payment != nil {
-		payment.resultChan <- result
-		s.removePendingPayment(pkt.incomingHTLCID)
+		return nil, fmt.Errorf("Received unknown response type: %T", pkt.htlc)
 	}
 }
 
@@ -882,7 +889,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 // 2) A resolution from the chain arbitrator,
 // 3) A failure from the remote party, which will need to be decrypted using the
 //      payment deobfuscator.
-func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
+func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter, pkt *htlcPacket,
 	htlc *lnwire.UpdateFailHTLC) *ForwardingError {
 
 	var failure *ForwardingError
@@ -926,25 +933,13 @@ func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
 			FailureMessage: lnwire.FailPermanentChannelFailure{},
 		}
 
-	// If the provided payment is nil, we have discarded the error decryptor
-	// due to a restart. We'll return a fixed error and signal a temporary
-	// channel failure to the router.
-	case payment == nil:
-		userErr := fmt.Sprintf("error decryptor for payment " +
-			"could not be located, likely due to restart")
-		failure = &ForwardingError{
-			ErrorSource:    s.cfg.SelfKey,
-			ExtraMsg:       userErr,
-			FailureMessage: lnwire.NewTemporaryChannelFailure(nil),
-		}
-
 	// A regular multi-hop payment error that we'll need to
 	// decrypt.
 	default:
 		var err error
 		// We'll attempt to fully decrypt the onion encrypted
 		// error. If we're unable to then we'll bail early.
-		failure, err = payment.deobfuscator.DecryptError(htlc.Reason)
+		failure, err = deobfuscator.DecryptError(htlc.Reason)
 		if err != nil {
 			userErr := fmt.Sprintf("unable to de-obfuscate onion "+
 				"failure, htlc with hash(%x): %v",

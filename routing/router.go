@@ -20,7 +20,6 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
@@ -486,29 +485,40 @@ func (r *ChannelRouter) Start() error {
 		log.Infof("Resuming payment with hash %x", p.paymentHash)
 
 		r.wg.Add(1)
-		go func(paymentHash lntypes.Hash) {
+		go func(p *storedPayment) {
 			defer r.wg.Done()
 
-			// We create a dummy, empty payment session such that
-			// we won't attempt another payment attempt when the
-			// result for this payment is received.
-			paySession := r.missionControl.NewPaymentSessionFromRoutes(
-				nil,
-			)
+			// We recreate the payment session from the database
+			// information, such that we can continue with another
+			// payment attempt when the result for this payment is
+			// received.
+			var paySession PaymentSession
+			if p.payment != nil {
+				paySession, err = r.missionControl.NewPaymentSession(p.payment)
+				if err != nil {
+					log.Errorf("unable to create "+
+						"payment session: %v",
+						p.paymentHash, err)
+					return
+				}
+			} else if len(p.routes) > 0 {
+				paySession = r.missionControl.NewPaymentSessionFromRoutes(
+					p.routes,
+				)
+			}
 
-			deadline := time.Now()
 			_, _, err := r.sendPayment(
-				paymentHash, deadline, paySession,
+				p.paymentHash, p.deadline, paySession,
 			)
 			if err != nil {
 				log.Errorf("Resuming payment with hash %v "+
-					"failed: %v.", paymentHash, err)
+					"failed: %v.", p.paymentHash, err)
 				return
 			}
 
 			log.Infof("Resumed payment with hash %x completed.",
-				paymentHash)
-		}(p.paymentHash)
+				p.paymentHash)
+		}(p)
 	}
 
 	r.wg.Add(1)

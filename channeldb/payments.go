@@ -103,6 +103,14 @@ type OutgoingPayment struct {
 // AddPayment saves a successful payment to the database. It is assumed that
 // all payment are sent using unique payment hashes.
 func (db *DB) AddPayment(payment *OutgoingPayment) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
+		return db.AddPaymentTx(tx, payment)
+	})
+}
+
+// AddPaymentTx lets the caller call AddPayment with a given database tx to
+// ensure atimicity.
+func (db *DB) AddPaymentTx(tx *bbolt.Tx, payment *OutgoingPayment) error {
 	// Validate the field of the inner voice within the outgoing payment,
 	// these must also adhere to the same constraints as regular invoices.
 	if err := validateInvoice(&payment.Invoice); err != nil {
@@ -118,26 +126,24 @@ func (db *DB) AddPayment(payment *OutgoingPayment) error {
 	}
 	paymentBytes := b.Bytes()
 
-	return db.Batch(func(tx *bbolt.Tx) error {
-		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
-		if err != nil {
-			return err
-		}
+	payments, err := tx.CreateBucketIfNotExists(paymentBucket)
+	if err != nil {
+		return err
+	}
 
-		// Obtain the new unique sequence number for this payment.
-		paymentID, err := payments.NextSequence()
-		if err != nil {
-			return err
-		}
+	// Obtain the new unique sequence number for this payment.
+	paymentID, err := payments.NextSequence()
+	if err != nil {
+		return err
+	}
 
-		// We use BigEndian for keys as it orders keys in
-		// ascending order. This allows bucket scans to order payments
-		// in the order in which they were created.
-		paymentIDBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
+	// We use BigEndian for keys as it orders keys in ascending order. This
+	// allows bucket scans to order payments in the order in which they
+	// were created.
+	paymentIDBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
 
-		return payments.Put(paymentIDBytes, paymentBytes)
-	})
+	return payments.Put(paymentIDBytes, paymentBytes)
 }
 
 // FetchAllPayments returns all outgoing payments in DB.

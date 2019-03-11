@@ -824,7 +824,9 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	}
 
 	// Once again, Roasbeef should route around Goku since they disagree
-	// w.r.t to the block height, and instead go through Pham Nuwen.
+	// w.r.t to the block height, and instead go through Pham Nuwen. We
+	// flip a bit in the payment hash to allow resending this payment.
+	payment.PaymentHash[1] ^= 1
 	paymentPreImage, route, err = ctx.router.SendPayment(&payment)
 	if err != nil {
 		t.Fatalf("unable to send payment: %v", err)
@@ -1037,7 +1039,8 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 		return &htlcswitch.PaymentSuccess{preImage}, nil
 
 	}
-
+	// We flip a bit in the payment hash to allow resending this payment.
+	payment.PaymentHash[1] ^= 1
 	paymentPreImage, route, err = ctx.router.SendPayment(&payment)
 	if err != nil {
 		t.Fatalf("unable to send payment: %v", err)

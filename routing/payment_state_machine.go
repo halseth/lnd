@@ -5,12 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/coreos/bbolt"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+)
+
+type paymentType byte
+
+const (
+	typeSendPayment paymentType = 0
+	typeSendToRoute paymentType = 1
 )
 
 var (
@@ -26,6 +34,8 @@ var (
 	// paymentAttemptKey is used to access the information of the current
 	// payment attempt sent to the switch. This key is only populated when
 	// the payment is in the state paymentStateAttemptSent.
+
+	paymentInfoKey    = []byte("payment-info-key")
 	paymentAttemptKey = []byte("payment-attempt-key")
 
 	// paymentErrorKey is a key that accesses the last encountered error
@@ -113,6 +123,59 @@ func deserializePayAttempt(r io.Reader) (*paymentAttempt, error) {
 	return p, nil
 }
 
+// TODO: fail on duplicate hash? Allow re-init on terminal failure state.
+func (s *paymentStateMachine) initSendPayment(l *LightningPayment,
+	deadline time.Time) error {
+
+	var b bytes.Buffer
+
+	var scratch [8]byte
+	scratch[0] = byte(typeSendPayment)
+	if _, err := b.Write(scratch[:1]); err != nil {
+		return err
+	}
+
+	byteOrder.PutUint64(scratch[:], uint64(deadline.Unix()))
+	if _, err := b.Write(scratch[:]); err != nil {
+		return err
+	}
+
+	if err := serializeLightningPayment(&b, l); err != nil {
+		return err
+	}
+
+	return s.initPayment(l.PaymentHash, b.Bytes())
+}
+
+func (s *paymentStateMachine) initSendToRoute(pHash [32]byte,
+	routes []*Route, deadline time.Time) error {
+
+	var b bytes.Buffer
+
+	var scratch [8]byte
+	scratch[0] = byte(typeSendToRoute)
+	if _, err := b.Write(scratch[:1]); err != nil {
+		return err
+	}
+
+	byteOrder.PutUint64(scratch[:], uint64(deadline.Unix()))
+	if _, err := b.Write(scratch[:]); err != nil {
+		return err
+	}
+
+	if err := channeldb.WriteElements(&b, uint32(len(routes))); err != nil {
+		return err
+	}
+
+	for _, r := range routes {
+		if err := serializeRoute(&b, r); err != nil {
+			return err
+		}
+	}
+
+	return s.initPayment(pHash, b.Bytes())
+}
+
 // paymentState is the type used to indicate which state a given payment has in
 // the payment state machine.
 type paymentState byte
@@ -154,7 +217,9 @@ const (
 //
 // When this method returns the payment will be in the state
 // paymentStateIntended.
-func (s *paymentStateMachine) initPayment(pHash lntypes.Hash) error {
+func (s *paymentStateMachine) initPayment(pHash lntypes.Hash,
+	payment []byte) error {
+
 	return s.db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := s.getWriteBucket(tx, pHash)
 		if err != nil {
@@ -174,7 +239,12 @@ func (s *paymentStateMachine) initPayment(pHash lntypes.Hash) error {
 			}
 		}
 
-		return s.putPaymentState(bucket, paymentStateIntended)
+		err = s.putPaymentState(bucket, paymentStateIntended)
+		if err != nil {
+			return err
+		}
+
+		return bucket.Put(paymentInfoKey, payment)
 	})
 }
 
@@ -464,10 +534,17 @@ func (s *paymentStateMachine) fetchLastError(pHash lntypes.Hash) (
 	return lastError, nil
 }
 
+type storedPayment struct {
+	paymentHash [32]byte
+	deadline    time.Time
+	payment     *LightningPayment
+	routes      []*Route
+}
+
 // fetchActivePayments fetches all payments that are active (in states
 // paymentStateIntended or paymentStateAttemptSent).
-func (s *paymentStateMachine) fetchActivePayments() ([]lntypes.Hash, error) {
-	var payments []lntypes.Hash
+func (s *paymentStateMachine) fetchActivePayments() ([]*storedPayment, error) {
+	var payments []*storedPayment
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		paymentsBucket := tx.Bucket(paymentsBucketKey)
@@ -495,7 +572,63 @@ func (s *paymentStateMachine) fetchActivePayments() ([]lntypes.Hash, error) {
 			// Only return payments in states that should be
 			// retried.
 			if state == paymentStateIntended || state == paymentStateAttemptSent {
-				payments = append(payments, pHash)
+
+				payment := &storedPayment{}
+				copy(payment.paymentHash[:], pHash[:])
+
+				infoBytes := bucket.Get(paymentInfoKey)
+				if infoBytes == nil {
+					return fmt.Errorf("unable to find " +
+						"payment info")
+				}
+
+				r := bytes.NewReader(infoBytes)
+
+				var scratch [8]byte
+
+				if _, err := r.Read(scratch[:1]); err != nil {
+					return err
+				}
+				t := paymentType(scratch[0])
+
+				if _, err := r.Read(scratch[:]); err != nil {
+					return err
+				}
+				sec := byteOrder.Uint64(scratch[:])
+				payment.deadline = time.Unix(int64(sec), 0)
+
+				switch t {
+				case typeSendPayment:
+
+					l, err := deserializeLightningPayment(r)
+					if err != nil {
+						return err
+					}
+					payment.payment = l
+
+				case typeSendToRoute:
+					var numRoutes uint32
+					err := channeldb.ReadElements(r, &numRoutes)
+					if err != nil {
+						return err
+					}
+
+					var routes []*Route
+					for i := uint32(0); i < numRoutes; i++ {
+						route, err := deserializeRoute(r)
+						if err != nil {
+							return err
+						}
+						routes = append(routes, route)
+					}
+					payment.routes = routes
+
+				default:
+					// TODO: return nil for forwards compat?
+					return fmt.Errorf("unknown payment type")
+				}
+
+				payments = append(payments, payment)
 			}
 
 			return nil
@@ -504,7 +637,6 @@ func (s *paymentStateMachine) fetchActivePayments() ([]lntypes.Hash, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return payments, nil
 }
 

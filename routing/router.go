@@ -482,8 +482,8 @@ func (r *ChannelRouter) Start() error {
 		return err
 	}
 
-	for _, paymentHash := range payments {
-		log.Infof("Resuming payment with hash %x", paymentHash)
+	for _, p := range payments {
+		log.Infof("Resuming payment with hash %x", p.paymentHash)
 
 		r.wg.Add(1)
 		go func(paymentHash lntypes.Hash) {
@@ -508,7 +508,7 @@ func (r *ChannelRouter) Start() error {
 
 			log.Infof("Resumed payment with hash %x completed.",
 				paymentHash)
-		}(paymentHash)
+		}(p.paymentHash)
 	}
 
 	r.wg.Add(1)
@@ -1611,7 +1611,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 
 	// Record this payment hash with the payment state machine, ensuring it
 	// is not already active.
-	if err := r.paymentStates.initPayment(payment.PaymentHash); err != nil {
+	if err := r.paymentStates.initSendPayment(payment, deadline); err != nil {
 		return [32]byte{}, nil, err
 	}
 
@@ -1643,7 +1643,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 
 	// Record this payment hash with the payment state machine, ensuring it
 	// is not already active.
-	if err := r.paymentStates.initPayment(paymentHash); err != nil {
+	if err := r.paymentStates.initSendToRoute(paymentHash, routes, deadline); err != nil {
 		return [32]byte{}, nil, err
 	}
 

@@ -2,7 +2,6 @@ package routing
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"runtime"
 	"sort"
@@ -164,9 +163,7 @@ type Config struct {
 	// forward a fully encoded payment to the first hop in the route
 	// denoted by its public key. A non-nil error is to be returned if the
 	// payment was unsuccessful.
-	SendToSwitch func(firstHop lnwire.ShortChannelID,
-		htlcAdd *lnwire.UpdateAddHTLC,
-		circuit *sphinx.Circuit) ([sha256.Size]byte, error)
+	SendToSwitch func(*Route, [32]byte) ([32]byte, error)
 
 	// ChannelPruneExpiry is the duration used to determine if a channel
 	// should be pruned or not. If the delta between now and when the
@@ -1434,11 +1431,11 @@ func (r *ChannelRouter) FindRoutes(source, target Vertex,
 	return validRoutes, nil
 }
 
-// generateSphinxPacket generates then encodes a sphinx packet which encodes
+// GenerateSphinxPacket generates then encodes a sphinx packet which encodes
 // the onion route specified by the passed layer 3 route. The blob returned
 // from this function can immediately be included within an HTLC add packet to
 // be sent to the first hop within the route.
-func generateSphinxPacket(route *Route, paymentHash []byte) ([]byte,
+func GenerateSphinxPacket(route *Route, paymentHash []byte) ([]byte,
 	*sphinx.Circuit, error) {
 
 	// As a sanity check, we'll ensure that the set of hops has been
@@ -1705,7 +1702,7 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 		}),
 	)
 
-	preimage, err := r.sendToSwitch(route, paymentHash)
+	preimage, err := r.cfg.SendToSwitch(route, paymentHash)
 	if err == nil {
 		return preimage, true, nil
 	}
@@ -1716,42 +1713,6 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 	finalOutcome := r.processSendError(paySession, route, err)
 
 	return [32]byte{}, finalOutcome, err
-}
-
-// sendToSwitch sends a payment along the specified route and returns the
-// obtained preimage.
-func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
-	[32]byte, error) {
-
-	// Generate the raw encoded sphinx packet to be included along
-	// with the htlcAdd message that we send directly to the
-	// switch.
-	onionBlob, circuit, err := generateSphinxPacket(
-		route, paymentHash[:],
-	)
-	if err != nil {
-		return [32]byte{}, err
-	}
-
-	// Craft an HTLC packet to send to the layer 2 switch. The
-	// metadata within this packet will be used to route the
-	// payment through the network, starting with the first-hop.
-	htlcAdd := &lnwire.UpdateAddHTLC{
-		Amount:      route.TotalAmount,
-		Expiry:      route.TotalTimeLock,
-		PaymentHash: paymentHash,
-	}
-	copy(htlcAdd.OnionBlob[:], onionBlob)
-
-	// Attempt to send this payment through the network to complete
-	// the payment. If this attempt fails, then we'll continue on
-	// to the next available route.
-	firstHop := lnwire.NewShortChanIDFromInt(
-		route.Hops[0].ChannelID,
-	)
-	return r.cfg.SendToSwitch(
-		firstHop, htlcAdd, circuit,
-	)
 }
 
 // processSendError analyzes the error for the payment attempt received from the

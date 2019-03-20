@@ -125,7 +125,7 @@ func (db *DB) AddPayment(payment *OutgoingPayment) error {
 		}
 
 		// Obtain the new unique sequence number for this payment.
-		paymentID, err := payments.NextSequence()
+		invoiceID, err := payments.NextSequence()
 		if err != nil {
 			return err
 		}
@@ -133,10 +133,10 @@ func (db *DB) AddPayment(payment *OutgoingPayment) error {
 		// We use BigEndian for keys as it orders keys in
 		// ascending order. This allows bucket scans to order payments
 		// in the order in which they were created.
-		paymentIDBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
+		invoiceIDBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(invoiceIDBytes, invoiceID)
 
-		return payments.Put(paymentIDBytes, paymentBytes)
+		return payments.Put(invoiceIDBytes, paymentBytes)
 	})
 }
 

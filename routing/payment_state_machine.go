@@ -3,6 +3,7 @@ package routing
 import (
 	"bytes"
 	"errors"
+	"fmt"
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -268,6 +269,67 @@ func (s *paymentStateMachine) setPaymentSuccess(pHash lntypes.Hash,
 	}
 
 	return nil
+}
+
+type inFlightPayment struct {
+	hash lntypes.Hash
+	pid  uint64
+}
+
+// fetchActivePayments fetches all payments that are active (in states
+// paymentStateIntended or paymentStateInFlight).
+func (s *paymentStateMachine) fetchActivePayments() ([]inFlightPayment, error) {
+	var payments []inFlightPayment
+
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		paymentsBucket := tx.Bucket(paymentsBucketKey)
+		if paymentsBucket == nil {
+			return nil
+		}
+
+		return paymentsBucket.ForEach(func(k, _ []byte) error {
+			var pHash lntypes.Hash
+			copy(pHash[:], k[:])
+
+			bucket := paymentsBucket.Bucket(k)
+			if bucket == nil {
+				return fmt.Errorf("could not get bucket")
+			}
+
+			v := bucket.Get(paymentStateKey)
+			if v == nil {
+				return fmt.Errorf("no payment state set for "+
+					"hash %v", pHash)
+			}
+
+			state := paymentState(v[0])
+
+			// Only return payments in states that should be
+			// retried.
+			if state == paymentStateInFlight {
+				v := bucket.Get(paymentIDKey)
+				if v == nil {
+					return ErrNotFound
+				}
+
+				var pid uint64
+				r := bytes.NewReader(v)
+				err := channeldb.ReadElements(r, &pid)
+				if err != nil {
+					return err
+				}
+
+				payments = append(payments, inFlightPayment{pHash, pid})
+			}
+
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return payments, nil
 }
 
 func (s *paymentStateMachine) putPaymentState(bucket *bbolt.Bucket,

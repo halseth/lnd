@@ -2019,9 +2019,10 @@ func (r *ChannelRouter) completePayment(route *Route,
 		Fee:             route.TotalFees,
 		TimeLockLength:  route.TotalTimeLock,
 		PaymentPreimage: preImage,
+		PaymentHash:     preImage.Hash(),
 	}
 
-	return r.cfg.DB.AddPayment(payment)
+	return r.cfg.DB.CompletePayment(payment)
 }
 
 // getFailedEdge tries to locate the failing channel given a route and the

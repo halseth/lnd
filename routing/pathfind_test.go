@@ -106,10 +106,8 @@ type testChan struct {
 	Capacity     int64  `json:"capacity"`
 }
 
-// makeTestGraph creates a new instance of a channeldb.ChannelGraph for testing
-// purposes. A callback which cleans up the created temporary directories is
-// also returned and intended to be executed after the test completes.
-func makeTestGraph() (*channeldb.ChannelGraph, func(), error) {
+// makeTestGraph a temporary channeldb.DB instance.
+func makeTestDB() (*channeldb.DB, func(), error) {
 	// First, create a temporary directory to be used for the duration of
 	// this test.
 	tempDirName, err := ioutil.TempDir("", "channeldb")
@@ -126,6 +124,18 @@ func makeTestGraph() (*channeldb.ChannelGraph, func(), error) {
 	cleanUp := func() {
 		cdb.Close()
 		os.RemoveAll(tempDirName)
+	}
+
+	return cdb, cleanUp, nil
+}
+
+// makeTestGraph creates a new instance of a channeldb.ChannelGraph for testing
+// purposes. A callback which cleans up the created temporary directories is
+// also returned and intended to be executed after the test completes.
+func makeTestGraph() (*channeldb.ChannelGraph, func(), error) {
+	cdb, cleanUp, err := makeTestDB()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return cdb.ChannelGraph(), cleanUp, nil

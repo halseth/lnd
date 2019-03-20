@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -4162,7 +4161,7 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 		msatValue := int64(payment.Terms.Value)
 		satValue := int64(payment.Terms.Value.ToSatoshis())
 
-		paymentHash := sha256.Sum256(payment.PaymentPreimage[:])
+		paymentHash := payment.PaymentHash
 		paymentsResp.Payments[i] = &lnrpc.Payment{
 			PaymentHash:     hex.EncodeToString(paymentHash[:]),
 			Value:           satValue,

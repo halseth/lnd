@@ -1632,6 +1632,10 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		}),
 	)
 
+	if err := r.addPayment(payment.PaymentHash); err != nil {
+		return [32]byte{}, nil, err
+	}
+
 	// We'll also fetch the current block height so we can properly
 	// calculate the required HTLC time locks within the route.
 	_, currentHeight, err := r.cfg.Chain.GetBestBlock()
@@ -1992,6 +1996,11 @@ func (r *ChannelRouter) processSendError(paySession *paymentSession,
 	default:
 		return true
 	}
+}
+
+// addPayment adds an attempted payment to the database.
+func (r *ChannelRouter) addPayment(paymentHash lntypes.Hash) error {
+	return r.cfg.DB.AddPayment(paymentHash)
 }
 
 // completePayment saves a successfully completed payment to the database for

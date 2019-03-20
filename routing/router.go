@@ -20,6 +20,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
@@ -1744,7 +1745,7 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 	switch result := result.(type) {
 	case *htlcswitch.PaymentSuccess:
 		preimage := result.Preimage
-		err := r.savePayment(route, preimage[:])
+		err := r.completePayment(route, preimage)
 		if err != nil {
 			log.Errorf("Unable to save payment: %v", err)
 			return preimage, true, err
@@ -1993,9 +1994,11 @@ func (r *ChannelRouter) processSendError(paySession *paymentSession,
 	}
 }
 
-// savePayment saves a successfully completed payment to the database for
+// completePayment saves a successfully completed payment to the database for
 // historical record keeping.
-func (r *ChannelRouter) savePayment(route *Route, preImage []byte) error {
+func (r *ChannelRouter) completePayment(route *Route,
+	preImage lntypes.Preimage) error {
+
 	// Compute the final amount sent.
 	amt := route.TotalAmount - route.TotalFees
 
@@ -2012,11 +2015,11 @@ func (r *ChannelRouter) savePayment(route *Route, preImage []byte) error {
 			},
 			CreationDate: time.Now(),
 		},
-		Path:           paymentPath,
-		Fee:            route.TotalFees,
-		TimeLockLength: route.TotalTimeLock,
+		Path:            paymentPath,
+		Fee:             route.TotalFees,
+		TimeLockLength:  route.TotalTimeLock,
+		PaymentPreimage: preImage,
 	}
-	copy(payment.PaymentPreimage[:], preImage)
 
 	return r.cfg.DB.AddPayment(payment)
 }

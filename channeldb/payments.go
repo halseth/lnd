@@ -2,11 +2,14 @@ package channeldb
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/coreos/bbolt"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -22,6 +25,20 @@ var (
 	// paymentStatusBucket is the name of the bucket within the database that
 	// stores the status of a payment indexed by the payment's preimage.
 	paymentStatusBucket = []byte("payment-status")
+
+	// paymentInvoiceIDBucket is a bucket where we map payment hashes to
+	// invoice IDs. This is needed so we can easily lookup the
+	// OutgoingPayment knowing only the payment hash.
+	paymentInvoiceIDBucket = []byte("payment-invoice-id")
+
+	// ErrPreimageKnown is an error returned if we try to complete or
+	// delete a payment whose preimage is already set in the database.
+	ErrPreimageKnown = errors.New("preimage was already found in the" +
+		"database")
+
+	// zeroPreimage is the empty preimage, indicating the payment's
+	// preimage is not yet known.
+	zeroPreimage [32]byte
 )
 
 // PaymentStatus represent current status of payment
@@ -77,9 +94,8 @@ func (ps PaymentStatus) String() string {
 	}
 }
 
-// OutgoingPayment represents a successful payment between the daemon and a
-// remote node. Details such as the total fee paid, and the time of the payment
-// are stored.
+// OutgoingPayment represents a payment between the daemon and a remote node.
+// Details such as the total fee paid, and the time of the payment are stored.
 type OutgoingPayment struct {
 	Invoice
 
@@ -93,16 +109,77 @@ type OutgoingPayment struct {
 	// Path encodes the path the payment took through the network. The path
 	// excludes the outgoing node and consists of the hex-encoded
 	// compressed public key of each of the nodes involved in the payment.
+	// NOTE: this is only set for completed payments.
 	Path [][33]byte
 
 	// PaymentPreimage is the preImage of a successful payment. This is used
 	// to calculate the PaymentHash as well as serve as a proof of payment.
+	// NOTE: This is all-zeroes for payment not (yet) completed.
 	PaymentPreimage [32]byte
+
+	// PaymentHash is the has this payment is paying to.
+	PaymentHash [32]byte
 }
 
-// AddPayment saves a successful payment to the database. It is assumed that
-// all payment are sent using unique payment hashes.
-func (db *DB) AddPayment(payment *OutgoingPayment) error {
+// AddPayment adds an inflight payment to the given hash to the database. It is
+// assumed that all payment are sent using unique payment hashes.
+func (db *DB) AddPayment(pHash lntypes.Hash) error {
+
+	// Create an OutgoingPayment to store, containing only the payment hash.
+	payment := &OutgoingPayment{
+		PaymentHash: pHash,
+	}
+
+	var b bytes.Buffer
+	if err := serializeOutgoingPayment(&b, payment); err != nil {
+		return err
+	}
+	paymentBytes := b.Bytes()
+
+	return db.Batch(func(tx *bbolt.Tx) error {
+		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
+		if err != nil {
+			return err
+		}
+
+		invoiceIDs, err := tx.CreateBucketIfNotExists(
+			paymentInvoiceIDBucket,
+		)
+		if err != nil {
+			return err
+		}
+
+		// If this hash already exist, exit early.
+		v := invoiceIDs.Get(payment.PaymentHash[:])
+		if v != nil {
+			return nil
+		}
+
+		// Obtain the new unique sequence number for this payment.
+		invoiceID, err := payments.NextSequence()
+		if err != nil {
+			return err
+		}
+
+		// We use BigEndian for keys as it orders keys in
+		// ascending order. This allows bucket scans to order payments
+		// in the order in which they were created.
+		invoiceIDBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(invoiceIDBytes, invoiceID)
+
+		err = invoiceIDs.Put(payment.PaymentHash[:], invoiceIDBytes)
+		if err != nil {
+			return err
+		}
+
+		return payments.Put(invoiceIDBytes, paymentBytes)
+	})
+}
+
+// CompletePayment overwrites the OutgoingPayment stored in the DB for the
+// corresponding payment hash with the completed one.
+func (db *DB) CompletePayment(payment *OutgoingPayment) error {
+
 	// Validate the field of the inner voice within the outgoing payment,
 	// these must also adhere to the same constraints as regular invoices.
 	if err := validateInvoice(&payment.Invoice); err != nil {
@@ -118,24 +195,42 @@ func (db *DB) AddPayment(payment *OutgoingPayment) error {
 	}
 	paymentBytes := b.Bytes()
 
+	pHash := payment.PaymentHash
 	return db.Batch(func(tx *bbolt.Tx) error {
-		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
-		if err != nil {
-			return err
+		payments := tx.Bucket(paymentBucket)
+		if payments == nil {
+			return ErrNoPaymentsCreated
 		}
 
-		// Obtain the new unique sequence number for this payment.
-		invoiceID, err := payments.NextSequence()
-		if err != nil {
-			return err
+		invoiceIDs := tx.Bucket(paymentInvoiceIDBucket)
+		if invoiceIDs == nil {
+			return ErrNoPaymentsCreated
 		}
 
-		// We use BigEndian for keys as it orders keys in
-		// ascending order. This allows bucket scans to order payments
-		// in the order in which they were created.
-		invoiceIDBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(invoiceIDBytes, invoiceID)
+		invoiceIDBytes := invoiceIDs.Get(pHash[:])
+		if invoiceIDBytes == nil {
+			return fmt.Errorf("payment with hash %v not found",
+				pHash)
+		}
 
+		// If the payment is already in the DB, it must be a
+		// non-completed one (zero preimage)
+		v := payments.Get(invoiceIDBytes)
+		if v != nil {
+			r := bytes.NewReader(v)
+			oldPayment, err := deserializeOutgoingPayment(r)
+			if err != nil {
+				return err
+			}
+
+			// The existing preimage stored for this payment MUST
+			// be the zero preimage.
+			if oldPayment.PaymentPreimage != zeroPreimage {
+				return ErrPreimageKnown
+			}
+		}
+
+		// Overwrite any existing payment with the completed one.
 		return payments.Put(invoiceIDBytes, paymentBytes)
 	})
 }
@@ -285,6 +380,10 @@ func serializeOutgoingPayment(w io.Writer, p *OutgoingPayment) error {
 		return err
 	}
 
+	if _, err := w.Write(p.PaymentHash[:]); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -323,6 +422,16 @@ func deserializeOutgoingPayment(r io.Reader) (*OutgoingPayment, error) {
 	p.TimeLockLength = byteOrder.Uint32(scratch[:4])
 
 	if _, err := r.Read(p.PaymentPreimage[:]); err != nil {
+		return nil, err
+	}
+
+	// Before we started storing the payment hash explicitly, only the
+	// preimage was stored. For these payments the preimage was always
+	// stored, so can calculate the payment hash from it.
+	_, err = r.Read(p.PaymentHash[:])
+	if err == io.EOF {
+		p.PaymentHash = sha256.Sum256(p.PaymentPreimage[:])
+	} else if err != nil {
 		return nil, err
 	}
 

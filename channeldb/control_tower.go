@@ -3,6 +3,7 @@ package channeldb
 import (
 	"bytes"
 	"errors"
+	"fmt"
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -57,6 +58,9 @@ type ControlTower interface {
 	// call for this payment hash, allowing the switch to make a subsequent
 	// payment.
 	Fail(paymentHash lntypes.Hash) error
+
+	// FetchInFlightPayments returns all payments with status InFlight.
+	FetchInFlightPayments() ([]lntypes.Hash, error)
 }
 
 // paymentControl is persistent implementation of ControlTower to restrict
@@ -315,4 +319,43 @@ func (p *paymentControl) Fail(paymentHash lntypes.Hash) error {
 	}
 
 	return updateErr
+}
+
+// FetchInFlightPayments returns all payments with status InFlight.
+func (p *paymentControl) FetchInFlightPayments() ([]lntypes.Hash, error) {
+	var inFlights []lntypes.Hash
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		payments := tx.Bucket(paymentBucket)
+		if payments == nil {
+			return nil
+		}
+
+		return payments.ForEach(func(k, _ []byte) error {
+			bucket := payments.Bucket(k)
+			if bucket != nil {
+				return fmt.Errorf("non bucket element")
+			}
+
+			var paymentStatus = StatusGrounded
+			paymentStatusBytes := bucket.Get(paymentStatusKey)
+			if paymentStatusBytes != nil {
+				paymentStatus.FromBytes(paymentStatusBytes)
+			}
+
+			paymentHash, err := lntypes.MakeHash(k)
+			if err != nil {
+				return err
+			}
+
+			if paymentStatus == StatusInFlight {
+				inFlights = append(inFlights, paymentHash)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return inFlights, nil
 }

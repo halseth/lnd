@@ -167,7 +167,13 @@ type Config struct {
 	// forward a fully encoded payment to the first hop in the route
 	// denoted by its public key. A non-nil error is to be returned if the
 	// payment was unsuccessful.
-	SendToSwitch func(*Route, [32]byte, uint64) ([32]byte, error)
+	SendToSwitch func(*Route, [32]byte, uint64) error
+
+	// GetPaymentResult returns the the result of the payment attempt with
+	// the given paymentID. This method blocks until the result is
+	// available, or an error is encountered. If the paymentID is unknown,
+	// htlcswitch.ErrPaymentIDNotFound will be returned.
+	GetPaymentResult func(paymentID uint64) (*htlcswitch.PaymentResult, error)
 
 	// ChannelPruneExpiry is the duration used to determine if a channel
 	// should be pruned or not. If the delta between now and when the
@@ -1719,17 +1725,32 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 		return [32]byte{}, true, err
 	}
 
-	preimage, err := r.cfg.SendToSwitch(route, paymentHash, paymentID)
-	if err == nil {
-		return preimage, true, nil
+	err = r.cfg.SendToSwitch(route, paymentHash, paymentID)
+	if err != nil {
+		log.Errorf("Attempt to send payment %x failed: %v",
+			paymentHash, err)
+		return [32]byte{}, true, err
 	}
 
-	log.Errorf("Attempt to send payment %x failed: %v",
-		paymentHash, err)
+	result, err := r.cfg.GetPaymentResult(paymentID)
+	if err != nil {
+		log.Errorf("failed getting payment "+
+			"result: %v", err)
+		return [32]byte{}, true, err
+	}
 
-	finalOutcome := r.processSendError(paySession, route, err)
+	if result.Error != nil {
+		log.Errorf("Attempt to send payment %x failed: %v",
+			paymentHash, result.Error)
 
-	return [32]byte{}, finalOutcome, err
+		finalOutcome := r.processSendError(
+			paySession, route, result.Error,
+		)
+
+		return [32]byte{}, finalOutcome, result.Error
+	}
+
+	return result.Preimage, true, nil
 }
 
 // processSendError analyzes the error for the payment attempt received from the
@@ -1738,12 +1759,7 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 // to continue with an alternative route. This is indicated by the boolean
 // return value.
 func (r *ChannelRouter) processSendError(paySession *paymentSession,
-	route *Route, err error) bool {
-
-	fErr, ok := err.(*htlcswitch.ForwardingError)
-	if !ok {
-		return true
-	}
+	route *Route, fErr *htlcswitch.ForwardingError) bool {
 
 	errSource := fErr.ErrorSource
 	errVertex := NewVertex(errSource)

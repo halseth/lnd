@@ -361,6 +361,35 @@ func FetchPaymentStatusTx(tx *bbolt.Tx, paymentHash [32]byte) (PaymentStatus, er
 	return paymentStatus, nil
 }
 
+// ForEachPaymentStatusTx lets the caller iterate over all the payments and
+// their statuses using the given db treansaction.
+func ForEachPaymentStatusTx(tx *bbolt.Tx,
+	f func(lntypes.Hash, PaymentStatus) error) error {
+
+	bucket := tx.Bucket(paymentStatusBucket)
+	if bucket == nil {
+		return nil
+	}
+
+	return bucket.ForEach(func(k, v []byte) error {
+		// If the value is nil, then we ignore it as it may be
+		// a sub-bucket.
+		if v == nil {
+			return nil
+		}
+
+		paymentHash, err := lntypes.MakeHash(k)
+		if err != nil {
+			return err
+		}
+
+		var paymentStatus PaymentStatus
+		paymentStatus.FromBytes(v)
+
+		return f(paymentHash, paymentStatus)
+	})
+}
+
 func serializeOutgoingPayment(w io.Writer, p *OutgoingPayment) error {
 	var scratch [8]byte
 

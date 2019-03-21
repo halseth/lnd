@@ -1737,6 +1737,7 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 		Graph:     ctx.graph,
 		Chain:     ctx.chain,
 		ChainView: ctx.chainView,
+		Control:   &mockControlTower{},
 		SendToSwitch: func(route *route.Route, hash [32]byte, _ uint64) error {
 
 			return nil

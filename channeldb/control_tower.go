@@ -3,6 +3,7 @@ package channeldb
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/coreos/bbolt"
@@ -61,6 +62,9 @@ type ControlTower interface {
 	// call for this payment hash, allowing the switch to make a subsequent
 	// payment.
 	Fail(paymentHash lntypes.Hash) error
+
+	// FetchInFlightPayments returns all payments with status InFlight.
+	FetchInFlightPayments() ([]*InFlightPayment, error)
 }
 
 // paymentControl is persistent implementation of ControlTower to restrict
@@ -358,6 +362,75 @@ func fetchPaymentStatus(bucket *bbolt.Bucket) PaymentStatus {
 	}
 
 	return paymentStatus
+}
+
+type InFlightPayment struct {
+	PaymentHash lntypes.Hash
+
+	// might be nil
+	Attempt *AttemptInfo
+}
+
+// FetchInFlightPayments returns all payments with status InFlight.
+func (p *paymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
+	var inFlights []*InFlightPayment
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		payments := tx.Bucket(outgoingPaymentBucket)
+		if payments == nil {
+			return nil
+		}
+
+		return payments.ForEach(func(k, _ []byte) error {
+			bucket := payments.Bucket(k)
+			if bucket == nil {
+				return fmt.Errorf("non bucket element")
+			}
+
+			var paymentStatus = StatusGrounded
+			paymentStatusBytes := bucket.Get(paymentStatusKey)
+			if paymentStatusBytes != nil {
+				paymentStatus.FromBytes(paymentStatusBytes)
+			}
+
+			paymentHash, err := lntypes.MakeHash(k)
+			if err != nil {
+				return err
+			}
+
+			if paymentStatus != StatusInFlight {
+				return nil
+			}
+
+			inFlight := &InFlightPayment{
+				PaymentHash: paymentHash,
+			}
+
+			attempt := bucket.Get(paymentAttemptInfoKey)
+			if attempt != nil {
+				a := &AttemptInfo{}
+				r := bytes.NewReader(attempt)
+				a.Route, err = deserializeRoute(r)
+				if err != nil {
+					return err
+				}
+
+				err = ReadElements(r, &a.PaymentID)
+				if err != nil {
+					return err
+				}
+
+				inFlight.Attempt = a
+			}
+
+			inFlights = append(inFlights, inFlight)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return inFlights, nil
 }
 
 func serializeHop(w io.Writer, h *route.Hop) error {

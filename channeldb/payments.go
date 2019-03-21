@@ -46,8 +46,7 @@ type PaymentStatus byte
 
 const (
 	// StatusGrounded is the status where a payment has never been
-	// initiated, or has been initiated and received an intermittent
-	// failure.
+	// initiated.
 	StatusGrounded PaymentStatus = 0
 
 	// StatusInFlight is the status where a payment has been initiated, but
@@ -57,6 +56,12 @@ const (
 	// StatusCompleted is the status where a payment has been initiated and
 	// the payment was completed successfully.
 	StatusCompleted PaymentStatus = 2
+
+	// StatusFailed is the status where a payment has been initiated and a
+	// failure result has come back.
+	StatusFailed PaymentStatus = 3
+
+	// TODO(halseth): timeout/cancel state?
 )
 
 // Bytes returns status as slice of bytes.
@@ -89,6 +94,8 @@ func (ps PaymentStatus) String() string {
 		return "In Flight"
 	case StatusCompleted:
 		return "Completed"
+	case StatusFailed:
+		return "Failed"
 	default:
 		return "Unknown"
 	}

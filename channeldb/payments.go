@@ -22,7 +22,8 @@ var (
 
 	// paymentStatusKey is a key used in the payment's sub-bucket to store
 	// the status of the payment.
-	paymentStatusKey = []byte("payment-status")
+	paymentStatusKey      = []byte("payment-status")
+	paymentAttemptInfoKey = []byte("payment-attempt-info")
 
 	// paymentCreationInfoKey is a key used in the payment's sub-bucket to store
 	// the creation info of the payment.

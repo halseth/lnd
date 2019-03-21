@@ -47,6 +47,8 @@ type ControlTower interface {
 	// atomically transitions the status for this payment hash as InFlight.
 	ClearForTakeoff(info *CreationInfo) error
 
+	Attempt(lntypes.Hash, *AttemptInfo) error
+
 	// Success transitions an InFlight payment into a Completed payment.
 	// After invoking this method, ClearForTakeoff should always return an
 	// error to prevent us from making duplicate payments to the same
@@ -155,6 +157,42 @@ func (p *paymentControl) ClearForTakeoff(info *CreationInfo) error {
 	}
 
 	return takeoffErr
+}
+
+type AttemptInfo struct {
+	PaymentID uint64
+	Route     *route.Route
+}
+
+func (p *paymentControl) Attempt(paymentHash lntypes.Hash,
+	a *AttemptInfo) error {
+
+	// Serialize the information before opening the db transaction.
+	var b bytes.Buffer
+	if err := serializeRoute(&b, a.Route); err != nil {
+		return err
+	}
+
+	if err := WriteElements(&b, a.PaymentID); err != nil {
+		return err
+	}
+
+	return p.db.Batch(func(tx *bbolt.Tx) error {
+
+		payments, err := tx.CreateBucketIfNotExists(outgoingPaymentBucket)
+		if err != nil {
+			return err
+		}
+
+		bucket, err := payments.CreateBucketIfNotExists(paymentHash[:])
+		if err != nil {
+			return err
+		}
+
+		// Add the payment to the payments bucket, which will
+		// make it show up in "listpayments".
+		return bucket.Put(paymentAttemptInfoKey, b.Bytes())
+	})
 }
 
 // Success transitions an InFlight payment to Completed, otherwise it returns an

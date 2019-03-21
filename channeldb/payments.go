@@ -124,7 +124,14 @@ type OutgoingPayment struct {
 // AddPayment adds an inflight payment to the given hash to the database. It is
 // assumed that all payment are sent using unique payment hashes.
 func (db *DB) AddPayment(pHash lntypes.Hash) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
+		return AddPaymentTx(tx, pHash)
+	})
+}
 
+// AddPaymentTx lets the caller call AddPayment with a given database tx to
+// ensure atomicity.
+func AddPaymentTx(tx *bbolt.Tx, pHash lntypes.Hash) error {
 	// Create an OutgoingPayment to store, containing only the payment hash.
 	payment := &OutgoingPayment{
 		PaymentHash: pHash,
@@ -136,50 +143,55 @@ func (db *DB) AddPayment(pHash lntypes.Hash) error {
 	}
 	paymentBytes := b.Bytes()
 
-	return db.Batch(func(tx *bbolt.Tx) error {
-		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
-		if err != nil {
-			return err
-		}
+	payments, err := tx.CreateBucketIfNotExists(paymentBucket)
+	if err != nil {
+		return err
+	}
 
-		invoiceIDs, err := tx.CreateBucketIfNotExists(
-			paymentInvoiceIDBucket,
-		)
-		if err != nil {
-			return err
-		}
+	invoiceIDs, err := tx.CreateBucketIfNotExists(
+		paymentInvoiceIDBucket,
+	)
+	if err != nil {
+		return err
+	}
 
-		// If this hash already exist, exit early.
-		v := invoiceIDs.Get(payment.PaymentHash[:])
-		if v != nil {
-			return nil
-		}
+	// If this hash already exist, exit early.
+	v := invoiceIDs.Get(payment.PaymentHash[:])
+	if v != nil {
+		return nil
+	}
 
-		// Obtain the new unique sequence number for this payment.
-		invoiceID, err := payments.NextSequence()
-		if err != nil {
-			return err
-		}
+	// Obtain the new unique sequence number for this payment.
+	invoiceID, err := payments.NextSequence()
+	if err != nil {
+		return err
+	}
 
-		// We use BigEndian for keys as it orders keys in
-		// ascending order. This allows bucket scans to order payments
-		// in the order in which they were created.
-		invoiceIDBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(invoiceIDBytes, invoiceID)
+	// We use BigEndian for keys as it orders keys in ascending order. This
+	// allows bucket scans to order payments in the order in which they
+	// were created.
+	invoiceIDBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(invoiceIDBytes, invoiceID)
 
-		err = invoiceIDs.Put(payment.PaymentHash[:], invoiceIDBytes)
-		if err != nil {
-			return err
-		}
+	err = invoiceIDs.Put(payment.PaymentHash[:], invoiceIDBytes)
+	if err != nil {
+		return err
+	}
 
-		return payments.Put(invoiceIDBytes, paymentBytes)
-	})
+	return payments.Put(invoiceIDBytes, paymentBytes)
 }
 
 // CompletePayment overwrites the OutgoingPayment stored in the DB for the
 // corresponding payment hash with the completed one.
 func (db *DB) CompletePayment(payment *OutgoingPayment) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
+		return CompletePaymentTx(tx, payment)
+	})
+}
 
+// CompletePaymentTx lets the caller call CompletePayment with a given database
+// tx to ensure atomicity.
+func CompletePaymentTx(tx *bbolt.Tx, payment *OutgoingPayment) error {
 	// Validate the field of the inner voice within the outgoing payment,
 	// these must also adhere to the same constraints as regular invoices.
 	if err := validateInvoice(&payment.Invoice); err != nil {
@@ -194,45 +206,43 @@ func (db *DB) CompletePayment(payment *OutgoingPayment) error {
 		return err
 	}
 	paymentBytes := b.Bytes()
-
 	pHash := payment.PaymentHash
-	return db.Batch(func(tx *bbolt.Tx) error {
-		payments := tx.Bucket(paymentBucket)
-		if payments == nil {
-			return ErrNoPaymentsCreated
+
+	payments := tx.Bucket(paymentBucket)
+	if payments == nil {
+		return ErrNoPaymentsCreated
+	}
+
+	invoiceIDs := tx.Bucket(paymentInvoiceIDBucket)
+	if invoiceIDs == nil {
+		return ErrNoPaymentsCreated
+	}
+
+	invoiceIDBytes := invoiceIDs.Get(pHash[:])
+	if invoiceIDBytes == nil {
+		return fmt.Errorf("payment with hash %v not found",
+			pHash)
+	}
+
+	// If the payment is already in the DB, it must be a
+	// non-completed one (zero preimage)
+	v := payments.Get(invoiceIDBytes)
+	if v != nil {
+		r := bytes.NewReader(v)
+		oldPayment, err := deserializeOutgoingPayment(r)
+		if err != nil {
+			return err
 		}
 
-		invoiceIDs := tx.Bucket(paymentInvoiceIDBucket)
-		if invoiceIDs == nil {
-			return ErrNoPaymentsCreated
+		// The existing preimage stored for this payment MUST
+		// be the zero preimage.
+		if oldPayment.PaymentPreimage != zeroPreimage {
+			return ErrPreimageKnown
 		}
+	}
 
-		invoiceIDBytes := invoiceIDs.Get(pHash[:])
-		if invoiceIDBytes == nil {
-			return fmt.Errorf("payment with hash %v not found",
-				pHash)
-		}
-
-		// If the payment is already in the DB, it must be a
-		// non-completed one (zero preimage)
-		v := payments.Get(invoiceIDBytes)
-		if v != nil {
-			r := bytes.NewReader(v)
-			oldPayment, err := deserializeOutgoingPayment(r)
-			if err != nil {
-				return err
-			}
-
-			// The existing preimage stored for this payment MUST
-			// be the zero preimage.
-			if oldPayment.PaymentPreimage != zeroPreimage {
-				return ErrPreimageKnown
-			}
-		}
-
-		// Overwrite any existing payment with the completed one.
-		return payments.Put(invoiceIDBytes, paymentBytes)
-	})
+	// Overwrite any existing payment with the completed one.
+	return payments.Put(invoiceIDBytes, paymentBytes)
 }
 
 // FetchAllPayments returns all outgoing payments in DB.

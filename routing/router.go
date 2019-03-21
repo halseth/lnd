@@ -477,6 +477,59 @@ func (r *ChannelRouter) Start() error {
 		return err
 	}
 
+	// If any payments are still in flight, we resume, to make sure their
+	// results are properly handled.
+	payments, err := r.control.FetchInFlightPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, paymentHash := range payments {
+		log.Infof("Resuming payment with hash %x", paymentHash)
+
+		r.wg.Add(1)
+		go func(paymentHash lntypes.Hash) {
+			defer r.wg.Done()
+
+			// We create a dummy, empty payment session such that
+			// we won't attempt another payment attempt when the
+			// result for this payment is received.
+			paySession := r.missionControl.NewPaymentSessionFromRoutes(
+				nil,
+			)
+
+			payment := &LightningPayment{
+				PaymentHash: paymentHash,
+			}
+
+			// If the payment got to the point that a payment ID
+			// was stored, we must reuse it, to ensure we don't
+			// leave any results.
+			var paymentID *uint64
+			existingPid, err := r.payStore.fetchPaymentID(paymentHash)
+			switch {
+
+			// PaymentID existed, use it.
+			case err == nil:
+				paymentID = &existingPid
+
+			case err != nil && err != ErrNotFound:
+				log.Errorf("Unable to fetch payment ID:", err)
+				return
+			}
+
+			_, _, err = r.sendPayment(payment, paymentID, paySession)
+			if err != nil {
+				log.Errorf("Resuming payment with hash %v "+
+					"failed: %v.", paymentHash, err)
+				return
+			}
+
+			log.Infof("Resumed payment with hash %x completed.",
+				paymentHash)
+		}(paymentHash)
+	}
+
 	r.wg.Add(1)
 	go r.networkHandler()
 

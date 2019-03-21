@@ -58,6 +58,9 @@ type ControlTower interface {
 	// call for this payment hash, allowing the switch to make a subsequent
 	// payment.
 	Fail(paymentHash lntypes.Hash) error
+
+	// FetchInFlightPayments returns all payments with status InFlight.
+	FetchInFlightPayments() ([]lntypes.Hash, error)
 }
 
 // paymentControl is persistent implementation of ControlTower to restrict
@@ -282,4 +285,25 @@ func (p *paymentControl) Fail(paymentHash lntypes.Hash) error {
 	}
 
 	return updateErr
+}
+
+// FetchInFlightPayments returns all payments with status InFlight.
+func (p *paymentControl) FetchInFlightPayments() ([]lntypes.Hash, error) {
+	var payments []lntypes.Hash
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		return channeldb.ForEachPaymentStatusTx(
+			tx, func(paymentHash lntypes.Hash,
+				paymentStatus channeldb.PaymentStatus) error {
+
+				if paymentStatus == channeldb.StatusInFlight {
+					payments = append(payments, paymentHash)
+				}
+				return nil
+			})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return payments, nil
 }

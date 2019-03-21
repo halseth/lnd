@@ -1654,6 +1654,8 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 
 	timeoutChan := time.After(payAttemptTimeout)
 
+	paymentHash := payment.PaymentHash
+
 	// We'll continue until either our payment succeeds, or we encounter a
 	// critical error during path finding.
 	var lastError error
@@ -1694,79 +1696,65 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			return [32]byte{}, nil, err
 		}
 
-		// Send payment attempt. It will return a final boolean
-		// indicating if more attempts are needed.
-		preimage, final, err := r.sendPaymentAttempt(
-			paySession, route, payment.PaymentHash,
+		log.Tracef("Attempting to send payment %x, using route: %v",
+			paymentHash, newLogClosure(func() string {
+				return spew.Sdump(route)
+			}),
 		)
-		if final {
-			return preimage, route, err
-		}
 
-		lastError = err
-	}
-}
-
-// sendPaymentAttempt tries to send the payment via the specified route. If
-// successful, it returns the obtained preimage. If an error occurs, the last
-// bool parameter indicates whether this is a final outcome or more attempts
-// should be made.
-func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
-	route *Route, paymentHash [32]byte) ([32]byte, bool, error) {
-
-	log.Tracef("Attempting to send payment %x, using route: %v",
-		paymentHash, newLogClosure(func() string {
-			return spew.Sdump(route)
-		}),
-	)
-
-	// We generate a new, unique payment ID that we will use for
-	// this HTLC.
-	paymentID, err := r.cfg.NextPaymentID()
-	if err != nil {
-		return [32]byte{}, true, err
-	}
-
-	err = r.cfg.SendToSwitch(route, paymentHash, paymentID)
-	if err != nil {
-		log.Errorf("Attempt to send payment %x failed: %v",
-			paymentHash, err)
-		return [32]byte{}, true, err
-	}
-
-	result, err := r.cfg.GetPaymentResult(paymentID)
-	if err != nil {
-		log.Errorf("failed getting payment "+
-			"result: %v", err)
-		return [32]byte{}, true, err
-	}
-
-	switch result := result.(type) {
-	case *htlcswitch.PaymentSuccess:
-		preimage := result.Preimage
-		err := r.savePayment(route, preimage[:])
+		// We generate a new, unique payment ID that we will use for
+		// this HTLC.
+		paymentID, err := r.cfg.NextPaymentID()
 		if err != nil {
-			log.Errorf("Unable to save payment: %v", err)
-			return preimage, true, err
+			return [32]byte{}, nil, err
 		}
 
-		return preimage, true, nil
+		err = r.cfg.SendToSwitch(route, paymentHash, paymentID)
+		if err != nil {
+			log.Errorf("Attempt to send payment %x failed: %v",
+				paymentHash, err)
+			return [32]byte{}, nil, err
+		}
 
-	case *htlcswitch.PaymentFailure:
+		result, err := r.cfg.GetPaymentResult(paymentID)
+		if err != nil {
+			log.Errorf("failed getting payment "+
+				"result: %v", err)
+			return [32]byte{}, nil, err
+		}
 
-		log.Errorf("Attempt to send payment %x failed: %v",
-			paymentHash, result.Error)
+		switch result := result.(type) {
 
-		finalOutcome := r.processSendError(
-			paySession, route, result.Error,
-		)
+		case *htlcswitch.PaymentSuccess:
+			preimage := result.Preimage
+			err := r.completePayment(route, preimage)
+			if err != nil {
+				log.Errorf("Unable to save payment: %v", err)
+				return preimage, route, err
+			}
 
-		return [32]byte{}, finalOutcome, result.Error
+			return preimage, route, nil
 
-	default:
-		return [32]byte{}, true, fmt.Errorf("unknown payment "+
-			"result: %T", result)
+		case *htlcswitch.PaymentFailure:
 
+			log.Errorf("Attempt to send payment %x failed: %v",
+				paymentHash, result.Error)
+
+			finalOutcome := r.processSendError(
+				paySession, route, result.Error,
+			)
+			if finalOutcome {
+				return [32]byte{}, nil, result.Error
+			}
+
+			lastError = result.Error
+			continue
+
+		default:
+			return [32]byte{}, nil, fmt.Errorf("unknown payment "+
+				"result: %T", result)
+
+		}
 	}
 }
 

@@ -1652,8 +1652,16 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 
 	// We'll continue until either our payment succeeds, or we encounter a
 	// critical error during path finding.
-	var lastError error
-	for {
+	var (
+		lastError error
+		route     *route.Route
+		paymentID uint64
+	)
+
+	// sendNewAttempt is a helper method that creates and sends a new
+	// payment to the switch. We use this when no payment has been sent to
+	// the switch already, or the previous attempt failed.
+	sendNewAttempt := func() error {
 		// Before we attempt this next payment, we'll check to see if
 		// either we've gone past the payment attempt timeout, or the
 		// router is exiting. In either case, we'll stop this payment
@@ -1663,12 +1671,10 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			errStr := fmt.Sprintf("payment attempt not completed "+
 				"before timeout of %v", payAttemptTimeout)
 
-			return [32]byte{}, nil, newErr(
-				ErrPaymentAttemptTimeout, errStr,
-			)
+			return newErr(ErrPaymentAttemptTimeout, errStr)
 
 		case <-r.quit:
-			return [32]byte{}, nil, ErrRouterShuttingDown
+			return ErrRouterShuttingDown
 
 		default:
 			// Fall through if we haven't hit our time limit, or
@@ -1682,12 +1688,12 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// If we're unable to successfully make a payment using
 			// any of the routes we've found, then return an error.
 			if lastError != nil {
-				return [32]byte{}, nil, fmt.Errorf("unable to "+
+				return fmt.Errorf("unable to "+
 					"route payment to destination: %v",
 					lastError)
 			}
 
-			return [32]byte{}, nil, err
+			return err
 		}
 
 		log.Tracef("Attempting to send payment %x, using route: %v",
@@ -1698,15 +1704,24 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 
 		// We generate a new, unique payment ID that we will use for
 		// this HTLC.
-		paymentID, err := r.cfg.NextPaymentID()
+		paymentID, err = r.cfg.NextPaymentID()
 		if err != nil {
-			return [32]byte{}, nil, err
+			return err
 		}
 
 		err = r.cfg.SendToSwitch(route, paymentHash, paymentID)
 		if err != nil {
 			log.Errorf("Attempt to send payment %x failed: %v",
 				paymentHash, err)
+			return err
+		}
+
+		return nil
+	}
+
+	for {
+		// Send payment attempt.
+		if err := sendNewAttempt(); err != nil {
 			return [32]byte{}, nil, err
 		}
 

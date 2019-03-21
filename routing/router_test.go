@@ -48,7 +48,7 @@ func (c *testCtx) RestartRouter() error {
 		Graph:     c.graph,
 		Chain:     c.chain,
 		ChainView: c.chainView,
-		SendToSwitch: func(*Route, [32]byte) ([32]byte, error) {
+		SendToSwitch: func(*Route, [32]byte, uint64) ([32]byte, error) {
 			return [32]byte{}, nil
 		},
 		ChannelPruneExpiry: time.Hour * 24,
@@ -88,13 +88,16 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 		Graph:     graphInstance.graph,
 		Chain:     chain,
 		ChainView: chainView,
-		SendToSwitch: func(*Route, [32]byte) ([32]byte, error) {
+		SendToSwitch: func(*Route, [32]byte, uint64) ([32]byte, error) {
 			return [32]byte{}, nil
 		},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
 		QueryBandwidth: func(e *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {
 			return lnwire.NewMSatFromSatoshis(e.Capacity)
+		},
+		NextPaymentID: func() (uint64, error) {
+			return 0, nil
 		},
 	})
 	if err != nil {
@@ -306,7 +309,7 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 	// router's configuration to ignore the path that has luo ji as the
 	// first hop. This should force the router to instead take the
 	// available two hop path (through satoshi).
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -446,7 +449,7 @@ func TestChannelUpdateValidation(t *testing.T) {
 	// We'll modify the SendToSwitch method so that it simulates a failed
 	// payment with an error originating from the first hop of the route.
 	// The unsigned channel update is attached to the failure message.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		v := ctx.aliases["b"]
@@ -577,7 +580,7 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 	// We'll now modify the SendToSwitch method to return an error for the
 	// outgoing channel to Son goku. This will be a fee related error, so
 	// it should only cause the edge to be pruned after the second attempt.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -696,7 +699,7 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	// outgoing channel to son goku. Since this is a time lock related
 	// error, we should fail the payment flow all together, as Goku is the
 	// only channel to Sophon.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -761,7 +764,7 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	// We'll now modify the error return an IncorrectCltvExpiry error
 	// instead, this should result in the same behavior of roasbeef routing
 	// around the faulty Son Goku node.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -842,7 +845,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	//
 	// TODO(roasbeef): filtering should be intelligent enough so just not
 	// go through satoshi at all at this point.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -901,7 +904,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// Next, we'll modify the SendToSwitch method to indicate that luo ji
 	// wasn't originally online. This should also halt the send all
 	// together as all paths contain luoji and he can't be reached.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -948,7 +951,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// Finally, we'll modify the SendToSwitch function to indicate that the
 	// roasbeef -> luoji channel has insufficient capacity. This should
 	// again cause us to instead go via the satoshi route.
-	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte) (
+	ctx.router.cfg.SendToSwitch = func(route *Route, hash [32]byte, _ uint64) (
 		[32]byte, error) {
 
 		firstHop := lnwire.NewShortChanIDFromInt(
@@ -1611,7 +1614,7 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 		Graph:     ctx.graph,
 		Chain:     ctx.chain,
 		ChainView: ctx.chainView,
-		SendToSwitch: func(route *Route, hash [32]byte) (
+		SendToSwitch: func(route *Route, hash [32]byte, _ uint64) (
 			[32]byte, error) {
 
 			return [32]byte{}, nil

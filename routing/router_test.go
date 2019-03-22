@@ -18,6 +18,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -52,6 +53,7 @@ func (c *testCtx) RestartRouter() error {
 		Graph:     c.graph,
 		Chain:     c.chain,
 		ChainView: c.chainView,
+		Control:   &mockControlTower{},
 		SendToSwitch: func(*route.Route, [32]byte, uint64) error {
 			return nil
 		},
@@ -92,6 +94,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 		Graph:     graphInstance.graph,
 		Chain:     chain,
 		ChainView: chainView,
+		Control:   &mockControlTower{},
 		SendToSwitch: func(*route.Route, [32]byte, uint64) error {
 			return nil
 		},
@@ -856,7 +859,9 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	}
 
 	// Once again, Roasbeef should route around Goku since they disagree
-	// w.r.t to the block height, and instead go through Pham Nuwen.
+	// w.r.t to the block height, and instead go through Pham Nuwen. We
+	// flip a bit in the payment hash to allow resending this payment.
+	payment.PaymentHash[1] ^= 1
 	paymentPreImage, rt, err = ctx.router.SendPayment(&payment)
 	if err != nil {
 		t.Fatalf("unable to send payment: %v", err)
@@ -1086,6 +1091,8 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 
 	}
 
+	// We flip a bit in the payment hash to allow resending this payment.
+	payment.PaymentHash[1] ^= 1
 	paymentPreImage, rt, err = ctx.router.SendPayment(&payment)
 	if err != nil {
 		t.Fatalf("unable to send payment: %v", err)
@@ -2410,4 +2417,24 @@ func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 	if err != route.ErrNoRouteHopsProvided {
 		t.Fatalf("expected empty hops error: instead got: %v", err)
 	}
+}
+
+type mockControlTower struct{}
+
+var _ channeldb.ControlTower = (*mockControlTower)(nil)
+
+func (m *mockControlTower) ClearForTakeoff(info *channeldb.CreationInfo) error {
+	return nil
+}
+
+func (m *mockControlTower) Attempt(lntypes.Hash, *channeldb.AttemptInfo) error {
+	return nil
+}
+
+func (m *mockControlTower) Success(paymentHash lntypes.Hash, info *channeldb.SettleInfo) error {
+	return nil
+}
+
+func (m *mockControlTower) Fail(paymentHash lntypes.Hash) error {
+	return nil
 }

@@ -235,6 +235,9 @@ func migrateInvoiceTimeSeries(tx *bbolt.Tx) error {
 	return nil
 }
 
+var paymentBucket = []byte("payments")
+var paymentStatusBucket = []byte("payment-status")
+
 // migrateInvoiceTimeSeriesOutgoingPayments is a follow up to the
 // migrateInvoiceTimeSeries migration. As at the time of writing, the
 // OutgoingPayment struct embeddeds an instance of the Invoice struct. As a
@@ -282,7 +285,7 @@ func migrateInvoiceTimeSeriesOutgoingPayments(tx *bbolt.Tx) error {
 		// payments, we'll attempt to deserialize it to ensure the
 		// bytes are properly formatted.
 		paymentReader := bytes.NewReader(paymentCopy)
-		_, err := deserializeOutgoingPayment(paymentReader)
+		_, err := deserializeOutgoingPaymentV8(paymentReader)
 		if err != nil {
 			return fmt.Errorf("unable to deserialize payment: %v", err)
 		}
@@ -438,7 +441,7 @@ func paymentStatusesMigration(tx *bbolt.Tx) error {
 		}
 
 		r := bytes.NewReader(v)
-		payment, err := deserializeOutgoingPayment(r)
+		payment, err := deserializeOutgoingPaymentV8(r)
 		if err != nil {
 			return err
 		}

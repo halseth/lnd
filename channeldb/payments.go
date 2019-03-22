@@ -2,26 +2,33 @@ package channeldb
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 var (
-	// paymentBucket is the name of the bucket within the database that
-	// stores all data related to payments.
+	// outgoingPaymentBucket is the name of the top-level bucket within the
+	// database that stores all data related to payments.
 	//
-	// Within the payments bucket, each invoice is keyed by its invoice ID
-	// which is a monotonically increasing uint64.  BoltDB's sequence
-	// feature is used for generating monotonically increasing id.
-	paymentBucket = []byte("payments")
+	// Within the payments bucket, each payment hash its own sub.bucket
+	// keyed by its payment hash
+	outgoingPaymentBucket = []byte("outgoing-payments")
 
-	// paymentStatusBucket is the name of the bucket within the database that
-	// stores the status of a payment indexed by the payment's preimage.
-	paymentStatusBucket = []byte("payment-status")
+	// paymentStatusKey is a key used in the payment's sub-bucket to store
+	// the status of the payment.
+	paymentStatusKey = []byte("payment-status")
+
+	// paymentCreationInfoKey is a key used in the payment's sub-bucket to store
+	// the creation info of the payment.
+	paymentCreationInfoKey = []byte("payment-creation-info")
+
+	// paymentSettleInfoKey is a key used in the payment's sub-bucket to store
+	// the settle info of the payment.
+	paymentSettleInfoKey = []byte("payment-settle-info")
 )
 
 // PaymentStatus represent current status of payment
@@ -77,12 +84,23 @@ func (ps PaymentStatus) String() string {
 	}
 }
 
-// OutgoingPayment represents a successful payment between the daemon and a
-// remote node. Details such as the total fee paid, and the time of the payment
-// are stored.
-type OutgoingPayment struct {
-	Invoice
+// CreationInfo is the information necessary to have ready when initiating a
+// payment, moving it into state InFlight.
+type CreationInfo struct {
+	// PaymentHash is the hash this payment is paying to.
+	PaymentHash [32]byte
 
+	// Value is the amount we are paying.
+	Value lnwire.MilliSatoshi
+
+	// CreatingDate is the time when this payment was initiated.
+	CreationDate time.Time
+
+	// TODO: add payreq.
+}
+
+// SettleInfo is the information to provide to settle an in-flight payment.
+type SettleInfo struct {
 	// Fee is the total fee paid for the payment in milli-satoshis.
 	Fee lnwire.MilliSatoshi
 
@@ -95,48 +113,59 @@ type OutgoingPayment struct {
 	// compressed public key of each of the nodes involved in the payment.
 	Path [][33]byte
 
-	// PaymentPreimage is the preImage of a successful payment. This is used
-	// to calculate the PaymentHash as well as serve as a proof of payment.
+	// PaymentPreimage is the preImage of a successful payment. This serves
+	// as a proof of payment.
 	PaymentPreimage [32]byte
+}
+
+// OutgoingPayment represents a payment between the daemon and a remote node.
+// Details such as the total fee paid, and the time of the payment are stored.
+type OutgoingPayment struct {
+	// Creation info is populated when the payment is initiated, and is
+	// available for all payments.
+	CreationInfo
+
+	// SettleInfo is only available when the payment has successfully been
+	// settled.
+	SettleInfo
 }
 
 // AddPayment saves a successful payment to the database. It is assumed that
 // all payment are sent using unique payment hashes.
 func (db *DB) AddPayment(payment *OutgoingPayment) error {
-	// Validate the field of the inner voice within the outgoing payment,
-	// these must also adhere to the same constraints as regular invoices.
-	if err := validateInvoice(&payment.Invoice); err != nil {
-		return err
-	}
-
 	// We first serialize the payment before starting the database
 	// transaction so we can avoid creating a DB payment in the case of a
 	// serialization error.
-	var b bytes.Buffer
-	if err := serializeOutgoingPayment(&b, payment); err != nil {
+	var c bytes.Buffer
+	if err := serializeCreationInfo(&c, &payment.CreationInfo); err != nil {
 		return err
 	}
-	paymentBytes := b.Bytes()
+
+	var s bytes.Buffer
+	if err := serializeSettleInfo(&s, &payment.SettleInfo); err != nil {
+		return err
+	}
 
 	return db.Batch(func(tx *bbolt.Tx) error {
-		payments, err := tx.CreateBucketIfNotExists(paymentBucket)
+		payments, err := tx.CreateBucketIfNotExists(outgoingPaymentBucket)
 		if err != nil {
 			return err
 		}
 
-		// Obtain the new unique sequence number for this payment.
-		paymentID, err := payments.NextSequence()
+		bucket, err := payments.CreateBucketIfNotExists(payment.PaymentHash[:])
 		if err != nil {
 			return err
 		}
 
-		// We use BigEndian for keys as it orders keys in
-		// ascending order. This allows bucket scans to order payments
-		// in the order in which they were created.
-		paymentIDBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(paymentIDBytes, paymentID)
+		if err := bucket.Put(paymentCreationInfoKey, c.Bytes()); err != nil {
+			return err
+		}
 
-		return payments.Put(paymentIDBytes, paymentBytes)
+		if err := bucket.Put(paymentSettleInfoKey, s.Bytes()); err != nil {
+			return err
+		}
+
+		return nil
 	})
 }
 
@@ -145,25 +174,49 @@ func (db *DB) FetchAllPayments() ([]*OutgoingPayment, error) {
 	var payments []*OutgoingPayment
 
 	err := db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(paymentBucket)
-		if bucket == nil {
+		paymentsBucket := tx.Bucket(outgoingPaymentBucket)
+		if paymentsBucket == nil {
 			return ErrNoPaymentsCreated
 		}
 
-		return bucket.ForEach(func(k, v []byte) error {
+		return paymentsBucket.ForEach(func(k, v []byte) error {
 			// If the value is nil, then we ignore it as it may be
 			// a sub-bucket.
 			if v == nil {
 				return nil
 			}
 
-			r := bytes.NewReader(v)
-			payment, err := deserializeOutgoingPayment(r)
+			bucket := paymentsBucket.Bucket(k)
+			if bucket == nil {
+				return nil
+			}
+
+			p := &OutgoingPayment{}
+
+			b := bucket.Get(paymentCreationInfoKey)
+			if b == nil {
+				return nil
+			}
+
+			r := bytes.NewReader(b)
+			c, err := deserializeCreationInfo(r)
 			if err != nil {
 				return err
 			}
+			p.CreationInfo = *c
 
-			payments = append(payments, payment)
+			b = bucket.Get(paymentSettleInfoKey)
+			if b != nil {
+
+				r = bytes.NewReader(b)
+				s, err := deserializeSettleInfo(r)
+				if err != nil {
+					return err
+				}
+				p.SettleInfo = *s
+			}
+
+			payments = append(payments, p)
 			return nil
 		})
 	})
@@ -177,92 +230,46 @@ func (db *DB) FetchAllPayments() ([]*OutgoingPayment, error) {
 // DeleteAllPayments deletes all payments from DB.
 func (db *DB) DeleteAllPayments() error {
 	return db.Update(func(tx *bbolt.Tx) error {
-		err := tx.DeleteBucket(paymentBucket)
+		err := tx.DeleteBucket(outgoingPaymentBucket)
 		if err != nil && err != bbolt.ErrBucketNotFound {
 			return err
 		}
 
-		_, err = tx.CreateBucket(paymentBucket)
+		_, err = tx.CreateBucket(outgoingPaymentBucket)
 		return err
 	})
 }
 
-// UpdatePaymentStatus sets the payment status for outgoing/finished payments in
-// local database.
-func (db *DB) UpdatePaymentStatus(paymentHash [32]byte, status PaymentStatus) error {
-	return db.Batch(func(tx *bbolt.Tx) error {
-		return UpdatePaymentStatusTx(tx, paymentHash, status)
-	})
-}
-
-// UpdatePaymentStatusTx is a helper method that sets the payment status for
-// outgoing/finished payments in the local database. This method accepts a
-// boltdb transaction such that the operation can be composed into other
-// database transactions.
-func UpdatePaymentStatusTx(tx *bbolt.Tx,
-	paymentHash [32]byte, status PaymentStatus) error {
-
-	paymentStatuses, err := tx.CreateBucketIfNotExists(paymentStatusBucket)
-	if err != nil {
-		return err
-	}
-
-	return paymentStatuses.Put(paymentHash[:], status.Bytes())
-}
-
-// FetchPaymentStatus returns the payment status for outgoing payment.
-// If status of the payment isn't found, it will default to "StatusGrounded".
-func (db *DB) FetchPaymentStatus(paymentHash [32]byte) (PaymentStatus, error) {
-	var paymentStatus = StatusGrounded
-	err := db.View(func(tx *bbolt.Tx) error {
-		var err error
-		paymentStatus, err = FetchPaymentStatusTx(tx, paymentHash)
-		return err
-	})
-	if err != nil {
-		return StatusGrounded, err
-	}
-
-	return paymentStatus, nil
-}
-
-// FetchPaymentStatusTx is a helper method that returns the payment status for
-// outgoing payment.  If status of the payment isn't found, it will default to
-// "StatusGrounded". It accepts the boltdb transactions such that this method
-// can be composed into other atomic operations.
-func FetchPaymentStatusTx(tx *bbolt.Tx, paymentHash [32]byte) (PaymentStatus, error) {
-	// The default status for all payments that aren't recorded in database.
-	var paymentStatus = StatusGrounded
-
-	bucket := tx.Bucket(paymentStatusBucket)
-	if bucket == nil {
-		return paymentStatus, nil
-	}
-
-	paymentStatusBytes := bucket.Get(paymentHash[:])
-	if paymentStatusBytes == nil {
-		return paymentStatus, nil
-	}
-
-	paymentStatus.FromBytes(paymentStatusBytes)
-
-	return paymentStatus, nil
-}
-
-func serializeOutgoingPayment(w io.Writer, p *OutgoingPayment) error {
+func serializeCreationInfo(w io.Writer, c *CreationInfo) error {
 	var scratch [8]byte
 
-	if err := serializeInvoice(w, &p.Invoice); err != nil {
+	if _, err := w.Write(c.PaymentHash[:]); err != nil {
 		return err
 	}
 
-	byteOrder.PutUint64(scratch[:], uint64(p.Fee))
+	byteOrder.PutUint64(scratch[:], uint64(c.Value))
+	if _, err := w.Write(scratch[:]); err != nil {
+		return err
+	}
+
+	byteOrder.PutUint64(scratch[:], uint64(c.CreationDate.Unix()))
+	if _, err := w.Write(scratch[:]); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func serializeSettleInfo(w io.Writer, s *SettleInfo) error {
+	var scratch [8]byte
+
+	byteOrder.PutUint64(scratch[:], uint64(s.Fee))
 	if _, err := w.Write(scratch[:]); err != nil {
 		return err
 	}
 
 	// First write out the length of the bytes to prefix the value.
-	pathLen := uint32(len(p.Path))
+	pathLen := uint32(len(s.Path))
 	byteOrder.PutUint32(scratch[:4], pathLen)
 	if _, err := w.Write(scratch[:4]); err != nil {
 		return err
@@ -270,41 +277,55 @@ func serializeOutgoingPayment(w io.Writer, p *OutgoingPayment) error {
 
 	// Then with the path written, we write out the series of public keys
 	// involved in the path.
-	for _, hop := range p.Path {
+	for _, hop := range s.Path {
 		if _, err := w.Write(hop[:]); err != nil {
 			return err
 		}
 	}
 
-	byteOrder.PutUint32(scratch[:4], p.TimeLockLength)
+	byteOrder.PutUint32(scratch[:4], s.TimeLockLength)
 	if _, err := w.Write(scratch[:4]); err != nil {
 		return err
 	}
 
-	if _, err := w.Write(p.PaymentPreimage[:]); err != nil {
+	if _, err := w.Write(s.PaymentPreimage[:]); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func deserializeOutgoingPayment(r io.Reader) (*OutgoingPayment, error) {
+func deserializeCreationInfo(r io.Reader) (*CreationInfo, error) {
 	var scratch [8]byte
 
-	p := &OutgoingPayment{}
+	s := &CreationInfo{}
 
-	inv, err := deserializeInvoice(r)
-	if err != nil {
+	if _, err := r.Read(s.PaymentHash[:]); err != nil {
 		return nil, err
 	}
-	p.Invoice = inv
 
 	if _, err := r.Read(scratch[:]); err != nil {
 		return nil, err
 	}
-	p.Fee = lnwire.MilliSatoshi(byteOrder.Uint64(scratch[:]))
+	s.Value = lnwire.MilliSatoshi(byteOrder.Uint64(scratch[:]))
 
-	if _, err = r.Read(scratch[:4]); err != nil {
+	if _, err := r.Read(scratch[:]); err != nil {
+		return nil, err
+	}
+	s.CreationDate = time.Unix(int64(byteOrder.Uint64(scratch[:])), 0)
+	return s, nil
+}
+
+func deserializeSettleInfo(r io.Reader) (*SettleInfo, error) {
+	var scratch [8]byte
+	s := &SettleInfo{}
+
+	if _, err := r.Read(scratch[:]); err != nil {
+		return nil, err
+	}
+	s.Fee = lnwire.MilliSatoshi(byteOrder.Uint64(scratch[:]))
+
+	if _, err := r.Read(scratch[:4]); err != nil {
 		return nil, err
 	}
 	pathLen := byteOrder.Uint32(scratch[:4])
@@ -315,16 +336,16 @@ func deserializeOutgoingPayment(r io.Reader) (*OutgoingPayment, error) {
 			return nil, err
 		}
 	}
-	p.Path = path
+	s.Path = path
 
-	if _, err = r.Read(scratch[:4]); err != nil {
+	if _, err := r.Read(scratch[:4]); err != nil {
 		return nil, err
 	}
-	p.TimeLockLength = byteOrder.Uint32(scratch[:4])
+	s.TimeLockLength = byteOrder.Uint32(scratch[:4])
 
-	if _, err := r.Read(p.PaymentPreimage[:]); err != nil {
+	if _, err := r.Read(s.PaymentPreimage[:]); err != nil {
 		return nil, err
 	}
 
-	return p, nil
+	return s, nil
 }

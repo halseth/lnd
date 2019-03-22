@@ -1,6 +1,10 @@
 package channeldb
 
-import "io"
+import (
+	"io"
+
+	"github.com/lightningnetwork/lnd/lnwire"
+)
 
 // deserializeCloseChannelSummaryV6 reads the v6 database format for
 // ChannelCloseSummary.
@@ -50,4 +54,58 @@ func deserializeCloseChannelSummaryV6(r io.Reader) (*ChannelCloseSummary, error)
 	}
 
 	return c, nil
+}
+
+// outgoingPaymentV8 is the OutgoingPayment format up to db versino o.
+type outgoingPaymentV8 struct {
+	Invoice
+	Fee             lnwire.MilliSatoshi
+	TimeLockLength  uint32
+	Path            [][33]byte
+	PaymentPreimage [32]byte
+}
+
+// deserializeOutgoingPaymentV8 reads an OutgoingPayment having the
+// v8 DB format.
+//
+// NOTE: only for migration.
+func deserializeOutgoingPaymentV8(r io.Reader) (*outgoingPaymentV8, error) {
+	var scratch [8]byte
+
+	p := &outgoingPaymentV8{}
+
+	inv, err := deserializeInvoice(r)
+	if err != nil {
+		return nil, err
+	}
+	p.Invoice = inv
+
+	if _, err := r.Read(scratch[:]); err != nil {
+		return nil, err
+	}
+	p.Fee = lnwire.MilliSatoshi(byteOrder.Uint64(scratch[:]))
+
+	if _, err = r.Read(scratch[:4]); err != nil {
+		return nil, err
+	}
+	pathLen := byteOrder.Uint32(scratch[:4])
+
+	path := make([][33]byte, pathLen)
+	for i := uint32(0); i < pathLen; i++ {
+		if _, err := r.Read(path[i][:]); err != nil {
+			return nil, err
+		}
+	}
+	p.Path = path
+
+	if _, err = r.Read(scratch[:4]); err != nil {
+		return nil, err
+	}
+	p.TimeLockLength = byteOrder.Uint32(scratch[:4])
+
+	if _, err := r.Read(p.PaymentPreimage[:]); err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }

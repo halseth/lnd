@@ -2006,15 +2006,15 @@ func (r *ChannelRouter) savePayment(route *Route, preImage []byte) error {
 	}
 
 	payment := &channeldb.OutgoingPayment{
-		Invoice: channeldb.Invoice{
-			Terms: channeldb.ContractTerm{
-				Value: amt,
-			},
+		channeldb.CreationInfo{
+			Value:        amt,
 			CreationDate: time.Now(),
 		},
-		Path:           paymentPath,
-		Fee:            route.TotalFees,
-		TimeLockLength: route.TotalTimeLock,
+		channeldb.SettleInfo{
+			Path:           paymentPath,
+			Fee:            route.TotalFees,
+			TimeLockLength: route.TotalTimeLock,
+		},
 	}
 	copy(payment.PaymentPreimage[:], preImage)
 

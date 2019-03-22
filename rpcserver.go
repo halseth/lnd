@@ -4161,8 +4161,8 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 			path[i] = hex.EncodeToString(hop[:])
 		}
 
-		msatValue := int64(payment.Terms.Value)
-		satValue := int64(payment.Terms.Value.ToSatoshis())
+		msatValue := int64(payment.Value)
+		satValue := int64(payment.Value.ToSatoshis())
 
 		paymentHash := sha256.Sum256(payment.PaymentPreimage[:])
 		paymentsResp.Payments[i] = &lnrpc.Payment{

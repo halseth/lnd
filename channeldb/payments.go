@@ -137,45 +137,6 @@ type OutgoingPayment struct {
 	SettleInfo
 }
 
-// AddPayment saves a successful payment to the database. It is assumed that
-// all payment are sent using unique payment hashes.
-func (db *DB) AddPayment(payment *OutgoingPayment) error {
-	// We first serialize the payment before starting the database
-	// transaction so we can avoid creating a DB payment in the case of a
-	// serialization error.
-	var c bytes.Buffer
-	if err := serializeCreationInfo(&c, &payment.CreationInfo); err != nil {
-		return err
-	}
-
-	var s bytes.Buffer
-	if err := serializeSettleInfo(&s, &payment.SettleInfo); err != nil {
-		return err
-	}
-
-	return db.Batch(func(tx *bbolt.Tx) error {
-		payments, err := tx.CreateBucketIfNotExists(outgoingPaymentBucket)
-		if err != nil {
-			return err
-		}
-
-		bucket, err := payments.CreateBucketIfNotExists(payment.PaymentHash[:])
-		if err != nil {
-			return err
-		}
-
-		if err := bucket.Put(paymentCreationInfoKey, c.Bytes()); err != nil {
-			return err
-		}
-
-		if err := bucket.Put(paymentSettleInfoKey, s.Bytes()); err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
 // FetchAllPayments returns all outgoing payments in DB.
 func (db *DB) FetchAllPayments() ([]*OutgoingPayment, error) {
 	var payments []*OutgoingPayment

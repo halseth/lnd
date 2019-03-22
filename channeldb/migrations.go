@@ -683,3 +683,109 @@ func migrateGossipMessageStoreKeys(tx *bbolt.Tx) error {
 
 	return nil
 }
+
+// migrateOutgoingPayments moves the OutgoingPayments into a new bucket format
+// where they all reside in a top-level bucket indexed by the payment hash. In
+// this sub-bucket we store information relevant to this payment, such as the
+// payment status.
+//
+// To avoid that the router resend payments that have the status InFlight (we
+// cannot resume these payments for pre-migration payments) we delete those
+// statuses, so only Completed payments remain in the new bucket structure.
+func migrateOutgoingPayments(tx *bbolt.Tx) error {
+	oldPayments, err := tx.CreateBucketIfNotExists(paymentBucket)
+	if err != nil {
+		return err
+	}
+
+	newPayments, err := tx.CreateBucket(outgoingPaymentBucket)
+	if err != nil {
+		return err
+	}
+
+	log.Infof("Migrating outgoing payments to new bucket structure")
+
+	err = oldPayments.ForEach(func(_, v []byte) error {
+		// Ignores if it is sub-bucket.
+		if v == nil {
+			return nil
+		}
+
+		// Read the old payment format.
+		r := bytes.NewReader(v)
+		payment, err := deserializeOutgoingPayment(r)
+		if err != nil {
+			return err
+		}
+
+		// Calculate payment hash from the payment preimage.
+		paymentHash := sha256.Sum256(payment.PaymentPreimage[:])
+
+		// Create a bucket indexed by the payment hash.
+		bucket, err := newPayments.CreateBucket(paymentHash[:])
+		if err != nil {
+			return err
+		}
+
+		// Since only completed payments were previously stored as
+		// OutgoingPayments, set the status as Completed.
+		err = bucket.Put(paymentStatusKey, StatusCompleted.Bytes())
+		if err != nil {
+			return err
+		}
+
+		// Now create and add a CreationInfo to the bucket.
+		c := &CreationInfo{
+			PaymentHash:  paymentHash,
+			Value:        payment.Terms.Value,
+			CreationDate: payment.CreationDate,
+		}
+
+		var b bytes.Buffer
+		if err := serializeCreationInfo(&b, c); err != nil {
+			return err
+		}
+
+		err = bucket.Put(paymentCreationInfoKey, b.Bytes())
+		if err != nil {
+			return err
+		}
+
+		// Do the same for the SettleInfo.
+		b.Reset()
+		s := &SettleInfo{
+			Fee:             payment.Fee,
+			TimeLockLength:  payment.TimeLockLength,
+			Path:            payment.Path,
+			PaymentPreimage: payment.PaymentPreimage,
+		}
+
+		if err := serializeSettleInfo(&b, s); err != nil {
+			return err
+		}
+
+		err = bucket.Put(paymentSettleInfoKey, b.Bytes())
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Now we delete the old buckets. Deleting the payment status buckets
+	// deletes all payment statuses other than Complete.
+	if err := tx.DeleteBucket(paymentStatusBucket); err != nil {
+		return err
+	}
+
+	// Finally delete the old payment bucket.
+	if err := tx.DeleteBucket(paymentBucket); err != nil {
+		return err
+	}
+
+	log.Infof("Migration of outgoing payment bucket structure completed!")
+	return nil
+}

@@ -1,10 +1,11 @@
 package channeldb
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/coreos/bbolt"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 var (
@@ -23,6 +24,10 @@ var (
 	// recomplete a completed payment.
 	ErrPaymentAlreadyCompleted = errors.New("payment is already completed")
 
+	// ErrPaymentAlreadyFailed is returned in the event we attempt to
+	// re-fail a failed payment.
+	ErrPaymentAlreadyFailed = errors.New("payment has already failed")
+
 	// ErrUnknownPaymentStatus is returned when we do not recognize the
 	// existing state of a payment.
 	ErrUnknownPaymentStatus = errors.New("unknown payment status")
@@ -38,19 +43,20 @@ type ControlTower interface {
 	// ClearForTakeoff atomically checks that no inflight or completed
 	// payments exist for this payment hash. If none are found, this method
 	// atomically transitions the status for this payment hash as InFlight.
-	ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error
+	ClearForTakeoff(info *CreationInfo) error
 
 	// Success transitions an InFlight payment into a Completed payment.
 	// After invoking this method, ClearForTakeoff should always return an
 	// error to prevent us from making duplicate payments to the same
-	// payment hash.
-	Success(paymentHash [32]byte) error
+	// payment hash. The provided info is atomically saved to the DB for
+	// record keeping.
+	Success(paymentHash lntypes.Hash, info *SettleInfo) error
 
-	// Fail transitions an InFlight payment into a Grounded Payment. After
+	// Fail transitions an InFlight payment into a Failed Payment. After
 	// invoking this method, ClearForTakeoff should return nil on its next
 	// call for this payment hash, allowing the switch to make a subsequent
 	// payment.
-	Fail(paymentHash [32]byte) error
+	Fail(paymentHash lntypes.Hash) error
 }
 
 // paymentControl is persistent implementation of ControlTower to restrict
@@ -78,7 +84,15 @@ func NewPaymentControl(strict bool, db *DB) ControlTower {
 
 // ClearForTakeoff checks that we don't already have an InFlight or Completed
 // payment identified by the same payment hash.
-func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
+func (p *paymentControl) ClearForTakeoff(info *CreationInfo) error {
+	paymentHash := info.PaymentHash
+
+	var b bytes.Buffer
+	if err := serializeCreationInfo(&b, info); err != nil {
+		return err
+	}
+	infoBytes := b.Bytes()
+
 	var takeoffErr error
 	err := p.db.Batch(func(tx *bbolt.Tx) error {
 		payments, err := tx.CreateBucketIfNotExists(outgoingPaymentBucket)
@@ -86,7 +100,7 @@ func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
 			return err
 		}
 
-		bucket, err := payments.CreateBucketIfNotExists(htlc.PaymentHash[:])
+		bucket, err := payments.CreateBucketIfNotExists(paymentHash[:])
 		if err != nil {
 			return err
 		}
@@ -104,7 +118,18 @@ func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
 
 		switch paymentStatus {
 
+		// We allow retrying failed payments.
+		case StatusFailed:
+			fallthrough
+
 		case StatusGrounded:
+			// Add the payment info to the bucket, which contains
+			// the static information for this payment
+			err := bucket.Put(paymentCreationInfoKey, infoBytes)
+			if err != nil {
+				return err
+			}
+
 			// It is safe to reattempt a payment if we know that we
 			// haven't left one in flight. Since this one is
 			// grounded or failed, transition the payment status
@@ -137,7 +162,13 @@ func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
 // Success transitions an InFlight payment to Completed, otherwise it returns an
 // error. After calling Success, ClearForTakeoff should prevent any further
 // attempts for the same payment hash.
-func (p *paymentControl) Success(paymentHash [32]byte) error {
+func (p *paymentControl) Success(paymentHash lntypes.Hash, info *SettleInfo) error {
+	var b bytes.Buffer
+	if err := serializeSettleInfo(&b, info); err != nil {
+		return err
+	}
+	settledBytes := b.Bytes()
+
 	var updateErr error
 	err := p.db.Batch(func(tx *bbolt.Tx) error {
 		payments, err := tx.CreateBucketIfNotExists(outgoingPaymentBucket)
@@ -175,7 +206,21 @@ func (p *paymentControl) Success(paymentHash [32]byte) error {
 			// to handle inconsistent db states.
 			fallthrough
 
+		case paymentStatus == StatusFailed:
+			// Though our records show the payment as failed,
+			// meaning we didn't expect this result, we permit this
+			// transition in non-strict mode to handle inconsistent
+			// db states.
+			fallthrough
+
 		case paymentStatus == StatusInFlight:
+			// Record the successful payment info atomically to the
+			// payments record.
+			err := bucket.Put(paymentSettleInfoKey, settledBytes)
+			if err != nil {
+				return err
+			}
+
 			// A successful response was received for an InFlight
 			// payment, mark it as completed to prevent sending to
 			// this payment hash again.
@@ -199,10 +244,10 @@ func (p *paymentControl) Success(paymentHash [32]byte) error {
 	return updateErr
 }
 
-// Fail transitions an InFlight payment to Grounded, otherwise it returns an
-// error. After calling Fail, ClearForTakeoff should fail any further attempts
+// Fail transitions an InFlight payment to Failed, otherwise it returns an
+// error. After calling Fail, ClearForTakeoff should allow further attempts
 // for the same payment hash.
-func (p *paymentControl) Fail(paymentHash [32]byte) error {
+func (p *paymentControl) Fail(paymentHash lntypes.Hash) error {
 	var updateErr error
 	err := p.db.Batch(func(tx *bbolt.Tx) error {
 		payments, err := tx.CreateBucketIfNotExists(outgoingPaymentBucket)
@@ -243,7 +288,7 @@ func (p *paymentControl) Fail(paymentHash [32]byte) error {
 			// A failed response was received for an InFlight
 			// payment, mark it as Failed to allow subsequent
 			// attempts.
-			return bucket.Put(paymentStatusKey, StatusGrounded.Bytes())
+			return bucket.Put(paymentStatusKey, StatusFailed.Bytes())
 
 		case paymentStatus == StatusCompleted:
 			// The payment was completed previously, and we are now
@@ -251,6 +296,13 @@ func (p *paymentControl) Fail(paymentHash [32]byte) error {
 			// completed, but alert the user that something is
 			// wrong.
 			updateErr = ErrPaymentAlreadyCompleted
+
+		case paymentStatus == StatusFailed:
+			// The payment was already failed , and we are now
+			// reporting that it has failed again . Leave the
+			// status as failed, but alert the user that something
+			// is wrong.
+			updateErr = ErrPaymentAlreadyFailed
 
 		default:
 			updateErr = ErrUnknownPaymentStatus

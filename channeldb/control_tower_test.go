@@ -6,10 +6,10 @@ import (
 	"io"
 	"io/ioutil"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/fastsha256"
 	"github.com/coreos/bbolt"
-	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 func initDB() (*DB, error) {
@@ -34,19 +34,23 @@ func genPreimage() ([32]byte, error) {
 	return preimage, nil
 }
 
-func genHtlc() (*lnwire.UpdateAddHTLC, error) {
+func genInfo() (*CreationInfo, *SettleInfo, error) {
 	preimage, err := genPreimage()
 	if err != nil {
-		return nil, fmt.Errorf("unable to generate preimage: %v", err)
+		return nil, nil, fmt.Errorf("unable to generate preimage: %v", err)
 	}
 
 	rhash := fastsha256.Sum256(preimage[:])
-	htlc := &lnwire.UpdateAddHTLC{
-		PaymentHash: rhash,
-		Amount:      1,
-	}
-
-	return htlc, nil
+	return &CreationInfo{
+			PaymentHash:  rhash,
+			Value:        1,
+			CreationDate: time.Now(),
+		}, &SettleInfo{
+			Fee:             1,
+			TimeLockLength:  155,
+			Path:            nil,
+			PaymentPreimage: preimage,
+		}, nil
 }
 
 type paymentControlTestCase func(*testing.T, bool)
@@ -114,44 +118,44 @@ func testPaymentControlSwitchFail(t *testing.T, strict bool) {
 
 	pControl := NewPaymentControl(strict, db)
 
-	htlc, err := genHtlc()
+	info, settle, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
 	// Sends base htlc message which initiate StatusInFlight.
-	if err := pControl.ClearForTakeoff(htlc); err != nil {
+	if err := pControl.ClearForTakeoff(info); err != nil {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusInFlight)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusInFlight)
 
 	// Fail the payment, which should moved it to Grounded.
-	if err := pControl.Fail(htlc.PaymentHash); err != nil {
+	if err := pControl.Fail(info.PaymentHash); err != nil {
 		t.Fatalf("unable to fail payment hash: %v", err)
 	}
 
 	// Verify the status is indeed Grounded.
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusGrounded)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusGrounded)
 
 	// Sends the htlc again, which should succeed since the prior payment
 	// failed.
-	if err := pControl.ClearForTakeoff(htlc); err != nil {
+	if err := pControl.ClearForTakeoff(info); err != nil {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusInFlight)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusInFlight)
 
 	// Verifies that status was changed to StatusCompleted.
-	if err := pControl.Success(htlc.PaymentHash); err != nil {
+	if err := pControl.Success(info.PaymentHash, settle); err != nil {
 		t.Fatalf("error shouldn't have been received, got: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusCompleted)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusCompleted)
 
 	// Attempt a final payment, which should now fail since the prior
 	// payment succeed.
-	if err := pControl.ClearForTakeoff(htlc); err != ErrAlreadyPaid {
+	if err := pControl.ClearForTakeoff(info); err != ErrAlreadyPaid {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
 }
@@ -168,23 +172,23 @@ func testPaymentControlSwitchDoubleSend(t *testing.T, strict bool) {
 
 	pControl := NewPaymentControl(strict, db)
 
-	htlc, err := genHtlc()
+	info, _, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
 	// Sends base htlc message which initiate base status and move it to
 	// StatusInFlight and verifies that it was changed.
-	if err := pControl.ClearForTakeoff(htlc); err != nil {
+	if err := pControl.ClearForTakeoff(info); err != nil {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusInFlight)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusInFlight)
 
 	// Try to initiate double sending of htlc message with the same
 	// payment hash, should result in error indicating that payment has
 	// already been sent.
-	if err := pControl.ClearForTakeoff(htlc); err != ErrPaymentInFlight {
+	if err := pControl.ClearForTakeoff(info); err != ErrPaymentInFlight {
 		t.Fatalf("payment control wrong behaviour: " +
 			"double sending must trigger ErrPaymentInFlight error")
 	}
@@ -202,28 +206,28 @@ func testPaymentControlSwitchDoublePay(t *testing.T, strict bool) {
 
 	pControl := NewPaymentControl(strict, db)
 
-	htlc, err := genHtlc()
+	info, settle, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
 	// Sends base htlc message which initiate StatusInFlight.
-	if err := pControl.ClearForTakeoff(htlc); err != nil {
+	if err := pControl.ClearForTakeoff(info); err != nil {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
 
 	// Verify that payment is InFlight.
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusInFlight)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusInFlight)
 
 	// Move payment to completed status, second payment should return error.
-	if err := pControl.Success(htlc.PaymentHash); err != nil {
+	if err := pControl.Success(info.PaymentHash, settle); err != nil {
 		t.Fatalf("error shouldn't have been received, got: %v", err)
 	}
 
 	// Verify that payment is Completed.
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusCompleted)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusCompleted)
 
-	if err := pControl.ClearForTakeoff(htlc); err != ErrAlreadyPaid {
+	if err := pControl.ClearForTakeoff(info); err != ErrAlreadyPaid {
 		t.Fatalf("payment control wrong behaviour:" +
 			" double payment must trigger ErrAlreadyPaid")
 	}
@@ -244,18 +248,18 @@ func TestPaymentControlNonStrictSuccessesWithoutInFlight(t *testing.T) {
 
 	pControl := NewPaymentControl(false, db)
 
-	htlc, err := genHtlc()
+	info, settle, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
-	if err := pControl.Success(htlc.PaymentHash); err != nil {
+	if err := pControl.Success(info.PaymentHash, settle); err != nil {
 		t.Fatalf("unable to mark payment hash success: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusCompleted)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusCompleted)
 
-	err = pControl.Success(htlc.PaymentHash)
+	err = pControl.Success(info.PaymentHash, settle)
 	if err != ErrPaymentAlreadyCompleted {
 		t.Fatalf("unable to remark payment hash failed: %v", err)
 	}
@@ -276,37 +280,37 @@ func TestPaymentControlNonStrictFailsWithoutInFlight(t *testing.T) {
 
 	pControl := NewPaymentControl(false, db)
 
-	htlc, err := genHtlc()
+	info, settle, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
-	if err := pControl.Fail(htlc.PaymentHash); err != nil {
+	if err := pControl.Fail(info.PaymentHash); err != nil {
 		t.Fatalf("unable to mark payment hash failed: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusGrounded)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusGrounded)
 
-	err = pControl.Fail(htlc.PaymentHash)
+	err = pControl.Fail(info.PaymentHash)
 	if err != nil {
 		t.Fatalf("unable to remark payment hash failed: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusGrounded)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusGrounded)
 
-	err = pControl.Success(htlc.PaymentHash)
+	err = pControl.Success(info.PaymentHash, settle)
 	if err != nil {
 		t.Fatalf("unable to remark payment hash success: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusCompleted)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusCompleted)
 
-	err = pControl.Fail(htlc.PaymentHash)
+	err = pControl.Fail(info.PaymentHash)
 	if err != ErrPaymentAlreadyCompleted {
 		t.Fatalf("unable to remark payment hash failed: %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusCompleted)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusCompleted)
 }
 
 // TestPaymentControlStrictSuccessesWithoutInFlight checks that a strict payment
@@ -321,17 +325,17 @@ func TestPaymentControlStrictSuccessesWithoutInFlight(t *testing.T) {
 
 	pControl := NewPaymentControl(true, db)
 
-	htlc, err := genHtlc()
+	info, settle, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
-	err = pControl.Success(htlc.PaymentHash)
+	err = pControl.Success(info.PaymentHash, settle)
 	if err != ErrPaymentNotInitiated {
 		t.Fatalf("expected ErrPaymentNotInitiated, got %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusGrounded)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusGrounded)
 }
 
 // TestPaymentControlStrictFailsWithoutInFlight checks that a strict payment
@@ -346,17 +350,17 @@ func TestPaymentControlStrictFailsWithoutInFlight(t *testing.T) {
 
 	pControl := NewPaymentControl(true, db)
 
-	htlc, err := genHtlc()
+	info, _, err := genInfo()
 	if err != nil {
 		t.Fatalf("unable to generate htlc message: %v", err)
 	}
 
-	err = pControl.Fail(htlc.PaymentHash)
+	err = pControl.Fail(info.PaymentHash)
 	if err != ErrPaymentNotInitiated {
 		t.Fatalf("expected ErrPaymentNotInitiated, got %v", err)
 	}
 
-	assertPaymentStatus(t, db, htlc.PaymentHash, StatusGrounded)
+	assertPaymentStatus(t, db, info.PaymentHash, StatusGrounded)
 }
 
 func assertPaymentStatus(t *testing.T, db *DB,

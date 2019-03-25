@@ -1,15 +1,20 @@
 package channeldb
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/fastsha256"
 	"github.com/coreos/bbolt"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 func initDB() (*DB, error) {
@@ -395,4 +400,46 @@ func assertPaymentStatus(t *testing.T, db *DB,
 		t.Fatalf("payment status mismatch: expected %v, got %v",
 			expStatus, paymentStatus)
 	}
+}
+
+func TestRouteSerialization(t *testing.T) {
+	t.Parallel()
+
+	priv, _ := btcec.NewPrivateKey(btcec.S256())
+	pub := priv.PubKey()
+
+	hop := &route.Hop{
+		PubKeyBytes:      route.NewVertex(pub),
+		ChannelID:        12345,
+		OutgoingTimeLock: 111,
+		AmtToForward:     555,
+	}
+
+	route := &route.Route{
+		TotalTimeLock: 123,
+		TotalFees:     999,
+		TotalAmount:   1234567,
+		SourcePubKey:  route.NewVertex(pub),
+		Hops: []*route.Hop{
+			hop,
+			hop,
+		},
+	}
+
+	var b bytes.Buffer
+	if err := serializeRoute(&b, route); err != nil {
+		t.Fatal(err)
+	}
+
+	r := bytes.NewReader(b.Bytes())
+	route2, err := deserializeRoute(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(route, route2) {
+		t.Fatalf("routes not equal: \n%v vs \n%v",
+			spew.Sdump(route), spew.Sdump(route2))
+	}
+
 }

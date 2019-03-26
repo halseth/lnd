@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -389,6 +390,76 @@ type SentPayment struct {
 	// as a proof of payment. It will be all zeroes for non-settled
 	// payments.
 	PaymentPreimage lntypes.Preimage
+}
+
+// FetchSentPayments returns all sent payments found in the DB.
+func (db *DB) FetchSentPayments() ([]*SentPayment, error) {
+	var payments []*SentPayment
+
+	err := db.View(func(tx *bbolt.Tx) error {
+		paymentsBucket := tx.Bucket(sentPaymentsBucket)
+		if paymentsBucket == nil {
+			return nil
+		}
+
+		return paymentsBucket.ForEach(func(k, v []byte) error {
+			bucket := paymentsBucket.Bucket(k)
+			if bucket == nil {
+				// We only expect sub-buckets to be found in
+				// this top-level bucket.
+				return fmt.Errorf("non bucket element")
+			}
+
+			var (
+				err error
+				p   = &SentPayment{}
+			)
+
+			// Get the payment status.
+			p.Status = fetchPaymentStatus(bucket)
+
+			// Get the CreationInfo.
+			b := bucket.Get(paymentCreationInfoKey)
+			if b == nil {
+				return fmt.Errorf("creation info not found")
+			}
+
+			r := bytes.NewReader(b)
+			p.CreationInfo, err = deserializeCreationInfo(r)
+			if err != nil {
+				return err
+
+			}
+
+			// Get the AttemptInfo.
+			// TODO: must set for payments going straight to
+			// fail/success.
+			b = bucket.Get(paymentAttemptInfoKey)
+			if b == nil {
+				return fmt.Errorf("attempt info not found")
+			}
+
+			r = bytes.NewReader(b)
+			p.AttemptInfo, err = deserializeAttemptInfo(r)
+			if err != nil {
+				return err
+			}
+
+			b = bucket.Get(paymentSettleInfoKey)
+			if b == nil {
+				return fmt.Errorf("settle info not found")
+			}
+			copy(p.PaymentPreimage[:], b[:])
+
+			payments = append(payments, p)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return payments, nil
 }
 
 func serializeCreationInfo(w io.Writer, c *CreationInfo) error {

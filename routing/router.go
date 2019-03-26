@@ -472,6 +472,52 @@ func (r *ChannelRouter) Start() error {
 		return err
 	}
 
+	// If any payments are still in flight, we resume, to make sure their
+	// results are properly handled.
+	payments, err := r.cfg.Control.FetchInFlightPayments()
+	if err != nil {
+		return err
+	}
+
+	for _, payment := range payments {
+		log.Infof("Resuming payment with hash %x", payment.Info.PaymentHash)
+
+		p := &ActivePayment{
+			control:  r.cfg.Control,
+			inFlight: true,
+			Info:     *payment.Info,
+			Attempt:  payment.Attempt,
+		}
+
+		r.wg.Add(1)
+		go func(payment *ActivePayment) {
+			defer r.wg.Done()
+
+			// We create a dummy, empty payment session such that
+			// we won't attempt another payment attempt when the
+			// result for this payment is received.
+			paySession := r.missionControl.NewPaymentSessionFromRoutes(
+				nil,
+			)
+
+			lPayment := &LightningPayment{
+				PaymentHash: payment.Info.PaymentHash,
+			}
+
+			fmt.Println("Router: resending payment")
+			_, _, err = r.sendPayment(payment, lPayment, paySession)
+			fmt.Println("Router: resent payment", err)
+			if err != nil {
+				log.Errorf("Resuming payment with hash %v "+
+					"failed: %v.", payment.Info.PaymentHash, err)
+				return
+			}
+
+			log.Infof("Resumed payment with hash %x completed.",
+				payment.Info.PaymentHash)
+		}(p)
+	}
+
 	r.wg.Add(1)
 	go r.networkHandler()
 

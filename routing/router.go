@@ -25,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
 	"github.com/lightningnetwork/lnd/routing/chainview"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -37,13 +38,6 @@ const (
 	// DefaultChannelPruneExpiry is the default duration used to determine
 	// if a channel should be pruned or not.
 	DefaultChannelPruneExpiry = time.Duration(time.Hour * 24 * 14)
-)
-
-var (
-	// ErrNoRouteHopsProvided is returned when a caller attempts to
-	// construct a new sphinx packet, but provides an empty set of hops for
-	// each route.
-	ErrNoRouteHopsProvided = fmt.Errorf("empty route hops provided")
 )
 
 // ChannelGraphSource represents the source of information about the topology
@@ -73,11 +67,11 @@ type ChannelGraphSource interface {
 	// for the target node with a more recent timestamp. This method will
 	// also return true if we don't have an active channel announcement for
 	// the target node.
-	IsStaleNode(node Vertex, timestamp time.Time) bool
+	IsStaleNode(node route.Vertex, timestamp time.Time) bool
 
 	// IsPublicNode determines whether the given vertex is seen as a public
 	// node in the graph from the graph's source node's point of view.
-	IsPublicNode(node Vertex) (bool, error)
+	IsPublicNode(node route.Vertex) (bool, error)
 
 	// IsKnownEdge returns true if the graph source already knows of the
 	// passed channel ID either as a live or zombie edge.
@@ -110,7 +104,7 @@ type ChannelGraphSource interface {
 	// FetchLightningNode attempts to look up a target node by its identity
 	// public key. channeldb.ErrGraphNodeNotFound is returned if the node
 	// doesn't exist within the graph.
-	FetchLightningNode(Vertex) (*channeldb.LightningNode, error)
+	FetchLightningNode(route.Vertex) (*channeldb.LightningNode, error)
 
 	// ForEachNode is used to iterate over every node in the known graph.
 	ForEachNode(func(node *channeldb.LightningNode) error) error
@@ -233,7 +227,7 @@ type EdgeLocator struct {
 
 // newEdgeLocatorByPubkeys returns an edgeLocator based on its end point
 // pubkeys.
-func newEdgeLocatorByPubkeys(channelID uint64, fromNode, toNode *Vertex) *EdgeLocator {
+func newEdgeLocatorByPubkeys(channelID uint64, fromNode, toNode *route.Vertex) *EdgeLocator {
 	// Determine direction based on lexicographical ordering of both
 	// pubkeys.
 	var direction uint8
@@ -294,7 +288,7 @@ type ChannelRouter struct {
 	//
 	// TODO(roasbeef): make LRU
 	routeCacheMtx sync.RWMutex
-	routeCache    map[routeTuple][]*Route
+	routeCache    map[routeTuple][]*route.Route
 
 	// newBlocks is a channel in which new blocks connected to the end of
 	// the main chain are sent over, and blocks updated after a call to
@@ -367,7 +361,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		ntfnClientUpdates: make(chan *topologyClientUpdate),
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
-		routeCache:        make(map[routeTuple][]*Route),
+		routeCache:        make(map[routeTuple][]*route.Route),
 		rejectCache:       make(map[uint64]struct{}),
 		quit:              make(chan struct{}),
 	}
@@ -813,7 +807,7 @@ func (r *ChannelRouter) networkHandler() {
 			// Invalidate the route cache, as some channels might
 			// not be confirmed anymore.
 			r.routeCacheMtx.Lock()
-			r.routeCache = make(map[routeTuple][]*Route)
+			r.routeCache = make(map[routeTuple][]*route.Route)
 			r.routeCacheMtx.Unlock()
 
 			// TODO(halseth): notify client about the reorg?
@@ -882,7 +876,7 @@ func (r *ChannelRouter) networkHandler() {
 			//  * can have map of chanID to routes involved, avoids
 			//    full invalidation
 			r.routeCacheMtx.Lock()
-			r.routeCache = make(map[routeTuple][]*Route)
+			r.routeCache = make(map[routeTuple][]*route.Route)
 			r.routeCacheMtx.Unlock()
 
 			if len(chansClosed) == 0 {
@@ -948,7 +942,7 @@ func (r *ChannelRouter) networkHandler() {
 // timestamp. ErrIgnored will be returned if we already have the node, and
 // ErrOutdated will be returned if we have a timestamp that's after the new
 // timestamp.
-func (r *ChannelRouter) assertNodeAnnFreshness(node Vertex,
+func (r *ChannelRouter) assertNodeAnnFreshness(node route.Vertex,
 	msgTimestamp time.Time) error {
 
 	// If we are not already aware of this node, it means that we don't
@@ -1227,7 +1221,7 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 	// choice of the KSP's for a particular routeTuple.
 	if invalidateCache {
 		r.routeCacheMtx.Lock()
-		r.routeCache = make(map[routeTuple][]*Route)
+		r.routeCache = make(map[routeTuple][]*route.Route)
 		r.routeCacheMtx.Unlock()
 	}
 
@@ -1289,11 +1283,11 @@ type routingMsg struct {
 // fee information attached. The set of routes returned may be less than the
 // initial set of paths as it's possible we drop a route if it can't handle the
 // total payment flow after fees are calculated.
-func pathsToFeeSortedRoutes(source Vertex, paths [][]*channeldb.ChannelEdgePolicy,
+func pathsToFeeSortedRoutes(source route.Vertex, paths [][]*channeldb.ChannelEdgePolicy,
 	finalCLTVDelta uint16, amt lnwire.MilliSatoshi,
-	currentHeight uint32) ([]*Route, error) {
+	currentHeight uint32) ([]*route.Route, error) {
 
-	validRoutes := make([]*Route, 0, len(paths))
+	validRoutes := make([]*route.Route, 0, len(paths))
 	for _, path := range paths {
 		// Attempt to make the path into a route. We snip off the first
 		// hop in the path as it contains a "self-hop" that is inserted
@@ -1347,9 +1341,9 @@ func pathsToFeeSortedRoutes(source Vertex, paths [][]*channeldb.ChannelEdgePolic
 // the required fee and time lock values running backwards along the route. The
 // route that will be ranked the highest is the one with the lowest cumulative
 // fee along the route.
-func (r *ChannelRouter) FindRoutes(source, target Vertex,
+func (r *ChannelRouter) FindRoutes(source, target route.Vertex,
 	amt lnwire.MilliSatoshi, restrictions *RestrictParams, numPaths uint32,
-	finalExpiry ...uint16) ([]*Route, error) {
+	finalExpiry ...uint16) ([]*route.Route, error) {
 
 	var finalCLTVDelta uint16
 	if len(finalExpiry) == 0 {
@@ -1435,7 +1429,7 @@ func (r *ChannelRouter) FindRoutes(source, target Vertex,
 	// each path. During this process, some paths may be discarded if they
 	// aren't able to support the total satoshis flow once fees have been
 	// factored in.
-	sourceVertex := Vertex(r.selfNode.PubKeyBytes)
+	sourceVertex := route.Vertex(r.selfNode.PubKeyBytes)
 	validRoutes, err := pathsToFeeSortedRoutes(
 		sourceVertex, shortestPaths, finalCLTVDelta, amt,
 		uint32(currentHeight),
@@ -1463,20 +1457,20 @@ func (r *ChannelRouter) FindRoutes(source, target Vertex,
 // the onion route specified by the passed layer 3 route. The blob returned
 // from this function can immediately be included within an HTLC add packet to
 // be sent to the first hop within the route.
-func generateSphinxPacket(route *Route, paymentHash []byte) ([]byte,
+func generateSphinxPacket(rt *route.Route, paymentHash []byte) ([]byte,
 	*sphinx.Circuit, error) {
 
 	// As a sanity check, we'll ensure that the set of hops has been
 	// properly filled in, otherwise, we won't actually be able to
 	// construct a route.
-	if len(route.Hops) == 0 {
-		return nil, nil, ErrNoRouteHopsProvided
+	if len(rt.Hops) == 0 {
+		return nil, nil, route.ErrNoRouteHopsProvided
 	}
 
 	// First obtain all the public keys along the route which are contained
 	// in each hop.
-	nodes := make([]*btcec.PublicKey, len(route.Hops))
-	for i, hop := range route.Hops {
+	nodes := make([]*btcec.PublicKey, len(rt.Hops))
+	for i, hop := range rt.Hops {
 		pub, err := btcec.ParsePubKey(hop.PubKeyBytes[:],
 			btcec.S256())
 		if err != nil {
@@ -1489,7 +1483,7 @@ func generateSphinxPacket(route *Route, paymentHash []byte) ([]byte,
 	// Next we generate the per-hop payload which gives each node within
 	// the route the necessary information (fees, CLTV value, etc) to
 	// properly forward the payment.
-	hopPayloads := route.ToHopPayloads()
+	hopPayloads := rt.ToHopPayloads()
 
 	log.Tracef("Constructed per-hop payloads for payment_hash=%x: %v",
 		paymentHash[:], newLogClosure(func() string {
@@ -1537,7 +1531,7 @@ func generateSphinxPacket(route *Route, paymentHash []byte) ([]byte,
 // final destination.
 type LightningPayment struct {
 	// Target is the node in which the payment should be routed towards.
-	Target Vertex
+	Target route.Vertex
 
 	// Amount is the value of the payment to send through the network in
 	// milli-satoshis.
@@ -1593,7 +1587,7 @@ type LightningPayment struct {
 // will be returned which describes the path the successful payment traversed
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
-func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route, error) {
+func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *route.Route, error) {
 	// Before starting the HTLC routing attempt, we'll create a fresh
 	// payment session which will report our errors back to mission
 	// control.
@@ -1614,8 +1608,8 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 // succeeds, then a non-nil Route will be returned which describes the
 // path the successful payment traversed within the network to reach the
 // destination. Additionally, the payment preimage will also be returned.
-func (r *ChannelRouter) SendToRoute(routes []*Route,
-	payment *LightningPayment) ([32]byte, *Route, error) {
+func (r *ChannelRouter) SendToRoute(routes []*route.Route,
+	payment *LightningPayment) ([32]byte, *route.Route, error) {
 
 	paySession := r.missionControl.NewPaymentSessionFromRoutes(
 		routes,
@@ -1632,7 +1626,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
 func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession *paymentSession) ([32]byte, *Route, error) {
+	paySession *paymentSession) ([32]byte, *route.Route, error) {
 
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
@@ -1726,7 +1720,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 // bool parameter indicates whether this is a final outcome or more attempts
 // should be made.
 func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
-	route *Route, paymentHash [32]byte) ([32]byte, bool, error) {
+	route *route.Route, paymentHash [32]byte) ([32]byte, bool, error) {
 
 	log.Tracef("Attempting to send payment %x, using route: %v",
 		paymentHash, newLogClosure(func() string {
@@ -1749,7 +1743,7 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 
 // sendToSwitch sends a payment along the specified route and returns the
 // obtained preimage.
-func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
+func (r *ChannelRouter) sendToSwitch(route *route.Route, paymentHash [32]byte) (
 	[32]byte, error) {
 
 	// Generate the raw encoded sphinx packet to be included along
@@ -1789,7 +1783,7 @@ func (r *ChannelRouter) sendToSwitch(route *Route, paymentHash [32]byte) (
 // to continue with an alternative route. This is indicated by the boolean
 // return value.
 func (r *ChannelRouter) processSendError(paySession *paymentSession,
-	route *Route, err error) bool {
+	rt *route.Route, err error) bool {
 
 	fErr, ok := err.(*htlcswitch.ForwardingError)
 	if !ok {
@@ -1797,13 +1791,13 @@ func (r *ChannelRouter) processSendError(paySession *paymentSession,
 	}
 
 	errSource := fErr.ErrorSource
-	errVertex := NewVertex(errSource)
+	errVertex := route.NewVertex(errSource)
 
 	log.Tracef("node=%x reported failure when sending htlc", errVertex)
 
 	// Always determine chan id ourselves, because a channel
 	// update with id may not be available.
-	failedEdge, err := getFailedEdge(route, errVertex)
+	failedEdge, err := getFailedEdge(rt, route.Vertex(errVertex))
 	if err != nil {
 		return true
 	}
@@ -1840,7 +1834,7 @@ func (r *ChannelRouter) processSendError(paySession *paymentSession,
 		}
 
 		paySession.ReportEdgePolicyFailure(
-			NewVertex(errSource), failedEdge,
+			route.NewVertex(errSource), failedEdge,
 		)
 	}
 
@@ -2014,7 +2008,7 @@ func (r *ChannelRouter) processSendError(paySession *paymentSession,
 // getFailedEdge tries to locate the failing channel given a route and the
 // pubkey of the node that sent the error. It will assume that the error is
 // associated with the outgoing channel of the error node.
-func getFailedEdge(route *Route, errSource Vertex) (
+func getFailedEdge(route *route.Route, errSource route.Vertex) (
 	*EdgeLocator, error) {
 
 	hopCount := len(route.Hops)
@@ -2186,7 +2180,7 @@ func (r *ChannelRouter) GetChannelByID(chanID lnwire.ShortChannelID) (
 // within the graph.
 //
 // NOTE: This method is part of the ChannelGraphSource interface.
-func (r *ChannelRouter) FetchLightningNode(node Vertex) (*channeldb.LightningNode, error) {
+func (r *ChannelRouter) FetchLightningNode(node route.Vertex) (*channeldb.LightningNode, error) {
 	pubKey, err := btcec.ParsePubKey(node[:], btcec.S256())
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse raw public key: %v", err)
@@ -2251,7 +2245,7 @@ func (r *ChannelRouter) AddProof(chanID lnwire.ShortChannelID,
 // target node with a more recent timestamp.
 //
 // NOTE: This method is part of the ChannelGraphSource interface.
-func (r *ChannelRouter) IsStaleNode(node Vertex, timestamp time.Time) bool {
+func (r *ChannelRouter) IsStaleNode(node route.Vertex, timestamp time.Time) bool {
 	// If our attempt to assert that the node announcement is fresh fails,
 	// then we know that this is actually a stale announcement.
 	return r.assertNodeAnnFreshness(node, timestamp) != nil
@@ -2261,7 +2255,7 @@ func (r *ChannelRouter) IsStaleNode(node Vertex, timestamp time.Time) bool {
 // the graph from the graph's source node's point of view.
 //
 // NOTE: This method is part of the ChannelGraphSource interface.
-func (r *ChannelRouter) IsPublicNode(node Vertex) (bool, error) {
+func (r *ChannelRouter) IsPublicNode(node route.Vertex) (bool, error) {
 	return r.cfg.Graph.IsPublicNode(node)
 }
 

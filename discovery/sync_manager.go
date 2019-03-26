@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -111,16 +111,16 @@ type SyncManager struct {
 	// activeSyncers is the set of all syncers for which we are currently
 	// receiving graph updates from. The number of possible active syncers
 	// is bounded by NumActiveSyncers.
-	activeSyncers map[routing.Vertex]*GossipSyncer
+	activeSyncers map[route.Vertex]*GossipSyncer
 
 	// inactiveSyncers is the set of all syncers for which we are not
 	// currently receiving new graph updates from.
-	inactiveSyncers map[routing.Vertex]*GossipSyncer
+	inactiveSyncers map[route.Vertex]*GossipSyncer
 
 	// pendingActiveSyncers is a map that tracks our set of pending active
 	// syncers. This map will be queried when choosing the next pending
 	// active syncer in the queue to ensure it is not stale.
-	pendingActiveSyncers map[routing.Vertex]*GossipSyncer
+	pendingActiveSyncers map[route.Vertex]*GossipSyncer
 
 	// pendingActiveSyncerQueue is the list of active syncers which are
 	// pending to be started. Syncers will be added to this list through the
@@ -146,10 +146,10 @@ func newSyncManager(cfg *SyncManagerCfg) *SyncManager {
 	return &SyncManager{
 		cfg: *cfg,
 		activeSyncers: make(
-			map[routing.Vertex]*GossipSyncer, cfg.NumActiveSyncers,
+			map[route.Vertex]*GossipSyncer, cfg.NumActiveSyncers,
 		),
-		inactiveSyncers:          make(map[routing.Vertex]*GossipSyncer),
-		pendingActiveSyncers:     make(map[routing.Vertex]*GossipSyncer),
+		inactiveSyncers:          make(map[route.Vertex]*GossipSyncer),
+		pendingActiveSyncers:     make(map[route.Vertex]*GossipSyncer),
 		pendingActiveSyncerQueue: list.New(),
 		newActiveSyncers:         make(chan struct{}),
 		staleActiveSyncers:       make(chan *staleActiveSyncer),
@@ -535,7 +535,7 @@ func (m *SyncManager) forceHistoricalSync() {
 	// We'll choose a random peer with whom we can perform a historical sync
 	// with. We'll set useActive to true to make sure we can still do one if
 	// we don't happen to have any non-active syncers.
-	candidatesChosen := make(map[routing.Vertex]struct{})
+	candidatesChosen := make(map[route.Vertex]struct{})
 	s := m.chooseRandomSyncer(candidatesChosen, true)
 	for s != nil {
 		// Ensure we properly handle a shutdown signal.
@@ -568,7 +568,7 @@ func (m *SyncManager) forceHistoricalSync() {
 // candidate syncers.
 //
 // NOTE: This method must be called with the syncersMtx lock held.
-func (m *SyncManager) chooseRandomSyncer(blacklist map[routing.Vertex]struct{},
+func (m *SyncManager) chooseRandomSyncer(blacklist map[route.Vertex]struct{},
 	useActive bool) *GossipSyncer {
 
 	eligible := func(s *GossipSyncer) bool {
@@ -614,7 +614,7 @@ func (m *SyncManager) chooseRandomSyncer(blacklist map[routing.Vertex]struct{},
 func (m *SyncManager) InitSyncState(peer lnpeer.Peer) {
 	// If we already have a syncer, then we'll exit early as we don't want
 	// to override it.
-	nodeID := routing.Vertex(peer.PubKey())
+	nodeID := route.Vertex(peer.PubKey())
 	if _, ok := m.GossipSyncer(nodeID); ok {
 		return
 	}
@@ -676,7 +676,7 @@ func (m *SyncManager) InitSyncState(peer lnpeer.Peer) {
 // PruneSyncState is called by outside sub-systems once a peer that we were
 // previously connected to has been disconnected. In this case we can stop the
 // existing GossipSyncer assigned to the peer and free up resources.
-func (m *SyncManager) PruneSyncState(peer routing.Vertex) {
+func (m *SyncManager) PruneSyncState(peer route.Vertex) {
 	s, ok := m.GossipSyncer(peer)
 	if !ok {
 		return
@@ -703,7 +703,7 @@ func (m *SyncManager) PruneSyncState(peer routing.Vertex) {
 
 // GossipSyncer returns the associated gossip syncer of a peer. The boolean
 // returned signals whether there exists a gossip syncer for the peer.
-func (m *SyncManager) GossipSyncer(peer routing.Vertex) (*GossipSyncer, bool) {
+func (m *SyncManager) GossipSyncer(peer route.Vertex) (*GossipSyncer, bool) {
 	m.Lock()
 	defer m.Unlock()
 	return m.gossipSyncer(peer)
@@ -711,7 +711,7 @@ func (m *SyncManager) GossipSyncer(peer routing.Vertex) (*GossipSyncer, bool) {
 
 // gossipSyncer returns the associated gossip syncer of a peer. The boolean
 // returned signals whether there exists a gossip syncer for the peer.
-func (m *SyncManager) gossipSyncer(peer routing.Vertex) (*GossipSyncer, bool) {
+func (m *SyncManager) gossipSyncer(peer route.Vertex) (*GossipSyncer, bool) {
 	syncer, ok := m.inactiveSyncers[peer]
 	if ok {
 		return syncer, true
@@ -728,13 +728,13 @@ func (m *SyncManager) gossipSyncer(peer routing.Vertex) (*GossipSyncer, bool) {
 }
 
 // GossipSyncers returns all of the currently initialized gossip syncers.
-func (m *SyncManager) GossipSyncers() map[routing.Vertex]*GossipSyncer {
+func (m *SyncManager) GossipSyncers() map[route.Vertex]*GossipSyncer {
 	m.Lock()
 	defer m.Unlock()
 
 	numSyncers := len(m.inactiveSyncers) + len(m.activeSyncers) +
 		len(m.inactiveSyncers)
-	syncers := make(map[routing.Vertex]*GossipSyncer, numSyncers)
+	syncers := make(map[route.Vertex]*GossipSyncer, numSyncers)
 
 	for _, syncer := range m.inactiveSyncers {
 		syncers[syncer.cfg.peerPub] = syncer

@@ -2465,3 +2465,9 @@ func (m *mockControlTower) Fail(paymentHash lntypes.Hash,
 	c *channeldb.CreationInfo) error {
 	return nil
 }
+
+func (m *mockControlTower) FetchInFlightPayments() (
+	[]*channeldb.InFlightPayment, error) {
+
+	return nil, nil
+}

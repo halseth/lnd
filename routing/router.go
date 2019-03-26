@@ -39,6 +39,12 @@ const (
 	DefaultChannelPruneExpiry = time.Duration(time.Hour * 24 * 14)
 )
 
+var (
+	// ErrRouterShuttingDown is returned if the router is in the process of
+	// shutting down.
+	ErrRouterShuttingDown = fmt.Errorf("router shutting down")
+)
+
 // ChannelGraphSource represents the source of information about the topology
 // of the lightning network. It's responsible for the addition of nodes, edges,
 // applying edge updates, and returning the current block height with which the
@@ -1683,7 +1689,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			)
 
 		case <-r.quit:
-			return [32]byte{}, nil, fmt.Errorf("router shutting down")
+			return [32]byte{}, nil, ErrRouterShuttingDown
 
 		default:
 			// Fall through if we haven't hit our time limit, or
@@ -2076,10 +2082,10 @@ func (r *ChannelRouter) AddNode(node *channeldb.LightningNode) error {
 		case err := <-rMsg.err:
 			return err
 		case <-r.quit:
-			return errors.New("router has been shut down")
+			return ErrRouterShuttingDown
 		}
 	case <-r.quit:
-		return errors.New("router has been shut down")
+		return ErrRouterShuttingDown
 	}
 }
 
@@ -2100,10 +2106,10 @@ func (r *ChannelRouter) AddEdge(edge *channeldb.ChannelEdgeInfo) error {
 		case err := <-rMsg.err:
 			return err
 		case <-r.quit:
-			return errors.New("router has been shut down")
+			return ErrRouterShuttingDown
 		}
 	case <-r.quit:
-		return errors.New("router has been shut down")
+		return ErrRouterShuttingDown
 	}
 }
 
@@ -2123,10 +2129,10 @@ func (r *ChannelRouter) UpdateEdge(update *channeldb.ChannelEdgePolicy) error {
 		case err := <-rMsg.err:
 			return err
 		case <-r.quit:
-			return errors.New("router has been shut down")
+			return ErrRouterShuttingDown
 		}
 	case <-r.quit:
-		return errors.New("router has been shut down")
+		return ErrRouterShuttingDown
 	}
 }
 

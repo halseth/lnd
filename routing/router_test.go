@@ -18,6 +18,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -52,6 +53,7 @@ func (c *testCtx) RestartRouter() error {
 		Graph:     c.graph,
 		Chain:     c.chain,
 		ChainView: c.chainView,
+		Control:   makeMockControlTower(),
 		SendToSwitch: func(*route.Route, [32]byte, uint64) error {
 			return nil
 		},
@@ -92,6 +94,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 		Graph:     graphInstance.graph,
 		Chain:     chain,
 		ChainView: chainView,
+		Control:   makeMockControlTower(),
 		SendToSwitch: func(*route.Route, [32]byte, uint64) error {
 			return nil
 		},
@@ -2438,4 +2441,27 @@ func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 	if err != route.ErrNoRouteHopsProvided {
 		t.Fatalf("expected empty hops error: instead got: %v", err)
 	}
+}
+
+type mockControlTower struct{}
+
+var _ channeldb.ControlTower = (*mockControlTower)(nil)
+
+func makeMockControlTower() *mockControlTower {
+	return &mockControlTower{}
+}
+
+func (m *mockControlTower) RegisterAttempt(lntypes.Hash,
+	*channeldb.CreationInfo, *channeldb.AttemptInfo) error {
+	return nil
+}
+
+func (m *mockControlTower) Success(paymentHash lntypes.Hash,
+	info *channeldb.CreationInfo, preimg lntypes.Preimage) error {
+	return nil
+}
+
+func (m *mockControlTower) Fail(paymentHash lntypes.Hash,
+	c *channeldb.CreationInfo) error {
+	return nil
 }

@@ -1069,15 +1069,16 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 	// Generate payment invoice and htlc, but don't add this invoice to the
 	// receiver registry. This should trigger an unknown payment hash
 	// failure.
-	_, htlc, err := generatePayment(amount, htlcAmt, totalTimelock,
-		blob)
+	_, htlc, pid, err := generatePayment(
+		amount, htlcAmt, totalTimelock, blob,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Send payment and expose err channel.
 	_, err = n.aliceServer.htlcSwitch.SendHTLC(
-		n.firstBobChannelLink.ShortChanID(), htlc,
+		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)
 	if !strings.Contains(err.Error(), lnwire.CodeUnknownPaymentHash.String()) {
@@ -1878,7 +1879,9 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 	// a switch initiated payment.  The resulting bandwidth should
 	// now be decremented to reflect the new HTLC.
 	htlcAmt := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
-	invoice, htlc, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
+	invoice, htlc, _, err := generatePayment(
+		htlcAmt, htlcAmt, 5, mockBlob,
+	)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -1958,7 +1961,7 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 
 	// Next, we'll add another HTLC initiated by the switch (of the same
 	// amount as the prior one).
-	invoice, htlc, err = generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
+	invoice, htlc, _, err = generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -2044,8 +2047,9 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to gen route: %v", err)
 	}
-	invoice, htlc, err = generatePayment(htlcAmt, htlcAmt,
-		totalTimelock, blob)
+	invoice, htlc, _, err = generatePayment(
+		htlcAmt, htlcAmt, totalTimelock, blob,
+	)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -2152,7 +2156,9 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to gen route: %v", err)
 	}
-	invoice, htlc, err = generatePayment(htlcAmt, htlcAmt, totalTimelock, blob)
+	invoice, htlc, _, err = generatePayment(
+		htlcAmt, htlcAmt, totalTimelock, blob,
+	)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -2283,7 +2289,9 @@ func TestChannelLinkBandwidthConsistencyOverflow(t *testing.T) {
 
 	var htlcID uint64
 	addLinkHTLC := func(id uint64, amt lnwire.MilliSatoshi) [32]byte {
-		invoice, htlc, err := generatePayment(amt, amt, 5, mockBlob)
+		invoice, htlc, _, err := generatePayment(
+			amt, amt, 5, mockBlob,
+		)
 		if err != nil {
 			t.Fatalf("unable to create payment: %v", err)
 		}
@@ -2547,7 +2555,7 @@ func TestChannelLinkTrimCircuitsPending(t *testing.T) {
 	// message for the test.
 	var mockBlob [lnwire.OnionPacketSize]byte
 	htlcAmt := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
-	_, htlc, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
+	_, htlc, _, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -2825,7 +2833,7 @@ func TestChannelLinkTrimCircuitsNoCommit(t *testing.T) {
 	// message for the test.
 	var mockBlob [lnwire.OnionPacketSize]byte
 	htlcAmt := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
-	_, htlc, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
+	_, htlc, _, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -3078,7 +3086,7 @@ func TestChannelLinkBandwidthChanReserve(t *testing.T) {
 	// a switch initiated payment.  The resulting bandwidth should
 	// now be decremented to reflect the new HTLC.
 	htlcAmt := lnwire.NewMSatFromSatoshis(3 * btcutil.SatoshiPerBitcoin)
-	invoice, htlc, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
+	invoice, htlc, _, err := generatePayment(htlcAmt, htlcAmt, 5, mockBlob)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}
@@ -3809,8 +3817,9 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invoice, htlc, err := generatePayment(amount, htlcAmt, totalTimelock,
-		blob)
+	invoice, htlc, pid, err := generatePayment(
+		amount, htlcAmt, totalTimelock, blob,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3824,7 +3833,7 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	// payment. It should succeed w/o any issues as it has been crafted
 	// properly.
 	_, err = n.aliceServer.htlcSwitch.SendHTLC(
-		n.firstBobChannelLink.ShortChanID(), htlc,
+		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)
 	if err != nil {
@@ -3834,7 +3843,7 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	// Now, if we attempt to send the payment *again* it should be rejected
 	// as it's a duplicate request.
 	_, err = n.aliceServer.htlcSwitch.SendHTLC(
-		n.firstBobChannelLink.ShortChanID(), htlc,
+		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)
 	if err != ErrAlreadyPaid {
@@ -4224,8 +4233,9 @@ func generateHtlcAndInvoice(t *testing.T,
 		t.Fatalf("unable to generate route: %v", err)
 	}
 
-	invoice, htlc, err := generatePayment(htlcAmt, htlcAmt, 144,
-		blob)
+	invoice, htlc, _, err := generatePayment(
+		htlcAmt, htlcAmt, 144, blob,
+	)
 	if err != nil {
 		t.Fatalf("unable to create payment: %v", err)
 	}

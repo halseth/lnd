@@ -24,6 +24,10 @@ var (
 	// recomplete a completed payment.
 	ErrPaymentAlreadyCompleted = errors.New("payment is already completed")
 
+	// ErrPaymentAlreadyFailed is returned in the event we attempt to
+	// re-fail a failed payment.
+	ErrPaymentAlreadyFailed = errors.New("payment has already failed")
+
 	// ErrUnknownPaymentStatus is returned when we do not recognize the
 	// existing state of a payment.
 	ErrUnknownPaymentStatus = errors.New("unknown payment status")
@@ -96,6 +100,10 @@ func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
 
 		switch paymentStatus {
 
+		// We allow retrying failed payments.
+		case StatusFailed:
+			fallthrough
+
 		case StatusGrounded:
 			// It is safe to reattempt a payment if we know that we
 			// haven't left one in flight. Since this one is
@@ -145,7 +153,6 @@ func (p *paymentControl) Success(paymentHash [32]byte) error {
 		updateErr = nil
 
 		switch {
-
 		case paymentStatus == StatusGrounded && p.strict:
 			// Our records show the payment as still being grounded,
 			// meaning it never should have left the switch.
@@ -156,6 +163,12 @@ func (p *paymentControl) Success(paymentHash [32]byte) error {
 			// grounded, meaning it never should have left the
 			// switch, we permit this transition in non-strict mode
 			// to handle inconsistent db states.
+			fallthrough
+
+		// Though our records show the payment as failed, meaning we
+		// didn't expect this result, we permit this transition to not
+		// lose potentially crucial data.
+		case paymentStatus == StatusFailed:
 			fallthrough
 
 		case paymentStatus == StatusInFlight:
@@ -225,6 +238,12 @@ func (p *paymentControl) Fail(paymentHash [32]byte) error {
 			// completed, but alert the user that something is
 			// wrong.
 			updateErr = ErrPaymentAlreadyCompleted
+
+		// The payment was already failed, and we are now reporting that
+		// it has failed again. Leave the status as failed, but alert
+		// the user that something is wrong.
+		case paymentStatus == StatusFailed:
+			updateErr = ErrPaymentAlreadyFailed
 
 		default:
 			updateErr = ErrUnknownPaymentStatus

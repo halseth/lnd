@@ -8,6 +8,7 @@ import (
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 // migrateNodeAndEdgeUpdateIndex is a migration function that will update the
@@ -681,5 +682,130 @@ func migrateGossipMessageStoreKeys(tx *bbolt.Tx) error {
 
 	log.Info("Migration to the gossip message store new key format complete!")
 
+	return nil
+}
+
+// migrateOutgoingPayments moves the OutgoingPayments into a new bucket format
+// where they all reside in a top-level bucket indexed by the payment hash. In
+// this sub-bucket we store information relevant to this payment, such as the
+// payment status.
+//
+// To avoid that the router resend payments that have the status InFlight (we
+// cannot resume these payments for pre-migration payments) we delete those
+// statuses, so only Completed payments remain in the new bucket structure.
+func migrateOutgoingPayments(tx *bbolt.Tx) error {
+	oldPayments, err := tx.CreateBucketIfNotExists(paymentBucket)
+	if err != nil {
+		return err
+	}
+
+	newPayments, err := tx.CreateBucket(sentPaymentsBucket)
+	if err != nil {
+		return err
+	}
+
+	log.Infof("Migrating outgoing payments to new bucket structure")
+
+	err = oldPayments.ForEach(func(_, v []byte) error {
+		// Ignores if it is sub-bucket.
+		if v == nil {
+			return nil
+		}
+
+		// Read the old payment format.
+		r := bytes.NewReader(v)
+		payment, err := deserializeOutgoingPayment(r)
+		if err != nil {
+			return err
+		}
+
+		// Calculate payment hash from the payment preimage.
+		paymentHash := sha256.Sum256(payment.PaymentPreimage[:])
+
+		// Create a bucket indexed by the payment hash.
+		bucket, err := newPayments.CreateBucket(paymentHash[:])
+		if err != nil {
+			return err
+		}
+
+		// Since only completed payments were previously stored as
+		// OutgoingPayments, set the status as Completed.
+		err = bucket.Put(paymentStatusKey, StatusCompleted.Bytes())
+		if err != nil {
+			return err
+		}
+
+		// Now create and add a CreationInfo to the bucket.
+		c := &CreationInfo{
+			PaymentHash:    paymentHash,
+			Value:          payment.Terms.Value,
+			CreationDate:   payment.CreationDate,
+			PaymentRequest: payment.PaymentRequest,
+		}
+
+		var infoBuf bytes.Buffer
+		if err := serializeCreationInfo(&infoBuf, c); err != nil {
+			return err
+		}
+
+		err = bucket.Put(paymentCreationInfoKey, infoBuf.Bytes())
+		if err != nil {
+			return err
+		}
+
+		// Do the same for the AttemptInfo.
+		rt := route.Route{
+			TotalTimeLock: payment.TimeLockLength,
+			TotalFees:     payment.Fee,
+			TotalAmount:   payment.Terms.Value,
+			SourcePubKey:  [33]byte{}, // empty.
+			Hops:          []*route.Hop{},
+		}
+		for _, hop := range payment.Path {
+			rt.Hops = append(rt.Hops, &route.Hop{
+				PubKeyBytes: hop,
+			})
+		}
+
+		var attemptBuf bytes.Buffer
+		s := &AttemptInfo{
+			PaymentID: 0, // unknown.
+			Route:     rt,
+		}
+
+		if err := serializeAttemptInfo(&attemptBuf, s); err != nil {
+			return err
+		}
+
+		err = bucket.Put(paymentAttemptInfoKey, attemptBuf.Bytes())
+		if err != nil {
+			return err
+		}
+
+		err = bucket.Put(paymentSettleInfoKey, payment.PaymentPreimage[:])
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Now we delete the old buckets. Deleting the payment status buckets
+	// deletes all payment statuses other than Complete.
+	err = tx.DeleteBucket(paymentStatusBucket)
+	if err != nil && err != bbolt.ErrBucketNotFound {
+		return err
+	}
+
+	// Finally delete the old payment bucket.
+	err = tx.DeleteBucket(paymentBucket)
+	if err != nil && err != bbolt.ErrBucketNotFound {
+		return err
+	}
+
+	log.Infof("Migration of outgoing payment bucket structure completed!")
 	return nil
 }

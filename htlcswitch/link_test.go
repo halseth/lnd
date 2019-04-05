@@ -3878,8 +3878,7 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	}
 
 	// With the invoice now added to Carol's registry, we'll send the
-	// payment. It should succeed w/o any issues as it has been crafted
-	// properly.
+	// payment.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
@@ -3893,6 +3892,23 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 		t.Fatalf("unable to get payment result: %v", err)
 	}
 
+	// Now, if we attempt to send the payment *again* it should be rejected
+	// as it's a duplicate request.
+	err = n.aliceServer.htlcSwitch.SendHTLC(
+		n.firstBobChannelLink.ShortChanID(), pid, htlc,
+		newMockDeobfuscator(),
+	)
+	if err != ErrPaymentIDAlreadyExists {
+		t.Fatalf("ErrPaymentIDAlreadyExists should have been "+
+			"received got: %v", err)
+	}
+
+	//It should succeed w/o any issues as it has been crafted properly.
+	_, err = n.aliceServer.htlcSwitch.GetPaymentResult(pid)
+	if err != nil {
+		t.Fatalf("unable to get payment result: %v", err)
+	}
+
 	select {
 	case result := <-resultChan:
 		if result.Error != nil {
@@ -3900,16 +3916,6 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("payment result did not arrive")
-	}
-
-	// Now, if we attempt to send the payment *again* it should be rejected
-	// as it's a duplicate request.
-	err = n.aliceServer.htlcSwitch.SendHTLC(
-		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
-	)
-	if err != ErrAlreadyPaid {
-		t.Fatalf("ErrAlreadyPaid should have been received got: %v", err)
 	}
 }
 

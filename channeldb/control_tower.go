@@ -3,6 +3,7 @@ package channeldb
 import (
 	"bytes"
 	"errors"
+	"fmt"
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -71,6 +72,9 @@ type ControlTower interface {
 	// If the CreationInfo is nil, we expect the payment to already be
 	// known by the ControlTower, already InFlight.
 	Fail(lntypes.Hash, *CreationInfo) error
+
+	// FetchInFlightPayments returns all payments with status InFlight.
+	FetchInFlightPayments() ([]*InFlightPayment, error)
 }
 
 // paymentControl is persistent implementation of ControlTower to restrict
@@ -309,4 +313,82 @@ func fetchPaymentStatus(bucket *bbolt.Bucket) PaymentStatus {
 	}
 
 	return paymentStatus
+}
+
+// InFlightPayment is a wrapper around a payment that has status InFlight.
+type InFlightPayment struct {
+	// PaymentHash is the hash of the in-flight payment.
+	Info *CreationInfo
+
+	// Attempt contains information about the last payment attempt that was
+	// made to this payment hash.
+	Attempt *AttemptInfo
+}
+
+// FetchInFlightPayments returns all payments with status InFlight.
+func (p *paymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
+	var inFlights []*InFlightPayment
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		payments := tx.Bucket(sentPaymentsBucket)
+		if payments == nil {
+			return nil
+		}
+
+		return payments.ForEach(func(k, _ []byte) error {
+			bucket := payments.Bucket(k)
+			if bucket == nil {
+				return fmt.Errorf("non bucket element")
+			}
+
+			// If the status is not InFlight, we can return early.
+			paymentStatus := fetchPaymentStatus(bucket)
+			if paymentStatus != StatusInFlight {
+				return nil
+			}
+
+			// Get the CreationInfo.
+			b := bucket.Get(paymentCreationInfoKey)
+			if b == nil {
+				return fmt.Errorf("unable to find creation " +
+					"info for inflight payment")
+			}
+
+			r := bytes.NewReader(b)
+			c, err := deserializeCreationInfo(r)
+			if err != nil {
+				return err
+
+			}
+
+			// Now get the attempt info.
+			attempt := bucket.Get(paymentAttemptInfoKey)
+			if attempt == nil {
+				return fmt.Errorf("unable to find attempt " +
+					"info for inflight payment")
+			}
+
+			r = bytes.NewReader(attempt)
+			a, err := deserializeAttemptInfo(r)
+			if err != nil {
+				return err
+			}
+
+			// We return an ActivePayment with inFlight=true. This
+			// is used to indicate that we expect this payment to
+			// have already had the attempt forwarded onto the
+			// network.
+			inFlight := &InFlightPayment{
+				Info:    c,
+				Attempt: a,
+			}
+
+			inFlights = append(inFlights, inFlight)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return inFlights, nil
 }

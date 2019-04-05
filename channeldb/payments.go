@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -371,6 +372,94 @@ type AttemptInfo struct {
 
 	// Route is the route attempted to send the HTLC.
 	Route route.Route
+}
+
+// SentPayment is a wrapper around a sent payment's CreationInfo, AttemptInfo,
+// and preimage. All payments will have the CreationInfo set, the AttemptInfo
+// will be set only if at least one payment attempt has been made, while only
+// completed payments will have a non-zero payment preimage.
+type SentPayment struct {
+	Status PaymentStatus
+
+	// Creation info is populated when the payment is initiated.
+	*CreationInfo
+
+	// AttemptInfo is the information about the last payment attempt made.
+	//
+	// NOTE: Can be nil if no attempt is yet made.
+	*AttemptInfo
+
+	// PaymentPreimage is the preimage of a successful payment. This serves
+	// as a proof of payment. It will be all zeroes for non-settled
+	// payments.
+	PaymentPreimage lntypes.Preimage
+}
+
+// FetchSentPayments returns all sent payments found in the DB.
+func (db *DB) FetchSentPayments() ([]*SentPayment, error) {
+	var payments []*SentPayment
+
+	err := db.View(func(tx *bbolt.Tx) error {
+		paymentsBucket := tx.Bucket(sentPaymentsBucket)
+		if paymentsBucket == nil {
+			return nil
+		}
+
+		return paymentsBucket.ForEach(func(k, v []byte) error {
+			bucket := paymentsBucket.Bucket(k)
+			if bucket == nil {
+				// We only expect sub-buckets to be found in
+				// this top-level bucket.
+				return fmt.Errorf("non bucket element")
+			}
+
+			var (
+				err error
+				p   = &SentPayment{}
+			)
+
+			// Get the payment status.
+			p.Status = fetchPaymentStatus(bucket)
+
+			// Get the CreationInfo.
+			b := bucket.Get(paymentCreationInfoKey)
+			if b == nil {
+				return fmt.Errorf("creation info not found")
+			}
+
+			r := bytes.NewReader(b)
+			p.CreationInfo, err = deserializeCreationInfo(r)
+			if err != nil {
+				return err
+
+			}
+
+			// Get the AttemptInfo. This can be unset.
+			b = bucket.Get(paymentAttemptInfoKey)
+			if b != nil {
+				r = bytes.NewReader(b)
+				p.AttemptInfo, err = deserializeAttemptInfo(r)
+				if err != nil {
+					return err
+				}
+			}
+
+			// Get the payment preimage. This is only found for
+			// completed payments.
+			b = bucket.Get(paymentSettleInfoKey)
+			if b != nil {
+				copy(p.PaymentPreimage[:], b[:])
+			}
+
+			payments = append(payments, p)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return payments, nil
 }
 
 func serializeCreationInfo(w io.Writer, c *CreationInfo) error {

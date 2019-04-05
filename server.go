@@ -607,11 +607,18 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 	}
 	s.currentNodeAnn = nodeAnn
 
+	// The router will get access to the payment ID sequencer, such that it
+	// can generate unique payment IDs.
+	sequencer, err := htlcswitch.NewPersistentSequencer(chanDB)
+	if err != nil {
+		return nil, err
+	}
+
 	s.chanRouter, err = routing.New(routing.Config{
 		Graph:     chanGraph,
 		Chain:     cc.chainIO,
 		ChainView: cc.chainView,
-		SendToSwitch: func(route *route.Route, paymentHash [32]byte) (
+		SendToSwitch: func(route *route.Route, paymentHash [32]byte, pid uint64) (
 			[32]byte, error) {
 
 			// Generate the raw encoded sphinx packet to be included along
@@ -649,7 +656,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			}
 
 			return s.htlcSwitch.SendHTLC(
-				firstHop, htlcAdd, errorDecryptor,
+				firstHop, pid, htlcAdd, errorDecryptor,
 			)
 		},
 		ChannelPruneExpiry: routing.DefaultChannelPruneExpiry,
@@ -684,6 +691,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			return link.Bandwidth()
 		},
 		AssumeChannelValid: cfg.Routing.UseAssumeChannelValid(),
+		NextPaymentID:      sequencer.NextID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't create router: %v", err)

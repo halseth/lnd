@@ -618,6 +618,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 		Graph:     chanGraph,
 		Chain:     cc.chainIO,
 		ChainView: cc.chainView,
+		Control:   channeldb.NewPaymentControl(chanDB),
 		SendToSwitch: func(route *route.Route, paymentHash [32]byte, pid uint64) error {
 
 			// Generate the raw encoded sphinx packet to be included along

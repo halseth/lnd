@@ -1,11 +1,11 @@
 package channeldb
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 var (
@@ -33,29 +33,44 @@ var (
 	ErrUnknownPaymentStatus = errors.New("unknown payment status")
 )
 
-// ControlTower tracks all outgoing payments made by the switch, whose primary
-// purpose is to prevent duplicate payments to the same payment hash. In
-// production, a persistent implementation is preferred so that tracking can
-// survive across restarts. Payments are transition through various payment
-// states, and the ControlTower interface provides access to driving the state
-// transitions.
+// ControlTower tracks all outgoing payments made, whose primary purpose is to
+// prevent duplicate payments to the same payment hash. In production, a
+// persistent implementation is preferred so that tracking can survive across
+// restarts. Payments are transitioned through various payment states, and the
+// ControlTower interface provides access to driving the state transitions.
 type ControlTower interface {
-	// ClearForTakeoff atomically checks that no inflight or completed
-	// payments exist for this payment hash. If none are found, this method
-	// atomically transitions the status for this payment hash as InFlight.
-	ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error
+	// RegisterAttempt atomically moves the payment into the InFlight
+	// state. The provided AttemptInfo is recorded in the DB. This method
+	// checks that no completed payment exist for this payment hash.
+	//
+	// NOTE: The CreationInfo should only be set if we expect this payment
+	// to not already be InFlight, causing it to return an error if it is.
+	// If the CreationInfo is nil, we expect the payment to already be
+	// known by the ControlTower, already InFlight.
+	RegisterAttempt(lntypes.Hash, *CreationInfo, *AttemptInfo) error
 
-	// Success transitions an InFlight payment into a Completed payment.
-	// After invoking this method, ClearForTakeoff should always return an
-	// error to prevent us from making duplicate payments to the same
-	// payment hash.
-	Success(paymentHash [32]byte) error
+	// Success transitions a payment into the Completed state.  After
+	// invoking this method, RegisterAttempt should always return an error
+	// to prevent us from making duplicate payments to the same payment
+	// hash. The provided preimage is atomically saved to the DB for record
+	// keeping.
+	//
+	// NOTE: The CreationInfo should only be set if we expect this payment
+	// to not already be InFlight, causing it to return an error if it is.
+	// If the CreationInfo is nil, we expect the payment to already be
+	// known by the ControlTower, already InFlight.
+	Success(lntypes.Hash, *CreationInfo, lntypes.Preimage) error
 
-	// Fail transitions an InFlight payment into a Grounded Payment. After
-	// invoking this method, ClearForTakeoff should return nil on its next
+	// Fail transitions a payment into the Failed state. After
+	// invoking this method, RegisterAttempt should return nil on its next
 	// call for this payment hash, allowing the switch to make a subsequent
 	// payment.
-	Fail(paymentHash [32]byte) error
+	//
+	// NOTE: The CreationInfo should only be set if we expect this payment
+	// to not already be InFlight, causing it to return an error if it is.
+	// If the CreationInfo is nil, we expect the payment to already be
+	// known by the ControlTower, already InFlight.
+	Fail(lntypes.Hash, *CreationInfo) error
 }
 
 // paymentControl is persistent implementation of ControlTower to restrict
@@ -71,165 +86,201 @@ func NewPaymentControl(db *DB) ControlTower {
 	}
 }
 
-// ClearForTakeoff checks that we don't already have an InFlight or Completed
-// payment identified by the same payment hash.
-func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
-	var takeoffErr error
-	err := p.db.Batch(func(tx *bbolt.Tx) error {
-		bucket, err := fetchPaymentBucket(tx, htlc.PaymentHash)
-		if err != nil {
+// initPayment checks or records the given CreationInfo with the DB, making sure
+// it does not already exist in case info is non-nil, and that it does exist if
+// info is nil. Then this method returns successfully, the payment is
+// guranteeed to be in the InFlight state.
+func initPayment(bucket *bbolt.Bucket, paymentHash lntypes.Hash,
+	info *CreationInfo) error {
+
+	// Get the existing status of this payment, if any.
+	paymentStatus := fetchPaymentStatus(bucket)
+
+	// If into is non-nil this is the first payment attempt made to this
+	// payment hash, and we'll record the creation info in the DB.
+	firstAttempt := info != nil
+
+	var infoBytes []byte
+	var attemptBytes []byte
+	if firstAttempt {
+		var b bytes.Buffer
+		if err := serializeCreationInfo(&b, info); err != nil {
 			return err
 		}
+		infoBytes = b.Bytes()
 
-		// Get the existing status of this payment, if any.
-		paymentStatus := fetchPaymentStatus(bucket)
+		emptyAttempt := &AttemptInfo{}
 
-		// Reset the takeoff error, to avoid carrying over an error
-		// from a previous execution of the batched db transaction.
-		takeoffErr = nil
+		var a bytes.Buffer
+		if err := serializeAttemptInfo(&a, emptyAttempt); err != nil {
+			return err
+		}
+		attemptBytes = a.Bytes()
+	}
 
-		switch paymentStatus {
+	switch paymentStatus {
 
-		// We allow retrying failed payments.
-		case StatusFailed:
-			fallthrough
-
-		// It is safe to reattempt a payment if we know that we haven't
-		// left one in flight. Since this one is grounded or failed,
-		// transition the payment status to InFlight to prevent others.
-		case StatusGrounded:
-			return bucket.Put(paymentStatusKey, StatusInFlight.Bytes())
-
-		// We already have an InFlight payment on the network. We will
-		// disallow any more payment until a response is received.
-		case StatusInFlight:
-			takeoffErr = ErrPaymentInFlight
-
-		// We've already completed a payment to this payment hash,
-		// forbid the switch from sending another.
-		case StatusCompleted:
-			takeoffErr = ErrAlreadyPaid
-
-		default:
-			takeoffErr = ErrUnknownPaymentStatus
+	// We already have an InFlight payment on the network. We will disallow
+	// any first payment attempts, but allow updating new attempts.
+	case StatusInFlight:
+		if firstAttempt {
+			return ErrPaymentInFlight
 		}
 
-		return nil
-	})
+	// We allow retrying failed payments.
+	case StatusFailed:
+
+	// It is safe to reattempt a payment if we know that we haven't left
+	// one in flight.
+	case StatusGrounded:
+		// If the payment is grounded, this must be the first
+		// attempt, or else it would have a status already in
+		// the DB.
+		if !firstAttempt {
+			return ErrPaymentNotInitiated
+		}
+
+	// We've already completed a payment to this payment hash,
+	// forbid the switch from sending another.
+	case StatusCompleted:
+		return ErrAlreadyPaid
+
+	default:
+		return ErrUnknownPaymentStatus
+	}
+
+	// We'll move it into the InFlight state.
+	paymentStatus = StatusInFlight
+	err := bucket.Put(paymentStatusKey, StatusInFlight.Bytes())
 	if err != nil {
 		return err
 	}
 
-	return takeoffErr
+	// Now record the information in the DB if this is the first attempt.
+	if firstAttempt {
+		// Add the payment info to the bucket, which contains the
+		// static information for this payment
+		err := bucket.Put(paymentCreationInfoKey, infoBytes)
+		if err != nil {
+			return err
+		}
+
+		// We'll add an empty attempt info to start with, in case we
+		// are initializing a payment that went straight to
+		// Failed/Success without an attempt being crafted.
+		err = bucket.Put(paymentAttemptInfoKey, attemptBytes)
+		if err != nil {
+			return err
+		}
+
+		// Since this payment is not yet settled, we'll record an all-
+		// zero preimage.
+		var zero lntypes.Preimage
+		err = bucket.Put(paymentSettleInfoKey, zero[:])
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-// Success transitions an InFlight payment to Completed, otherwise it returns an
-// error. After calling Success, ClearForTakeoff should prevent any further
-// attempts for the same payment hash.
-func (p *paymentControl) Success(paymentHash [32]byte) error {
-	var updateErr error
-	err := p.db.Batch(func(tx *bbolt.Tx) error {
+// RegisterAttempt atomically moves the payment into the InFlight state. The
+// provided AttemptInfo is recorded in the DB. This method checks that no
+// completed payment exist for this payment hash.
+func (p *paymentControl) RegisterAttempt(paymentHash lntypes.Hash,
+	info *CreationInfo, attempt *AttemptInfo) error {
+
+	// Serialize the information before opening the db transaction.
+	var a bytes.Buffer
+	if err := serializeAttemptInfo(&a, attempt); err != nil {
+		return err
+	}
+	attemptBytes := a.Bytes()
+
+	return p.db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := fetchPaymentBucket(tx, paymentHash)
 		if err != nil {
 			return err
 		}
 
-		// Get the existing status, if any.
-		paymentStatus := fetchPaymentStatus(bucket)
+		// Init the payment to make sure we are not owerwriting a n
+		// InFlight attempt if we expect this to be the first attempt.
+		err = initPayment(bucket, paymentHash, info)
+		if err != nil {
+			return err
+		}
 
-		// Reset the update error, to avoid carrying over an error
-		// from a previous execution of the batched db transaction.
-		updateErr = nil
+		// We already have an InFlight payment on the network. We will
+		// disallow any first payment attempts, but allow updating the
+		// until a response is received.
+		// Add the payment attempt to the payments bucket.
+		err = bucket.Put(paymentAttemptInfoKey, attemptBytes)
+		if err != nil {
+			return err
+		}
 
-		switch {
+		return nil
 
-		// Our records show the payment as still being grounded,
-		// meaning it never should have left the switch.
-		case paymentStatus == StatusGrounded:
-			updateErr = ErrPaymentNotInitiated
+	})
+}
 
-		// Though our records show the payment as failed, meaning we
-		// didn't expect this result, we permit this transition to not
-		// lose potentially crucial data.
-		case paymentStatus == StatusFailed:
-			fallthrough
+// Success transitions a payment into the Completed state.  After invoking this
+// method, RegisterAttempt should always return an error to prevent us from
+// making duplicate payments to the same payment hash. The provided preimage is
+// atomically saved to the DB for record keeping.
+func (p *paymentControl) Success(paymentHash lntypes.Hash, c *CreationInfo,
+	preimage lntypes.Preimage) error {
+
+	return p.db.Batch(func(tx *bbolt.Tx) error {
+		bucket, err := fetchPaymentBucket(tx, paymentHash)
+		if err != nil {
+			return err
+		}
+
+		// Init the payment to make sure we are not owerwriting an
+		// InFlight attempt if we expect this payment to not be
+		// InFlight.
+		err = initPayment(bucket, paymentHash, c)
+		if err != nil {
+			return err
+		}
 
 		// A successful response was received for an InFlight payment,
 		// mark it as completed to prevent sending to this payment hash
 		// again.
-		case paymentStatus == StatusInFlight:
-			return bucket.Put(paymentStatusKey, StatusCompleted.Bytes())
-
-		// The payment was completed previously, alert the caller that
-		// this may be a duplicate call.
-		case paymentStatus == StatusCompleted:
-			updateErr = ErrPaymentAlreadyCompleted
-
-		default:
-			updateErr = ErrUnknownPaymentStatus
+		// Record the successful payment info atomically to the
+		// payments record.
+		err = bucket.Put(paymentSettleInfoKey, preimage[:])
+		if err != nil {
+			return err
 		}
-
-		return nil
+		return bucket.Put(paymentStatusKey, StatusCompleted.Bytes())
 	})
-	if err != nil {
-		return err
-	}
-
-	return updateErr
 }
 
-// Fail transitions an InFlight payment to Grounded, otherwise it returns an
-// error. After calling Fail, ClearForTakeoff should fail any further attempts
-// for the same payment hash.
-func (p *paymentControl) Fail(paymentHash [32]byte) error {
-	var updateErr error
-	err := p.db.Batch(func(tx *bbolt.Tx) error {
+// Fail transitions a payment into the Failed state. After invoking this
+// method, RegisterAttempt should return nil on its next call for this payment
+// hash, allowing the switch to make a subsequent payment.
+func (p *paymentControl) Fail(paymentHash lntypes.Hash, c *CreationInfo) error {
+	return p.db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := fetchPaymentBucket(tx, paymentHash)
 		if err != nil {
 			return err
 		}
 
-		paymentStatus := fetchPaymentStatus(bucket)
-
-		// Reset the update error, to avoid carrying over an error
-		// from a previous execution of the batched db transaction.
-		updateErr = nil
-
-		switch {
-
-		// Our records show the payment as still being grounded,
-		// meaning it never should have left the switch.
-		case paymentStatus == StatusGrounded:
-			updateErr = ErrPaymentNotInitiated
+		// Init the payment to make sure we are not owerwriting an
+		// InFlight attempt if we expect this payment to not be
+		// InFlight.
+		err = initPayment(bucket, paymentHash, c)
+		if err != nil {
+			return err
+		}
 
 		// A failed response was received for an InFlight payment, mark
 		// it as Failed to allow subsequent attempts.
-		case paymentStatus == StatusInFlight:
-			return bucket.Put(paymentStatusKey, StatusGrounded.Bytes())
-
-		// The payment was completed previously, and we are now
-		// reporting that it has failed. Leave the status as completed,
-		// but alert the user that something is wrong.
-		case paymentStatus == StatusCompleted:
-			updateErr = ErrPaymentAlreadyCompleted
-
-		// The payment was already failed, and we are now reporting that
-		// it has failed again. Leave the status as failed, but alert
-		// the user that something is wrong.
-		case paymentStatus == StatusFailed:
-			updateErr = ErrPaymentAlreadyFailed
-
-		default:
-			updateErr = ErrUnknownPaymentStatus
-		}
-
-		return nil
+		return bucket.Put(paymentStatusKey, StatusFailed.Bytes())
 	})
-	if err != nil {
-		return err
-	}
-
-	return updateErr
 }
 
 // fetchPaymentBucket fetches or creates the sub-bucket assigned to this

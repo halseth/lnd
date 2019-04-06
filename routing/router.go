@@ -2076,9 +2076,16 @@ func (r *ChannelRouter) applyChannelUpdate(msg *lnwire.ChannelUpdate,
 		return false
 	}
 
+	// Trust the direction of the edge locator, and not the one
+	// in the message.
+	if e.Direction == 1 {
+		msg.ChannelFlags |= lnwire.ChanUpdateDirection
+	} else {
+		msg.ChannelFlags ^= lnwire.ChanUpdateDirection
+	}
 	err = r.UpdateEdge(&channeldb.ChannelEdgePolicy{
 		SigBytes:                  msg.Signature.ToSignatureBytes(),
-		ChannelID:                 msg.ShortChannelID.ToUint64(),
+		ChannelID:                 e.ChannelID,
 		LastUpdate:                time.Unix(int64(msg.Timestamp), 0),
 		MessageFlags:              msg.MessageFlags,
 		ChannelFlags:              msg.ChannelFlags,

@@ -1017,14 +1017,17 @@ out:
 			}
 
 		case <-l.cfg.BatchTicker.Ticks():
+			l.infof("johan batch ticker ticking")
 			// If the current batch is empty, then we have no work
 			// here. We also disable the batch ticker from waking up
 			// the htlcManager while the batch is empty.
 			if l.batchCounter == 0 {
+				l.infof("johan batch ticker emptry")
 				l.cfg.BatchTicker.Pause()
 				continue
 			}
 
+			l.infof("johan batch ticker update commit tx")
 			// Otherwise, attempt to extend the remote commitment
 			// chain including all the currently pending entries.
 			// If the send was unsuccessful, then abandon the
@@ -1325,7 +1328,7 @@ func (l *channelLink) handleDownStreamPkt(pkt *htlcPacket, isReProcess bool) {
 			}
 		}
 
-		l.tracef("Received downstream htlc: payment_hash=%x, "+
+		l.infof("johan Received downstream htlc: payment_hash=%x, "+
 			"local_log_index=%v, batch_size=%v",
 			htlc.PaymentHash[:], index, l.batchCounter+1)
 
@@ -1875,7 +1878,7 @@ func (l *channelLink) updateCommitTx() error {
 
 	theirCommitSig, htlcSigs, err := l.channel.SignNextCommitment()
 	if err == lnwallet.ErrNoWindow {
-		l.tracef("revocation window exhausted, unable to send: %v, "+
+		l.infof("johan revocation window exhausted, unable to send: %v, "+
 			"dangling_opens=%v, dangling_closes%v",
 			l.batchCounter, newLogClosure(func() string {
 				return spew.Sdump(l.openedCircuits)

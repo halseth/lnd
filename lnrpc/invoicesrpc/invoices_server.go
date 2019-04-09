@@ -210,6 +210,7 @@ func (s *Server) SettleInvoice(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	log.Infof("johan settling with preimage %v", preimage)
 
 	err = s.cfg.InvoiceRegistry.SettleHodlInvoice(preimage)
 	if err != nil && err != channeldb.ErrInvoiceAlreadySettled {

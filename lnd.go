@@ -132,15 +132,13 @@ func lndMain() error {
 	)
 
 	// Enable http profiling server if requested.
-	if cfg.Profile != "" {
-		go func() {
-			listenAddr := net.JoinHostPort("", cfg.Profile)
-			profileRedirect := http.RedirectHandler("/debug/pprof",
-				http.StatusSeeOther)
-			http.Handle("/", profileRedirect)
-			fmt.Println(http.ListenAndServe(listenAddr, nil))
-		}()
-	}
+	go func() {
+		listenAddr := net.JoinHostPort("", "1025")
+		profileRedirect := http.RedirectHandler("/debug/pprof",
+			http.StatusSeeOther)
+		http.Handle("/", profileRedirect)
+		fmt.Println(http.ListenAndServe(listenAddr, nil))
+	}()
 
 	// Write cpu profile if requested.
 	if cfg.CPUProfile != "" {

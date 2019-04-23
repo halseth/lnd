@@ -618,8 +618,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 		Graph:     chanGraph,
 		Chain:     cc.chainIO,
 		ChainView: cc.chainView,
-		SendToSwitch: func(route *route.Route, paymentHash [32]byte, pid uint64) (
-			[32]byte, error) {
+		SendToSwitch: func(route *route.Route, paymentHash [32]byte, pid uint64) error {
 
 			// Generate the raw encoded sphinx packet to be included along
 			// with the htlcAdd message that we send directly to the
@@ -628,7 +627,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 				route, paymentHash[:],
 			)
 			if err != nil {
-				return [32]byte{}, err
+				return err
 			}
 
 			// Craft an HTLC packet to send to the layer 2 switch. The
@@ -659,6 +658,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 				firstHop, pid, htlcAdd, errorDecryptor,
 			)
 		},
+		GetPaymentResult:   s.htlcSwitch.GetPaymentResult,
 		ChannelPruneExpiry: routing.DefaultChannelPruneExpiry,
 		GraphPruneInterval: time.Duration(time.Hour),
 		QueryBandwidth: func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {

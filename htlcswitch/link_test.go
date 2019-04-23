@@ -54,6 +54,8 @@ func newConcurrentTester(t *testing.T) *concurrentTester {
 }
 
 func (c *concurrentTester) Fatalf(format string, args ...interface{}) {
+	c.T.Helper()
+
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 
@@ -1106,13 +1108,29 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 	}
 
 	// Send payment and expose err channel.
-	_, err = n.aliceServer.htlcSwitch.SendHTLC(
+	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)
-	if !strings.Contains(err.Error(), lnwire.CodeUnknownPaymentHash.String()) {
-		t.Fatalf("expected %v got %v", err,
-			lnwire.CodeUnknownPaymentHash)
+	if err != nil {
+		t.Fatalf("unable to get send payment: %v", err)
+	}
+
+	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(pid)
+	if err != nil {
+		t.Fatalf("unable to get payment result: %v", err)
+	}
+
+	var result *PaymentResult
+	select {
+	case result = <-resultChan:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timeout waiting for payment result")
+	}
+
+	fErr := result.Error
+	if !strings.Contains(fErr.Error(), lnwire.CodeUnknownPaymentHash.String()) {
+		t.Fatalf("expected %v got %v", lnwire.CodeUnknownPaymentHash, fErr)
 	}
 
 	// Wait for Alice to receive the revocation.
@@ -3859,9 +3877,8 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	}
 
 	// With the invoice now added to Carol's registry, we'll send the
-	// payment. It should succeed w/o any issues as it has been crafted
-	// properly.
-	_, err = n.aliceServer.htlcSwitch.SendHTLC(
+	// payment.
+	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)
@@ -3869,9 +3886,24 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 		t.Fatalf("unable to send payment to carol: %v", err)
 	}
 
+	// It should succeed w/o any issues as it has been crafted properly.
+	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(pid)
+	if err != nil {
+		t.Fatalf("unable to get payment result: %v", err)
+	}
+
+	select {
+	case result := <-resultChan:
+		if result.Error != nil {
+			t.Fatalf("Failed sending payment: %v", result.Error)
+		}
+
+	case <-time.After(5 * time.Second):
+	}
+
 	// Now, if we attempt to send the payment *again* it should be rejected
 	// as it's a duplicate request.
-	_, err = n.aliceServer.htlcSwitch.SendHTLC(
+	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)

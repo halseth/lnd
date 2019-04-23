@@ -1784,7 +1784,7 @@ func TestSwitchSendPayment(t *testing.T) {
 		}
 
 	case err := <-errChan:
-		if err != ErrPaymentInFlight {
+		if err != ErrPaymentIDAlreadyExists {
 			t.Fatalf("unable to send payment: %v", err)
 		}
 	case <-time.After(time.Second):

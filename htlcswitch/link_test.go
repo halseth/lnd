@@ -3907,7 +3907,7 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
 		newMockDeobfuscator(),
 	)
-	if err != ErrAlreadyPaid {
+	if err != ErrPaymentIDAlreadyExists {
 		t.Fatalf("ErrAlreadyPaid should have been received got: %v", err)
 	}
 }

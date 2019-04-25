@@ -435,6 +435,11 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 				"close: %v", c.chanPoint, err)
 		}
 
+		err = c.cfg.channel.MarkCommitmentBroadcasted(closeTx)
+		if err != nil {
+			return nil, false, err
+		}
+
 		// With the closing transaction crafted, we'll now broadcast it
 		// to the network.
 		peerLog.Infof("Broadcasting cooperative close tx: %v",
@@ -442,11 +447,6 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 				return spew.Sdump(closeTx)
 			}))
 		if err := c.cfg.broadcastTx(closeTx); err != nil {
-			return nil, false, err
-		}
-
-		err = c.cfg.channel.MarkCommitmentBroadcasted(closeTx)
-		if err != nil {
 			return nil, false, err
 		}
 

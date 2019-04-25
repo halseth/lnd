@@ -721,6 +721,12 @@ func (c *ChannelArbitrator) stateStep(triggerHeight uint32,
 		}
 		closeTx = closeSummary.CloseTx
 
+		if err := c.cfg.MarkCommitmentBroadcasted(closeTx); err != nil {
+			log.Errorf("ChannelArbitrator(%v): unable to "+
+				"mark commitment broadcasted: %v",
+				c.cfg.ChanPoint, err)
+		}
+
 		// With the close transaction in hand, broadcast the
 		// transaction to the network, thereby entering the post
 		// channel resolution state.
@@ -736,14 +742,9 @@ func (c *ChannelArbitrator) stateStep(triggerHeight uint32,
 			log.Errorf("ChannelArbitrator(%v): unable to broadcast "+
 				"close tx: %v", c.cfg.ChanPoint, err)
 			if err != lnwallet.ErrDoubleSpend {
+				// Do this check before marking broadcasted?
 				return StateError, closeTx, err
 			}
-		}
-
-		if err := c.cfg.MarkCommitmentBroadcasted(closeTx); err != nil {
-			log.Errorf("ChannelArbitrator(%v): unable to "+
-				"mark commitment broadcasted: %v",
-				c.cfg.ChanPoint, err)
 		}
 
 		// We go to the StateCommitmentBroadcasted state, where we'll

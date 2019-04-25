@@ -200,7 +200,7 @@ func createTestChannelArbitrator(log ArbitratorLog) (*ChannelArbitrator,
 			}
 			return summary, nil
 		},
-		MarkCommitmentBroadcasted: func() error {
+		MarkCommitmentBroadcasted: func(_ *wire.MsgTx) error {
 			return nil
 		},
 		MarkChannelClosed: func(*channeldb.ChannelCloseSummary) error {

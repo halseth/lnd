@@ -58,6 +58,10 @@ var (
 	// remote peer during a channel sync in case we have lost channel state.
 	dataLossCommitPointKey = []byte("data-loss-commit-point-key")
 
+	// closingTxKey points to a the closing tx that we broadcasted when
+	// moving the channel to state CommitBroadcasted.
+	closingTxKey = []byte("closing-tx-key")
+
 	// commitDiffKey stores the current pending commitment state we've
 	// extended to the remote party (if any). Each time we propose a new
 	// state, we store the information necessary to reconstruct this state
@@ -799,11 +803,20 @@ func (c *OpenChannel) isBorked(chanBucket *bbolt.Bucket) (bool, error) {
 // MarkCommitmentBroadcasted marks the channel as a commitment transaction has
 // been broadcast, either our own or the remote, and we should watch the chain
 // for it to confirm before taking any further action.
-func (c *OpenChannel) MarkCommitmentBroadcasted() error {
+func (c *OpenChannel) MarkCommitmentBroadcasted(closeTx *wire.MsgTx) error {
 	c.Lock()
 	defer c.Unlock()
 
-	return c.putChanStatus(ChanStatusCommitBroadcasted)
+	putClosingTx := func(chanBucket *bbolt.Bucket) error {
+		var b bytes.Buffer
+		if err := WriteElement(&b, closeTx); err != nil {
+			return err
+		}
+
+		return chanBucket.Put(closingTxKey, b.Bytes())
+	}
+
+	return c.putChanStatus(ChanStatusCommitBroadcasted, putClosingTx)
 }
 
 // putChanStatus appends the given status to the channel. fs is an optional

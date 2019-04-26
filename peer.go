@@ -450,12 +450,14 @@ func (p *peer) loadActiveChannels(chans []*channeldb.OpenChannel) error {
 		// htlcswitch.
 		switch {
 		case dbChan.HasChanStatus(channeldb.ChanStatusBorked):
+			// send chan sync also?
 			fallthrough
 		case dbChan.HasChanStatus(channeldb.ChanStatusCommitBroadcasted):
 			fallthrough
 		case dbChan.HasChanStatus(channeldb.ChanStatusLocalDataLoss):
 			peerLog.Warnf("ChannelPoint(%v) has status %v, won't "+
 				"start.", chanPoint, dbChan.ChanStatus())
+			// send chan sync message to peer, to attempt to trigger force close.
 			continue
 		}
 

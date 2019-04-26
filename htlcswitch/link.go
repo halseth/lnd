@@ -897,9 +897,6 @@ func (l *channelLink) htlcManager() {
 			// latest unrevoked commitment point, that we stored in
 			// the database, that we can use to retrieve the funds
 			// when the remote closes the channel.
-			// TODO(halseth): mark this, such that we prevent
-			// channel from being force closed by the user or
-			// contractcourt etc.
 			case err == lnwallet.ErrCommitSyncLocalDataLoss:
 
 			// We determined the commit chains were not possible to

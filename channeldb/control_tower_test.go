@@ -278,11 +278,7 @@ func assertPaymentStatus(t *testing.T, db *DB,
 			return nil
 		}
 
-		// Get the existing status of this payment, if any.
-		paymentStatusBytes := bucket.Get(paymentStatusKey)
-		if paymentStatusBytes != nil {
-			paymentStatus.FromBytes(paymentStatusBytes)
-		}
+		paymentStatus = fetchPaymentStatus(bucket)
 		return nil
 	})
 	if err != nil {

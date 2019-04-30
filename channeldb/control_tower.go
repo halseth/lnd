@@ -58,7 +58,7 @@ type ControlTower interface {
 	// Fail transitions a payment into the Failed state. After invoking
 	// this method, InitPayment should return nil on its next call for this
 	// payment hash, allowing the switch to make a subsequent payment.
-	Fail(lntypes.Hash) error
+	Fail(lntypes.Hash, FailureReason) error
 
 	// FetchInFlightPayments returns all payments with status InFlight.
 	FetchInFlightPayments() ([]*InFlightPayment, error)
@@ -254,7 +254,7 @@ func (p *paymentControl) Success(paymentHash lntypes.Hash,
 // Fail transitions a payment into the Failed state. After invoking this
 // method, InitPayment should return nil on its next call for this payment
 // hash, allowing the switch to make a subsequent payment.
-func (p *paymentControl) Fail(paymentHash lntypes.Hash) error {
+func (p *paymentControl) Fail(paymentHash lntypes.Hash, reason FailureReason) error {
 	var updateErr error
 	err := p.db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := fetchPaymentBucket(tx, paymentHash)
@@ -297,6 +297,12 @@ func (p *paymentControl) Fail(paymentHash lntypes.Hash) error {
 		default:
 			updateErr = ErrUnknownPaymentStatus
 			return nil
+		}
+
+		v := []byte{byte(reason)}
+		err = bucket.Put(paymentFailInfoKey, v)
+		if err != nil {
+			return err
 		}
 
 		// A failed response was received for an InFlight payment, mark

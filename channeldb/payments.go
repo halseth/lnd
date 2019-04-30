@@ -38,6 +38,8 @@ var (
 	// store the settle info of the payment.
 	paymentSettleInfoKey = []byte("payment-settle-info")
 
+	paymentFailInfoKey = []byte("payment-fail-info")
+
 	// paymentBucket is the name of the bucket within the database that
 	// stores all data related to payments.
 	//
@@ -49,6 +51,13 @@ var (
 	// paymentStatusBucket is the name of the bucket within the database that
 	// stores the status of a payment indexed by the payment's preimage.
 	paymentStatusBucket = []byte("payment-status")
+)
+
+type FailureReason byte
+
+const (
+	FailureReasonTimeout FailureReason = 0
+	FailureReasonNoRoute               = 1
 )
 
 // PaymentStatus represent current status of payment

@@ -42,10 +42,10 @@ type ControlTower interface {
 	// InitPayment atomically moves the payment into the InFlight state.
 	// This method checks that no completed payment exist for this payment
 	// hash.
-	InitPayment(lntypes.Hash, *CreationInfo) error
+	InitPayment(lntypes.Hash, *PaymentCreationInfo) error
 
-	// RegisterAttempt atomically records the provided AttemptInfo.
-	RegisterAttempt(lntypes.Hash, *AttemptInfo) error
+	// RegisterAttempt atomically records the provided PaymentAttemptInfo.
+	RegisterAttempt(lntypes.Hash, *PaymentAttemptInfo) error
 
 	// Success transitions a payment into the Completed state. After
 	// invoking this method, InitPayment should always return an error to
@@ -73,14 +73,15 @@ func NewPaymentControl(db *DB) ControlTower {
 	}
 }
 
-// InitPayment checks or records the given CreationInfo with the DB, making
-// sure it does not already exist as an in-flight payment. Then this method
-// returns successfully, the payment is guranteeed to be in the InFlight state.
+// InitPayment checks or records the given PaymentCreationInfo with the DB,
+// making sure it does not already exist as an in-flight payment. Then this
+// method returns successfully, the payment is guranteeed to be in the InFlight
+// state.
 func (p *paymentControl) InitPayment(paymentHash lntypes.Hash,
-	info *CreationInfo) error {
+	info *PaymentCreationInfo) error {
 
 	var b bytes.Buffer
-	if err := serializeCreationInfo(&b, info); err != nil {
+	if err := serializePaymentCreationInfo(&b, info); err != nil {
 		return err
 	}
 	infoBytes := b.Bytes()
@@ -156,13 +157,14 @@ func (p *paymentControl) InitPayment(paymentHash lntypes.Hash,
 	return takeoffErr
 }
 
-// RegisterAttempt atomically records the provided AttemptInfo to the DB.
+// RegisterAttempt atomically records the provided PaymentAttemptInfo to the
+// DB.
 func (p *paymentControl) RegisterAttempt(paymentHash lntypes.Hash,
-	attempt *AttemptInfo) error {
+	attempt *PaymentAttemptInfo) error {
 
 	// Serialize the information before opening the db transaction.
 	var a bytes.Buffer
-	if err := serializeAttemptInfo(&a, attempt); err != nil {
+	if err := serializePaymentAttemptInfo(&a, attempt); err != nil {
 		return err
 	}
 	attemptBytes := a.Bytes()

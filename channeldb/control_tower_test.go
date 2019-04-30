@@ -35,7 +35,9 @@ func genPreimage() ([32]byte, error) {
 	return preimage, nil
 }
 
-func genInfo() (*CreationInfo, *AttemptInfo, lntypes.Preimage, error) {
+func genInfo() (*PaymentCreationInfo, *PaymentAttemptInfo,
+	lntypes.Preimage, error) {
+
 	preimage, err := genPreimage()
 	if err != nil {
 		return nil, nil, preimage, fmt.Errorf("unable to "+
@@ -43,13 +45,13 @@ func genInfo() (*CreationInfo, *AttemptInfo, lntypes.Preimage, error) {
 	}
 
 	rhash := fastsha256.Sum256(preimage[:])
-	return &CreationInfo{
+	return &PaymentCreationInfo{
 			PaymentHash:    rhash,
 			Value:          1,
 			CreationDate:   time.Unix(time.Now().Unix(), 0),
 			PaymentRequest: []byte("hola"),
 		},
-		&AttemptInfo{
+		&PaymentAttemptInfo{
 			PaymentID: 1,
 			Route:     testRoute,
 		}, preimage, nil

@@ -66,11 +66,11 @@ func makeFakePayment() *OutgoingPayment {
 	return fakePayment
 }
 
-func makeFakeInfo() (*CreationInfo, *AttemptInfo) {
+func makeFakeInfo() (*PaymentCreationInfo, *PaymentAttemptInfo) {
 	var preimg lntypes.Preimage
 	copy(preimg[:], rev[:])
 
-	c := &CreationInfo{
+	c := &PaymentCreationInfo{
 		PaymentHash: preimg.Hash(),
 		Value:       1000,
 		// Use single second precision to avoid false positive test
@@ -79,7 +79,7 @@ func makeFakeInfo() (*CreationInfo, *AttemptInfo) {
 		PaymentRequest: []byte(""),
 	}
 
-	a := &AttemptInfo{
+	a := &PaymentAttemptInfo{
 		PaymentID: 44,
 		Route:     testRoute,
 	}
@@ -161,11 +161,11 @@ func TestSentPaymentSerialization(t *testing.T) {
 	c, s := makeFakeInfo()
 
 	var b bytes.Buffer
-	if err := serializeCreationInfo(&b, c); err != nil {
+	if err := serializePaymentCreationInfo(&b, c); err != nil {
 		t.Fatalf("unable to serialize creation info: %v", err)
 	}
 
-	newCreationInfo, err := deserializeCreationInfo(&b)
+	newCreationInfo, err := deserializePaymentCreationInfo(&b)
 	if err != nil {
 		t.Fatalf("unable to deserialize creation info: %v", err)
 	}
@@ -178,11 +178,11 @@ func TestSentPaymentSerialization(t *testing.T) {
 	}
 
 	b.Reset()
-	if err := serializeAttemptInfo(&b, s); err != nil {
+	if err := serializePaymentAttemptInfo(&b, s); err != nil {
 		t.Fatalf("unable to serialize info: %v", err)
 	}
 
-	newAttemptInfo, err := deserializeAttemptInfo(&b)
+	newAttemptInfo, err := deserializePaymentAttemptInfo(&b)
 	if err != nil {
 		t.Fatalf("unable to deserialize info: %v", err)
 	}

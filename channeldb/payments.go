@@ -344,9 +344,9 @@ func deserializeOutgoingPayment(r io.Reader) (*OutgoingPayment, error) {
 	return p, nil
 }
 
-// CreationInfo is the information necessary to have ready when initiating a
-// payment, moving it into state InFlight.
-type CreationInfo struct {
+// PaymentCreationInfo is the information necessary to have ready when
+// initiating a payment, moving it into state InFlight.
+type PaymentCreationInfo struct {
 	// PaymentHash is the hash this payment is paying to.
 	PaymentHash lntypes.Hash
 
@@ -360,12 +360,12 @@ type CreationInfo struct {
 	PaymentRequest []byte
 }
 
-// AttemptInfo contains information about a specific payment attempt for a
-// given payment. This information is used by the router to handle any errors
+// PaymentAttemptInfo contains information about a specific payment attempt for
+// a given payment. This information is used by the router to handle any errors
 // coming back after an attempt is made, and to query the switch about the
 // status of a payment. For settled payment this will be the information for
 // the succeeding payment attempt.
-type AttemptInfo struct {
+type PaymentAttemptInfo struct {
 	// PaymentID is the unique ID used for this attempt.
 	PaymentID uint64
 
@@ -373,7 +373,7 @@ type AttemptInfo struct {
 	Route route.Route
 }
 
-func serializeCreationInfo(w io.Writer, c *CreationInfo) error {
+func serializePaymentCreationInfo(w io.Writer, c *PaymentCreationInfo) error {
 	var scratch [8]byte
 
 	if _, err := w.Write(c.PaymentHash[:]); err != nil {
@@ -402,10 +402,10 @@ func serializeCreationInfo(w io.Writer, c *CreationInfo) error {
 	return nil
 }
 
-func deserializeCreationInfo(r io.Reader) (*CreationInfo, error) {
+func deserializePaymentCreationInfo(r io.Reader) (*PaymentCreationInfo, error) {
 	var scratch [8]byte
 
-	c := &CreationInfo{}
+	c := &PaymentCreationInfo{}
 
 	if _, err := r.Read(c.PaymentHash[:]); err != nil {
 		return nil, err
@@ -437,7 +437,7 @@ func deserializeCreationInfo(r io.Reader) (*CreationInfo, error) {
 	return c, nil
 }
 
-func serializeAttemptInfo(w io.Writer, a *AttemptInfo) error {
+func serializePaymentAttemptInfo(w io.Writer, a *PaymentAttemptInfo) error {
 	if err := WriteElements(w, a.PaymentID); err != nil {
 		return err
 	}
@@ -449,8 +449,8 @@ func serializeAttemptInfo(w io.Writer, a *AttemptInfo) error {
 	return nil
 }
 
-func deserializeAttemptInfo(r io.Reader) (*AttemptInfo, error) {
-	a := &AttemptInfo{}
+func deserializePaymentAttemptInfo(r io.Reader) (*PaymentAttemptInfo, error) {
+	a := &PaymentAttemptInfo{}
 	err := ReadElements(r, &a.PaymentID)
 	if err != nil {
 		return nil, err

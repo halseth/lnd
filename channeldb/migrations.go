@@ -735,8 +735,8 @@ func migrateOutgoingPayments(tx *bbolt.Tx) error {
 			return err
 		}
 
-		// Now create and add a CreationInfo to the bucket.
-		c := &CreationInfo{
+		// Now create and add a PaymentCreationInfo to the bucket.
+		c := &PaymentCreationInfo{
 			PaymentHash:    paymentHash,
 			Value:          payment.Terms.Value,
 			CreationDate:   payment.CreationDate,
@@ -744,7 +744,7 @@ func migrateOutgoingPayments(tx *bbolt.Tx) error {
 		}
 
 		var infoBuf bytes.Buffer
-		if err := serializeCreationInfo(&infoBuf, c); err != nil {
+		if err := serializePaymentCreationInfo(&infoBuf, c); err != nil {
 			return err
 		}
 
@@ -753,7 +753,7 @@ func migrateOutgoingPayments(tx *bbolt.Tx) error {
 			return err
 		}
 
-		// Do the same for the AttemptInfo.
+		// Do the same for the PaymentAttemptInfo.
 		rt := route.Route{
 			TotalTimeLock: payment.TimeLockLength,
 			TotalFees:     payment.Fee,
@@ -768,12 +768,12 @@ func migrateOutgoingPayments(tx *bbolt.Tx) error {
 		}
 
 		var attemptBuf bytes.Buffer
-		s := &AttemptInfo{
+		s := &PaymentAttemptInfo{
 			PaymentID: 0, // unknown.
 			Route:     rt,
 		}
 
-		if err := serializeAttemptInfo(&attemptBuf, s); err != nil {
+		if err := serializePaymentAttemptInfo(&attemptBuf, s); err != nil {
 			return err
 		}
 

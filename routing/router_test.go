@@ -2674,12 +2674,12 @@ func makeMockControlTower() *mockControlTower {
 }
 
 func (m *mockControlTower) InitPayment(lntypes.Hash,
-	*channeldb.CreationInfo) error {
+	*channeldb.PaymentCreationInfo) error {
 	return nil
 }
 
 func (m *mockControlTower) RegisterAttempt(lntypes.Hash,
-	*channeldb.AttemptInfo) error {
+	*channeldb.PaymentAttemptInfo) error {
 	return nil
 }
 

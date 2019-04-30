@@ -1615,7 +1615,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *route
 
 	// Record this payment hash with the ControlTower, ensuring it is not
 	// already in-flight.
-	info := &channeldb.CreationInfo{
+	info := &channeldb.PaymentCreationInfo{
 		PaymentHash:    payment.PaymentHash,
 		Value:          payment.Amount,
 		CreationDate:   time.Now(),
@@ -1648,7 +1648,7 @@ func (r *ChannelRouter) SendToRoute(routes []*route.Route,
 
 	// Record this payment hash with the ControlTower, ensuring it is not
 	// already in-flight.
-	info := &channeldb.CreationInfo{
+	info := &channeldb.PaymentCreationInfo{
 		PaymentHash:    payment.PaymentHash,
 		Value:          payment.Amount,
 		CreationDate:   time.Now(),
@@ -1681,7 +1681,7 @@ func (r *ChannelRouter) SendToRoute(routes []*route.Route,
 // carry out its execution. After restarts it is safe, and assumed, that the
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
-func (r *ChannelRouter) sendPayment(attempt *channeldb.AttemptInfo,
+func (r *ChannelRouter) sendPayment(attempt *channeldb.PaymentAttemptInfo,
 	payment *LightningPayment, paySession *paymentSession) (
 	[32]byte, *route.Route, error) {
 
@@ -1791,7 +1791,7 @@ func (r *ChannelRouter) sendPayment(attempt *channeldb.AttemptInfo,
 
 			// We now have all the information needed to populate
 			// the current attempt information.
-			attempt = &channeldb.AttemptInfo{
+			attempt = &channeldb.PaymentAttemptInfo{
 				PaymentID: paymentID,
 				Route:     *route,
 			}

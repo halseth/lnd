@@ -374,20 +374,22 @@ type PaymentAttemptInfo struct {
 	Route route.Route
 }
 
-// SentPayment is a wrapper around a sent payment's CreationInfo, AttemptInfo,
-// and preimage. All payments will have the CreationInfo set, the AttemptInfo
-// will be set only if at least one payment attempt has been made, while only
-// completed payments will have a non-zero payment preimage.
+// SentPayment is a wrapper around a sent payment's PaymentCreationInfo,
+// PaymentAttemptInfo, and preimage. All payments will have the
+// PaymentCreationInfo set, the PaymentAttemptInfo will be set only if at least
+// one payment attempt has been made, while only completed payments will have a
+// non-zero payment preimage.
 type SentPayment struct {
 	Status PaymentStatus
 
-	// Creation info is populated when the payment is initiated.
-	*CreationInfo
+	// PaymentCreationInfo is populated when the payment is initiated.
+	*PaymentCreationInfo
 
-	// AttemptInfo is the information about the last payment attempt made.
+	// PaymentAttemptInfo is the information about the last payment attempt
+	// made.
 	//
 	// NOTE: Can be nil if no attempt is yet made.
-	*AttemptInfo
+	*PaymentAttemptInfo
 
 	// PaymentPreimage is the preimage of a successful payment. This serves
 	// as a proof of payment. It will be all zeroes for non-settled
@@ -421,24 +423,24 @@ func (db *DB) FetchSentPayments() ([]*SentPayment, error) {
 			// Get the payment status.
 			p.Status = fetchPaymentStatus(bucket)
 
-			// Get the CreationInfo.
+			// Get the PaymentCreationInfo.
 			b := bucket.Get(paymentCreationInfoKey)
 			if b == nil {
 				return fmt.Errorf("creation info not found")
 			}
 
 			r := bytes.NewReader(b)
-			p.CreationInfo, err = deserializeCreationInfo(r)
+			p.PaymentCreationInfo, err = deserializePaymentCreationInfo(r)
 			if err != nil {
 				return err
 
 			}
 
-			// Get the AttemptInfo. This can be unset.
+			// Get the PaymentAttemptInfo. This can be unset.
 			b = bucket.Get(paymentAttemptInfoKey)
 			if b != nil {
 				r = bytes.NewReader(b)
-				p.AttemptInfo, err = deserializeAttemptInfo(r)
+				p.PaymentAttemptInfo, err = deserializePaymentAttemptInfo(r)
 				if err != nil {
 					return err
 				}

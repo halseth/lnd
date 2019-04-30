@@ -340,14 +340,14 @@ func fetchPaymentStatus(bucket *bbolt.Bucket) PaymentStatus {
 
 // InFlightPayment is a wrapper around a payment that has status InFlight.
 type InFlightPayment struct {
-	// PaymentHash is the hash of the in-flight payment.
-	Info *CreationInfo
+	// Info is the PaymentCreationInfo of the in-flight payment.
+	Info *PaymentCreationInfo
 
 	// Attempt contains information about the last payment attempt that was
 	// made to this payment hash.
 	//
 	// NOTE: Might be nil.
-	Attempt *AttemptInfo
+	Attempt *PaymentAttemptInfo
 }
 
 // FetchInFlightPayments returns all payments with status InFlight.
@@ -384,7 +384,7 @@ func (p *paymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
 			}
 
 			r := bytes.NewReader(b)
-			inFlight.Info, err = deserializeCreationInfo(r)
+			inFlight.Info, err = deserializePaymentCreationInfo(r)
 			if err != nil {
 				return err
 			}
@@ -394,7 +394,7 @@ func (p *paymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
 			attempt := bucket.Get(paymentAttemptInfoKey)
 			if attempt != nil {
 				r = bytes.NewReader(attempt)
-				inFlight.Attempt, err = deserializeAttemptInfo(r)
+				inFlight.Attempt, err = deserializePaymentAttemptInfo(r)
 				if err != nil {
 					return err
 				}

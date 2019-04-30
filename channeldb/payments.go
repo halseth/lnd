@@ -31,7 +31,7 @@ var (
 
 	// paymentAttemptInfoKey is a key used in the payment's sub-bucket to
 	// store the info about the latest attempt that was done for the
-	// payment in question..
+	// payment in question.
 	paymentAttemptInfoKey = []byte("payment-attempt-info")
 
 	// paymentSettleInfoKey is a key used in the payment's sub-bucket to

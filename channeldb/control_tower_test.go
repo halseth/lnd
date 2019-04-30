@@ -295,7 +295,7 @@ func assertPaymentStatus(t *testing.T, db *DB,
 	}
 }
 
-func checkCreationInfo(bucket *bbolt.Bucket, c *CreationInfo) error {
+func checkPaymentCreationInfo(bucket *bbolt.Bucket, c *PaymentCreationInfo) error {
 	b := bucket.Get(paymentCreationInfoKey)
 	switch {
 	case b == nil && c == nil:
@@ -307,20 +307,20 @@ func checkCreationInfo(bucket *bbolt.Bucket, c *CreationInfo) error {
 	}
 
 	r := bytes.NewReader(b)
-	c2, err := deserializeCreationInfo(r)
+	c2, err := deserializePaymentCreationInfo(r)
 	if err != nil {
 		fmt.Println("creation info err: ", err)
 		return err
 	}
 	if !reflect.DeepEqual(c, c2) {
-		return fmt.Errorf("CreationInfos don't match: %v vs %v",
+		return fmt.Errorf("PaymentCreationInfos don't match: %v vs %v",
 			spew.Sdump(c), spew.Sdump(c2))
 	}
 
 	return nil
 }
 
-func checkAttemptInfo(bucket *bbolt.Bucket, a *AttemptInfo) error {
+func checkPaymentAttemptInfo(bucket *bbolt.Bucket, a *PaymentAttemptInfo) error {
 	b := bucket.Get(paymentAttemptInfoKey)
 	switch {
 	case b == nil && a == nil:
@@ -332,12 +332,12 @@ func checkAttemptInfo(bucket *bbolt.Bucket, a *AttemptInfo) error {
 	}
 
 	r := bytes.NewReader(b)
-	a2, err := deserializeAttemptInfo(r)
+	a2, err := deserializePaymentAttemptInfo(r)
 	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(a, a2) {
-		return fmt.Errorf("AttemptInfos don't match: %v vs %v",
+		return fmt.Errorf("PaymentAttemptInfos don't match: %v vs %v",
 			spew.Sdump(a), spew.Sdump(a2))
 	}
 
@@ -367,7 +367,7 @@ func checkSettleInfo(bucket *bbolt.Bucket, preimg lntypes.Preimage) error {
 }
 
 func assertPaymentInfo(t *testing.T, db *DB, hash lntypes.Hash,
-	c *CreationInfo, a *AttemptInfo, s lntypes.Preimage) {
+	c *PaymentCreationInfo, a *PaymentAttemptInfo, s lntypes.Preimage) {
 
 	t.Helper()
 
@@ -389,11 +389,11 @@ func assertPaymentInfo(t *testing.T, db *DB, hash lntypes.Hash,
 			return fmt.Errorf("payment not found")
 		}
 
-		if err := checkCreationInfo(bucket, c); err != nil {
+		if err := checkPaymentCreationInfo(bucket, c); err != nil {
 			return err
 		}
 
-		if err := checkAttemptInfo(bucket, a); err != nil {
+		if err := checkPaymentAttemptInfo(bucket, a); err != nil {
 			return err
 		}
 

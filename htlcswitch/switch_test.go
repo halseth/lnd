@@ -1417,7 +1417,7 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 	// We'll attempt to send out a new HTLC that has Alice as the first
 	// outgoing link. This should fail as Alice isn't yet able to forward
 	// any active HTLC's.
-	err = s.SendHTLC(aliceChannelLink.ShortChanID(), 0, addMsg, nil)
+	err = s.SendHTLC(aliceChannelLink.ShortChanID(), 0, addMsg)
 	if err == nil {
 		t.Fatalf("local forward should fail due to inactive link")
 	}
@@ -1744,33 +1744,6 @@ func TestSwitchSendPayment(t *testing.T) {
 	go func() {
 		err := s.SendHTLC(
 			aliceChannelLink.ShortChanID(), 0, update,
-			newMockDeobfuscator())
-		if err != nil {
-			errChan <- err
-			return
-		}
-
-		resultChan, err := s.GetPaymentResult(0)
-		if err != nil {
-			errChan <- err
-			return
-		}
-
-		result := <-resultChan
-		if result.Error != nil {
-			errChan <- result.Error
-			return
-		}
-
-		errChan <- nil
-	}()
-
-	go func() {
-		// Send the payment with the same payment hash and same
-		// amount and check that it will be propagated successfully
-		err := s.SendHTLC(
-			aliceChannelLink.ShortChanID(), 0, update,
-			newMockDeobfuscator(),
 		)
 		if err != nil {
 			errChan <- err
@@ -1784,8 +1757,46 @@ func TestSwitchSendPayment(t *testing.T) {
 		}
 
 		result := <-resultChan
-		if result.Error != nil {
-			errChan <- result.Error
+		if result.Type != PaymentResultSuccess {
+			fErr, err := newMockDeobfuscator().DecryptError(result.Reason)
+			if err != nil {
+				errChan <- fmt.Errorf("unable to decrypt error: %v", err)
+				return
+			}
+
+			errChan <- fErr
+			return
+		}
+
+		errChan <- nil
+	}()
+
+	go func() {
+		// Send the payment with the same payment hash and same
+		// amount and check that it will be propagated successfully
+		err := s.SendHTLC(
+			aliceChannelLink.ShortChanID(), 0, update,
+		)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		resultChan, err := s.GetPaymentResult(0)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		result := <-resultChan
+		if result.Type != PaymentResultSuccess {
+			fErr, err := newMockDeobfuscator().DecryptError(result.Reason)
+			if err != nil {
+				errChan <- fmt.Errorf("unable to decrypt error: %v", err)
+				return
+			}
+
+			errChan <- fErr
 			return
 		}
 

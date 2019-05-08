@@ -615,25 +615,11 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 	}
 
 	s.chanRouter, err = routing.New(routing.Config{
-		Graph:     chanGraph,
-		Chain:     cc.chainIO,
-		ChainView: cc.chainView,
-		SendToSwitch: func(firstHop lnwire.ShortChannelID,
-			pid uint64,
-			htlcAdd *lnwire.UpdateAddHTLC,
-			circuit *sphinx.Circuit) error {
-
-			// Using the created circuit, initialize the error
-			// decrypter so we can parse+decode any failures
-			// incurred by this payment within the switch.
-			errorDecryptor := &htlcswitch.SphinxErrorDecrypter{
-				OnionErrorDecrypter: sphinx.NewOnionErrorDecrypter(circuit),
-			}
-
-			return s.htlcSwitch.SendHTLC(
-				firstHop, pid, htlcAdd, errorDecryptor,
-			)
-		},
+		Graph:              chanGraph,
+		Chain:              cc.chainIO,
+		ChainView:          cc.chainView,
+		Sphinx:             routing.NewSphinxGenerator(),
+		SendToSwitch:       s.htlcSwitch.SendHTLC,
 		GetPaymentResult:   s.htlcSwitch.GetPaymentResult,
 		ChannelPruneExpiry: routing.DefaultChannelPruneExpiry,
 		GraphPruneInterval: time.Duration(time.Hour),

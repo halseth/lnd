@@ -777,7 +777,7 @@ func preparePayment(sendingPeer, receivingPeer lnpeer.Peer,
 	// Send payment and expose err channel.
 	return invoice, func() error {
 		err := sender.htlcSwitch.SendHTLC(
-			firstHop, pid, htlc, newMockDeobfuscator(),
+			firstHop, pid, htlc,
 		)
 		if err != nil {
 			return err
@@ -788,8 +788,13 @@ func preparePayment(sendingPeer, receivingPeer lnpeer.Peer,
 		}
 
 		result := <-resultChan
-		if result.Error != nil {
-			return result.Error
+		if result.Type != PaymentResultSuccess {
+			fErr, err := newMockDeobfuscator().DecryptError(result.Reason)
+			if err != nil {
+				return fmt.Errorf("unable to decrypt error: %v", err)
+			}
+
+			return fErr
 		}
 
 		return nil
@@ -1248,7 +1253,7 @@ func (n *twoHopNetwork) makeHoldPayment(sendingPeer, receivingPeer lnpeer.Peer,
 	// Send payment and expose err channel.
 	go func() {
 		err := sender.htlcSwitch.SendHTLC(
-			firstHop, pid, htlc, newMockDeobfuscator(),
+			firstHop, pid, htlc,
 		)
 		if err != nil {
 			paymentErr <- err
@@ -1262,8 +1267,14 @@ func (n *twoHopNetwork) makeHoldPayment(sendingPeer, receivingPeer lnpeer.Peer,
 		}
 
 		result := <-resultChan
-		if result.Error != nil {
-			paymentErr <- result.Error
+		if result.Type != PaymentResultSuccess {
+			fErr, err := newMockDeobfuscator().DecryptError(result.Reason)
+			if err != nil {
+				paymentErr <- fmt.Errorf("unable to decrypt error: %v", err)
+				return
+			}
+
+			paymentErr <- fErr
 			return
 		}
 		paymentErr <- nil

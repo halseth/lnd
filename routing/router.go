@@ -1855,6 +1855,7 @@ func (r *ChannelRouter) sendPayment(attempt *channeldb.PaymentAttemptInfo,
 			err = r.cfg.SendToSwitch(
 				firstHop, paymentID, htlcAdd,
 			)
+			// must handle *ForwardingError here?
 			if err != nil {
 				log.Errorf("Failed sending payment to switch: %v",
 					err)

@@ -2,7 +2,6 @@ package routing
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"runtime"
 	"sort"
@@ -180,7 +179,15 @@ type Config struct {
 	SendToSwitch func(firstHop lnwire.ShortChannelID,
 		paymentID uint64,
 		htlcAdd *lnwire.UpdateAddHTLC,
-		circuit *sphinx.Circuit) ([sha256.Size]byte, error)
+		circuit *sphinx.Circuit) error
+
+	// GetPaymentResult returns the the result of the payment attempt with
+	// the given paymentID. The method returns a channel where the payment
+	// result will be sent when available, or an error is encountered. If
+	// the paymentID is unknown, htlcswitch.ErrPaymentIDNotFound will be
+	// returned.
+	GetPaymentResult func(paymentID uint64) (
+		<-chan *htlcswitch.PaymentResult, error)
 
 	// ChannelPruneExpiry is the duration used to determine if a channel
 	// should be pruned or not. If the delta between now and when the
@@ -1773,19 +1780,39 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 		return [32]byte{}, true, err
 	}
 
-	preimage, err := r.cfg.SendToSwitch(
+	err = r.cfg.SendToSwitch(
 		firstHop, paymentID, htlcAdd, circuit,
 	)
-	if err == nil {
-		return preimage, true, nil
+	if err != nil {
+		return [32]byte{}, true, err
 	}
 
-	log.Errorf("Attempt to send payment %x failed: %v",
-		paymentHash, err)
+	resultChan, err := r.cfg.GetPaymentResult(paymentID)
+	if err != nil {
+		log.Errorf("failed getting payment "+
+			"result: %v", err)
+		return [32]byte{}, true, err
+	}
 
-	finalOutcome := r.processSendError(paySession, route, err)
+	var result *htlcswitch.PaymentResult
+	select {
+	case result = <-resultChan:
+	case <-r.quit:
+		return [32]byte{}, true, ErrRouterShuttingDown
+	}
 
-	return [32]byte{}, finalOutcome, err
+	if result.Error != nil {
+		log.Errorf("Attempt to send payment %x failed: %v",
+			paymentHash, result.Error)
+
+		finalOutcome := r.processSendError(
+			paySession, route, result.Error,
+		)
+
+		return [32]byte{}, finalOutcome, result.Error
+	}
+
+	return result.Preimage, true, nil
 }
 
 // processSendError analyzes the error for the payment attempt received from the
@@ -1794,12 +1821,7 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 // to continue with an alternative route. This is indicated by the boolean
 // return value.
 func (r *ChannelRouter) processSendError(paySession *paymentSession,
-	rt *route.Route, err error) bool {
-
-	fErr, ok := err.(*htlcswitch.ForwardingError)
-	if !ok {
-		return true
-	}
+	rt *route.Route, fErr *htlcswitch.ForwardingError) bool {
 
 	errSource := fErr.ErrorSource
 	errVertex := route.NewVertex(errSource)

@@ -93,6 +93,9 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 		QueryBandwidth: func(e *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {
 			return lnwire.NewMSatFromSatoshis(e.Capacity)
 		},
+		NextPaymentID: func() (uint64, error) {
+			return 0, nil
+		},
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create router %v", err)

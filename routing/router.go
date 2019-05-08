@@ -1727,8 +1727,12 @@ func (r *ChannelRouter) sendPayment(attempt *channeldb.PaymentAttemptInfo,
 			// attempt short.
 			select {
 			case <-timeoutChan:
-				// Mark the payment as failed.
-				err := r.cfg.Control.Fail(payment.PaymentHash)
+				// Mark the payment as failed because of the
+				// timeout.
+				err := r.cfg.Control.Fail(
+					payment.PaymentHash,
+					channeldb.FailureReasonTimeout,
+				)
 				if err != nil {
 					return [32]byte{}, nil, err
 				}
@@ -1758,7 +1762,10 @@ func (r *ChannelRouter) sendPayment(attempt *channeldb.PaymentAttemptInfo,
 				// If we're unable to successfully make a payment using
 				// any of the routes we've found, then mark the payment
 				// as permanently failed.
-				saveErr := r.cfg.Control.Fail(payment.PaymentHash)
+				saveErr := r.cfg.Control.Fail(
+					payment.PaymentHash,
+					channeldb.FailureReasonNoRoute,
+				)
 				if saveErr != nil {
 					return [32]byte{}, nil, saveErr
 				}
@@ -1917,8 +1924,14 @@ func (r *ChannelRouter) sendPayment(attempt *channeldb.PaymentAttemptInfo,
 					"final outcome: %v",
 					paymentHash, fwdErr)
 
-				// Mark the payment failed.
-				err := r.cfg.Control.Fail(paymentHash)
+				// Mark the payment failed with no route.
+				// TODO(halseth): make payment codes for the
+				// actual reason we don't continue path
+				// finding.
+				err := r.cfg.Control.Fail(
+					paymentHash,
+					channeldb.FailureReasonNoRoute,
+				)
 				if err != nil {
 					return [32]byte{}, nil, err
 				}

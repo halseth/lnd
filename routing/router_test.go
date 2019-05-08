@@ -3236,6 +3236,7 @@ type successArgs struct {
 }
 
 type failArgs struct {
+	reason channeldb.FailureReason
 }
 
 type mockControlTower struct {
@@ -3322,13 +3323,14 @@ func (m *mockControlTower) Success(phash lntypes.Hash,
 	return nil
 }
 
-func (m *mockControlTower) Fail(phash lntypes.Hash) error {
+func (m *mockControlTower) Fail(phash lntypes.Hash,
+	reason channeldb.FailureReason) error {
 
 	m.Lock()
 	defer m.Unlock()
 
 	if m.fail != nil {
-		m.fail <- failArgs{}
+		m.fail <- failArgs{reason}
 	}
 
 	delete(m.inflights, phash)

@@ -3100,6 +3100,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 			case getPaymentResultSuccess:
 				select {
 				case getPaymentResult <- &htlcswitch.PaymentResult{
+					Type:     htlcswitch.PaymentResultSuccess,
 					Preimage: preImage,
 				}:
 				case <-time.After(1 * time.Second):

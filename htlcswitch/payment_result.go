@@ -2,7 +2,9 @@ package htlcswitch
 
 import (
 	"errors"
+	"io"
 
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -51,4 +53,40 @@ type PaymentResult struct {
 	// Reason is set for all other result types, and will encode the error
 	// encountered.
 	Reason lnwire.OpaqueReason
+}
+
+// serializePaymentResult serializes the PaymentResult.
+func serializePaymentResult(w io.Writer, p *PaymentResult) error {
+	var reason []byte = p.Reason
+	if err := channeldb.WriteElements(w,
+		uint32(p.Type), p.Preimage, reason[:],
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+// deserializePaymentResult deserializes the PaymentResult.
+func deserializePaymentResult(r io.Reader) (*PaymentResult, error) {
+	var (
+		t      uint32
+		preimg [32]byte
+		reason []byte
+	)
+	if err := channeldb.ReadElements(r,
+		&t, &preimg, &reason,
+	); err != nil {
+		return nil, err
+	}
+
+	p := &PaymentResult{
+		Type: PaymentResultType(t),
+	}
+	copy(p.Preimage[:], preimg[:])
+
+	if len(reason) > 0 {
+		p.Reason = lnwire.OpaqueReason(reason)
+	}
+
+	return p, nil
 }

@@ -856,17 +856,33 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	// has been restarted since sending the payment.
 	payment := s.findPayment(pkt.incomingHTLCID)
 
-	var result *PaymentResult
+	result, err := s.extractResult(payment, pkt)
+	if err != nil {
+		return
+	}
+
+	// Deliver the payment error and preimage to the application, if it is
+	// waiting for a response.
+	if payment != nil {
+		payment.resultChan <- result
+		s.removePendingPayment(pkt.incomingHTLCID)
+	}
+}
+
+// extractResult parses the received htlcPacket and returns a PaymentResult for
+// the payment in question.
+func (s *Switch) extractResult(payment *pendingPayment,
+	pkt *htlcPacket) (*PaymentResult, error) {
 
 	switch htlc := pkt.htlc.(type) {
 
 	// We've received a settle update which means we can finalize the user
 	// payment and return successful response.
 	case *lnwire.UpdateFulfillHTLC:
-		result = &PaymentResult{
+		return &PaymentResult{
 			Type:     PaymentResultSuccess,
 			Preimage: htlc.PaymentPreimage,
-		}
+		}, nil
 
 	// We've received a fail update which means we can finalize the user
 	// payment and return fail response.
@@ -881,21 +897,14 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 			errType = PaymentResultEncryptedError
 		}
 
-		result = &PaymentResult{
+		return &PaymentResult{
 			Type:   errType,
 			Reason: htlc.Reason,
-		}
+		}, nil
 
 	default:
-		log.Warnf("Received unknown response type: %T", pkt.htlc)
-		return
-	}
-
-	// Deliver the payment error and preimage to the application, if it is
-	// waiting for a response.
-	if payment != nil {
-		payment.resultChan <- result
-		s.removePendingPayment(pkt.incomingHTLCID)
+		return nil, fmt.Errorf("Received unknown response type: %T",
+			pkt.htlc)
 	}
 }
 

@@ -176,6 +176,10 @@ type Config struct {
 	// decryping onion errors.
 	Sphinx SphinxGenerator
 
+	// Control keeps track of the status of ongoing payments, ensuring we
+	// can properly resume them across restarts.
+	Control channeldb.ControlTower
+
 	// SendToSwitch is a function that directs a link-layer switch to
 	// forward a fully encoded payment to the first hop in the route
 	// denoted by its public key. A non-nil error is to be returned if the
@@ -1561,7 +1565,23 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *route
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(payment, paySession)
+	// Record this payment hash with the ControlTower, ensuring it is not
+	// already in-flight.
+	info := &channeldb.PaymentCreationInfo{
+		PaymentHash:    payment.PaymentHash,
+		Value:          payment.Amount,
+		CreationDate:   time.Now(),
+		PaymentRequest: nil,
+	}
+
+	err = r.cfg.Control.InitPayment(payment.PaymentHash, info)
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	// Since this is the first time this payment is being made, we pass nil
+	// for the existing attempt.
+	return r.sendPayment(nil, payment, paySession)
 }
 
 // SendToRoute attempts to send a payment as described within the passed
@@ -1578,7 +1598,23 @@ func (r *ChannelRouter) SendToRoute(routes []*route.Route,
 		routes,
 	)
 
-	return r.sendPayment(payment, paySession)
+	// Record this payment hash with the ControlTower, ensuring it is not
+	// already in-flight.
+	info := &channeldb.PaymentCreationInfo{
+		PaymentHash:    payment.PaymentHash,
+		Value:          payment.Amount,
+		CreationDate:   time.Now(),
+		PaymentRequest: nil,
+	}
+
+	err := r.cfg.Control.InitPayment(payment.PaymentHash, info)
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
+
+	// Since this is the first time this payment is being made, we pass nil
+	// for the existing attempt.
+	return r.sendPayment(nil, payment, paySession)
 }
 
 // sendPayment attempts to send a payment as described within the passed
@@ -1588,8 +1624,18 @@ func (r *ChannelRouter) SendToRoute(routes []*route.Route,
 // will be returned which describes the path the successful payment traversed
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
-func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession *paymentSession) ([32]byte, *route.Route, error) {
+//
+// The attempt argument should be set to nil if this is a payment that haven't
+// had any payment attempt sent to the switch yet. If it has had an attempt
+// already, it should be passed such that the result can be retrieved.
+//
+// This method relies on the ControlTower's internal payment state machine to
+// carry out its execution. After restarts it is safe, and assumed, that the
+// router will call this method for every payment still in-flight according to
+// the ControlTower.
+func (r *ChannelRouter) sendPayment(attempt *channeldb.PaymentAttemptInfo,
+	payment *LightningPayment, paySession *paymentSession) (
+	[32]byte, *route.Route, error) {
 
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
@@ -1636,104 +1682,176 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 	// critical error during path finding.
 	var lastError error
 	for {
-		// Before we attempt this next payment, we'll check to see if
-		// either we've gone past the payment attempt timeout, or the
-		// router is exiting. In either case, we'll stop this payment
-		// attempt short.
-		select {
-		case <-timeoutChan:
-			errStr := fmt.Sprintf("payment attempt not completed "+
-				"before timeout of %v", payAttemptTimeout)
 
-			return [32]byte{}, nil, newErr(
-				ErrPaymentAttemptTimeout, errStr,
-			)
+		// If this payment had no existing payment ID, we make a new attempt.
+		if attempt == nil {
+			// Before we attempt this next payment, we'll check to see if
+			// either we've gone past the payment attempt timeout, or the
+			// router is exiting. In either case, we'll stop this payment
+			// attempt short.
+			select {
+			case <-timeoutChan:
+				// Mark the payment as failed.
+				err := r.cfg.Control.Fail(payment.PaymentHash)
+				if err != nil {
+					return [32]byte{}, nil, err
+				}
 
-		case <-r.quit:
-			return [32]byte{}, nil, ErrRouterShuttingDown
+				errStr := fmt.Sprintf("payment attempt not completed "+
+					"before timeout of %v", payAttemptTimeout)
 
-		default:
-			// Fall through if we haven't hit our time limit, or
-			// are expiring.
-		}
+				return [32]byte{}, nil, newErr(
+					ErrPaymentAttemptTimeout, errStr,
+				)
 
-		route, err := paySession.RequestRoute(
-			payment, uint32(currentHeight), finalCLTVDelta,
-		)
-		if err != nil {
-			// If we're unable to successfully make a payment using
-			// any of the routes we've found, then return an error.
-			if lastError != nil {
-				return [32]byte{}, nil, fmt.Errorf("unable to "+
-					"route payment to destination: %v",
-					lastError)
+			case <-r.quit:
+				// The payment will be resumed from the current state
+				// after restart.
+				return [32]byte{}, nil, ErrRouterShuttingDown
+
+			default:
+				// Fall through if we haven't hit our time limit, or
+				// are expiring.
 			}
 
+			// Create a new payment attempt from the given payment session.
+			route, err := paySession.RequestRoute(
+				payment, uint32(currentHeight), finalCLTVDelta,
+			)
+			if err != nil {
+				// If we're unable to successfully make a payment using
+				// any of the routes we've found, then mark the payment
+				// as permanently failed.
+				saveErr := r.cfg.Control.Fail(payment.PaymentHash)
+				if saveErr != nil {
+					return [32]byte{}, nil, saveErr
+				}
+
+				// If there was an error already recorded for this
+				// payment, we'll return that.
+				if lastError != nil {
+					return [32]byte{}, nil, fmt.Errorf("unable to "+
+						"route payment to destination: %v",
+						lastError)
+				}
+
+				// Terminal state, return.
+				return [32]byte{}, nil, err
+			}
+
+			// Generate a new key to be used for this attempt.
+			sessionKey, err := generateNewSessionKey()
+			if err != nil {
+				return [32]byte{}, nil, err
+			}
+
+			// Generate the raw encoded sphinx packet to be included along
+			// with the htlcAdd message that we send directly to the
+			// switch.
+			onionBlob, err := r.cfg.Sphinx.GenerateSphinxPacket(
+				route, paymentHash[:], sessionKey,
+			)
+			if err != nil {
+				return [32]byte{}, nil, err
+			}
+
+			// Craft an HTLC packet to send to the layer 2 switch. The
+			// metadata within this packet will be used to route the
+			// payment through the network, starting with the first-hop.
+			htlcAdd := &lnwire.UpdateAddHTLC{
+				Amount:      route.TotalAmount,
+				Expiry:      route.TotalTimeLock,
+				PaymentHash: paymentHash,
+			}
+			copy(htlcAdd.OnionBlob[:], onionBlob)
+
+			// Attempt to send this payment through the network to complete
+			// the payment. If this attempt fails, then we'll continue on
+			// to the next available route.
+			firstHop := lnwire.NewShortChanIDFromInt(
+				route.Hops[0].ChannelID,
+			)
+
+			// We generate a new, unique payment ID that we will use for
+			// this HTLC.
+			paymentID, err := r.cfg.NextPaymentID()
+			if err != nil {
+				return [32]byte{}, nil, err
+			}
+
+			// We now have all the information needed to populate
+			// the current attempt information.
+			attempt = &channeldb.PaymentAttemptInfo{
+				PaymentID:  paymentID,
+				SessionKey: sessionKey,
+				Route:      *route,
+			}
+
+			// Before sending this HTLC to the switch, we checkpoint the
+			// fresh paymentID and route to the DB. This lets us know on
+			// startup the ID of the payment that we attempted to send,
+			// such that we can query the Switch for its whereabouts. The
+			// route is needed to handle the result when it eventually
+			// comes back.
+			err = r.cfg.Control.RegisterAttempt(payment.PaymentHash, attempt)
+			if err != nil {
+				return [32]byte{}, nil, err
+			}
+
+			log.Tracef("Attempting to send payment %x (pid=%v), "+
+				"using route: %v", paymentHash, paymentID,
+				newLogClosure(func() string {
+					return spew.Sdump(route)
+				}),
+			)
+
+			// Send it to the Switch. When this method returns we assume
+			// the Switch successfully has persisted the payment attempt,
+			// such that we can resume waiting for the result after a
+			// restart.
+			err = r.cfg.SendToSwitch(
+				firstHop, paymentID, htlcAdd,
+			)
+			if err != nil {
+				log.Errorf("Failed sending payment to switch: %v",
+					err)
+				return [32]byte{}, nil, err
+			}
+
+			log.Debugf("Payment %x (pid=%v) successfully sent to switch",
+				paymentHash, paymentID)
+		}
+
+		// We now have an attempt available, query the switch for the
+		// result of this payment ID.
+		log.Infof("Getting payment result for attempt with pid=%v",
+			attempt.PaymentID)
+
+		// We'll ask the switch whether this is a known paymentID.
+		resultChan, err := r.cfg.GetPaymentResult(attempt.PaymentID)
+		switch {
+
+		// If this payment ID is unknown to the Switch, it means it was
+		// never checkpointed and forwarded by the switch before a
+		// restart. In this case we can safely send a new payment
+		// attempt, and wait for its result to be available.
+		case err == htlcswitch.ErrPaymentIDNotFound:
+			log.Debugf("Payment ID %v for hash %x not found in "+
+				"the Switch, retrying.", attempt.PaymentID,
+				paymentHash)
+
+			// Reset the attempt to indicate we want to make a new
+			// attempt.
+			attempt = nil
+			continue
+
+		// A critical, unexpected error was encountered.
+		case err != nil:
 			return [32]byte{}, nil, err
 		}
 
-		log.Tracef("Attempting to send payment %x, using route: %v",
-			paymentHash, newLogClosure(func() string {
-				return spew.Sdump(route)
-			}),
-		)
-
-		// Generate a new key to be used for this attempt.
-		sessionKey, err := generateNewSessionKey()
-		if err != nil {
-			return [32]byte{}, nil, err
-		}
-
-		// Generate the raw encoded sphinx packet to be included along
-		// with the htlcAdd message that we send directly to the
-		// switch.
-		onionBlob, err := r.cfg.Sphinx.GenerateSphinxPacket(
-			route, paymentHash[:], sessionKey,
-		)
-		if err != nil {
-			return [32]byte{}, nil, err
-		}
-
-		// Craft an HTLC packet to send to the layer 2 switch. The
-		// metadata within this packet will be used to route the
-		// payment through the network, starting with the first-hop.
-		htlcAdd := &lnwire.UpdateAddHTLC{
-			Amount:      route.TotalAmount,
-			Expiry:      route.TotalTimeLock,
-			PaymentHash: paymentHash,
-		}
-		copy(htlcAdd.OnionBlob[:], onionBlob)
-
-		// Attempt to send this payment through the network to complete
-		// the payment. If this attempt fails, then we'll continue on
-		// to the next available route.
-		firstHop := lnwire.NewShortChanIDFromInt(
-			route.Hops[0].ChannelID,
-		)
-
-		// We generate a new, unique payment ID that we will use for
-		// this HTLC.
-		paymentID, err := r.cfg.NextPaymentID()
-		if err != nil {
-			return [32]byte{}, nil, err
-		}
-
-		err = r.cfg.SendToSwitch(
-			firstHop, paymentID, htlcAdd,
-		)
-		if err != nil {
-			log.Errorf("Attempt to send payment %x failed: %v",
-				paymentHash, err)
-			return [32]byte{}, nil, err
-		}
-
-		resultChan, err := r.cfg.GetPaymentResult(paymentID)
-		if err != nil {
-			log.Errorf("failed getting payment "+
-				"result: %v", err)
-			return [32]byte{}, nil, err
-		}
-
+		// THe switch knows about this payment, we'll wait for a result
+		// to be available.
 		var result *htlcswitch.PaymentResult
 		select {
 		case result = <-resultChan:
@@ -1741,30 +1859,62 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			return [32]byte{}, nil, ErrRouterShuttingDown
 		}
 
+		// In case of a payment failure, we use the error to decide
+		// whether we should retry.
 		if result.Type != htlcswitch.PaymentResultSuccess {
 			log.Errorf("Attempt to send payment %x failed",
-				paymentID, paymentHash)
+				attempt.PaymentID, paymentHash)
 
 			fwdErr, err := r.parseFailedPayment(
-				paymentHash, route, sessionKey, selfKey, result,
+				paymentHash, &attempt.Route, attempt.SessionKey, selfKey, result,
 			)
 			if err != nil {
 				return [32]byte{}, nil, err
 			}
 
 			finalOutcome := r.processSendError(
-				paySession, route, fwdErr,
+				paySession, &attempt.Route, fwdErr,
 			)
 
 			if finalOutcome {
+				log.Errorf("Payment %x failed with "+
+					"final outcome: %v",
+					paymentHash, fwdErr)
+
+				// Mark the payment failed.
+				err := r.cfg.Control.Fail(paymentHash)
+				if err != nil {
+					return [32]byte{}, nil, err
+				}
+
+				// Terminal state, return the error we
+				// encountered.
 				return [32]byte{}, nil, fwdErr
 			}
 
 			lastError = fwdErr
+
+			// We make another payment attempt.
+			attempt = nil
 			continue
 		}
 
-		return result.Preimage, route, nil
+		// We successfully got a payment result back from the switch.
+		log.Debugf("Payment %x succeeded with pid=%v",
+			paymentHash, attempt.PaymentID)
+
+		// In case of success we atomically store the db payment and
+		// move the payment to the success state.
+		err = r.cfg.Control.Success(payment.PaymentHash, result.Preimage)
+		if err != nil {
+			log.Errorf("Unable to succeed payment "+
+				"attempt: %v", err)
+			return [32]byte{}, nil, err
+		}
+
+		// Terminal state, return the preimage and the route
+		// taken.
+		return result.Preimage, &attempt.Route, nil
 	}
 
 }

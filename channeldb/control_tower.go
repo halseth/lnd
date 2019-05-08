@@ -145,12 +145,6 @@ func (p *paymentControl) InitPayment(paymentHash lntypes.Hash,
 			return err
 		}
 
-		// We'll move it into the InFlight state.
-		err = bucket.Put(paymentStatusKey, StatusInFlight.Bytes())
-		if err != nil {
-			return err
-		}
-
 		// Add the payment info to the bucket, which contains the
 		// static information for this payment
 		err = bucket.Put(paymentCreationInfoKey, infoBytes)
@@ -252,14 +246,15 @@ func (p *paymentControl) Success(paymentHash lntypes.Hash,
 			return nil
 		}
 
-		// Record the successful payment info atomically to the
-		// payments record.
-		err = bucket.Put(paymentSettleInfoKey, preimage[:])
+		// We'll delete any failed info to.
+		err = bucket.Delete(paymentFailInfoKey)
 		if err != nil {
 			return err
 		}
 
-		return bucket.Put(paymentStatusKey, StatusSucceeded.Bytes())
+		// Record the successful payment info atomically to the
+		// payments record.
+		return bucket.Put(paymentSettleInfoKey, preimage[:])
 	})
 	if err != nil {
 		return err
@@ -322,14 +317,7 @@ func (p *paymentControl) Fail(paymentHash lntypes.Hash,
 
 		// Put the failure reason in the bucket for record keeping.
 		v := []byte{byte(reason)}
-		err = bucket.Put(paymentFailInfoKey, v)
-		if err != nil {
-			return err
-		}
-
-		// A failed response was received for an InFlight payment, mark
-		// it as Failed to allow subsequent attempts.
-		return bucket.Put(paymentStatusKey, StatusFailed.Bytes())
+		return bucket.Put(paymentFailInfoKey, v)
 	})
 	if err != nil {
 		return err
@@ -369,19 +357,22 @@ func nextPaymentSequence(tx *bbolt.Tx) ([]byte, error) {
 	return b, nil
 }
 
-// fetchPaymentStatus fetches the payment status from the bucket.  If the
-// status isn't found, it will default to "StatusUnknown".
+// fetchPaymentStatus fetches the payment status of the payment. If the payment
+// isn't found, it will default to "StatusUnknown".
 func fetchPaymentStatus(bucket *bbolt.Bucket) PaymentStatus {
-	// The default status for all payments that aren't recorded in
-	// database.
-	var paymentStatus = StatusUnknown
-
-	paymentStatusBytes := bucket.Get(paymentStatusKey)
-	if paymentStatusBytes != nil {
-		paymentStatus.FromBytes(paymentStatusBytes)
+	if bucket.Get(paymentSettleInfoKey) != nil {
+		return StatusSucceeded
 	}
 
-	return paymentStatus
+	if bucket.Get(paymentFailInfoKey) != nil {
+		return StatusFailed
+	}
+
+	if bucket.Get(paymentCreationInfoKey) != nil {
+		return StatusInFlight
+	}
+
+	return StatusUnknown
 }
 
 // InFlightPayment is a wrapper around a payment that has status InFlight.

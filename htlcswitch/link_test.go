@@ -1110,7 +1110,6 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 	// Send payment and expose err channel.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
 	)
 	if err != nil {
 		t.Fatalf("unable to get send payment: %v", err)
@@ -1129,7 +1128,15 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 		t.Fatalf("no result arrive")
 	}
 
-	fErr := result.Error
+	if result.Type == PaymentResultSuccess {
+		t.Fatalf("expected error got %d", result.Type)
+	}
+
+	fErr, err := newMockDeobfuscator().DecryptError(result.Reason)
+	if err != nil {
+		t.Fatalf("unable to decrypt error")
+	}
+
 	if !strings.Contains(fErr.Error(), lnwire.CodeUnknownPaymentHash.String()) {
 		t.Fatalf("expected %v got %v", lnwire.CodeUnknownPaymentHash, fErr)
 	}
@@ -3881,7 +3888,6 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	// properly.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
 	)
 	if err != nil {
 		t.Fatalf("unable to send payment to carol: %v", err)
@@ -3894,8 +3900,8 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 
 	select {
 	case result := <-resultChan:
-		if result.Error != nil {
-			t.Fatalf("payment failed: %v", result.Error)
+		if result.Type != PaymentResultSuccess {
+			t.Fatalf("payment failed")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("payment result did not arrive")
@@ -3905,7 +3911,6 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	// as it's a duplicate request.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
 	)
 	if err != ErrAlreadyPaid {
 		t.Fatalf("ErrAlreadyPaid should have been received got: %v", err)
@@ -5826,7 +5831,7 @@ func TestChannelLinkHoldInvoiceCancel(t *testing.T) {
 		if !strings.Contains(err.Error(),
 			lnwire.CodeUnknownPaymentHash.String()) {
 
-			t.Fatal("expected unknown payment hash")
+			t.Fatalf("expected unknown payment hash, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")

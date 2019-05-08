@@ -1,7 +1,6 @@
 package htlcswitch
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -71,11 +70,6 @@ type pendingPayment struct {
 	amount      lnwire.MilliSatoshi
 
 	resultChan chan *PaymentResult
-
-	// deobfuscator is a serializable entity which is used if we received
-	// an error, it deobfuscates the onion failure blob, and extracts the
-	// exact error from it.
-	deobfuscator ErrorDecrypter
 }
 
 // plexPacket encapsulates switch packet and adds error channel to receive
@@ -364,7 +358,7 @@ func (s *Switch) GetPaymentResult(paymentID uint64) (<-chan *PaymentResult, erro
 // package in order to send the htlc update. The paymentID used MUST be unique
 // for this HTLC, otherwise the switch might reject it.
 func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
-	htlc *lnwire.UpdateAddHTLC, deobfuscator ErrorDecrypter) error {
+	htlc *lnwire.UpdateAddHTLC) error {
 
 	// Before sending, double check that we don't already have 1) an
 	// in-flight payment to this payment hash, or 2) a complete payment for
@@ -376,10 +370,9 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	// Create payment and add to the map of payment in order later to be
 	// able to retrieve it and return response to the user.
 	payment := &pendingPayment{
-		resultChan:   make(chan *PaymentResult, 1),
-		paymentHash:  htlc.PaymentHash,
-		amount:       htlc.Amount,
-		deobfuscator: deobfuscator,
+		resultChan:  make(chan *PaymentResult, 1),
+		paymentHash: htlc.PaymentHash,
+		amount:      htlc.Amount,
 	}
 
 	s.pendingMutex.Lock()
@@ -896,6 +889,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		}
 
 		result = &PaymentResult{
+			Type:     PaymentResultSuccess,
 			Preimage: htlc.PaymentPreimage,
 		}
 
@@ -912,9 +906,19 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 			return
 		}
 
-		paymentErr := s.parseFailedPayment(payment, pkt, htlc)
+		var errType PaymentResultType
+		switch {
+		case pkt.localFailure || pkt.convertedError:
+			errType = PaymentResultLocalError
+		case pkt.isResolution:
+			errType = PaymentResultResolutionError
+		default:
+			errType = PaymentResultEncryptedError
+		}
+
 		result = &PaymentResult{
-			Error: paymentErr,
+			Type:   errType,
+			Reason: htlc.Reason,
 		}
 
 	default:
@@ -928,91 +932,6 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		payment.resultChan <- result
 		s.removePendingPayment(pkt.incomingHTLCID)
 	}
-}
-
-// parseFailedPayment determines the appropriate failure message to return to
-// a user initiated payment. The three cases handled are:
-// 1) A local failure, which should already plaintext.
-// 2) A resolution from the chain arbitrator,
-// 3) A failure from the remote party, which will need to be decrypted using the
-//      payment deobfuscator.
-func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
-	htlc *lnwire.UpdateFailHTLC) *ForwardingError {
-
-	var failure *ForwardingError
-
-	switch {
-
-	// The payment never cleared the link, so we don't need to
-	// decrypt the error, simply decode it them report back to the
-	// user.
-	case pkt.localFailure || pkt.convertedError:
-		var userErr string
-		r := bytes.NewReader(htlc.Reason)
-		failureMsg, err := lnwire.DecodeFailure(r, 0)
-		if err != nil {
-			userErr = fmt.Sprintf("unable to decode onion failure, "+
-				"htlc with hash(%x): %v",
-				pkt.circuit.PaymentHash[:], err)
-			log.Error(userErr)
-
-			// As this didn't even clear the link, we don't need to
-			// apply an update here since it goes directly to the
-			// router.
-			failureMsg = lnwire.NewTemporaryChannelFailure(nil)
-		}
-		failure = &ForwardingError{
-			ErrorSource:    s.cfg.SelfKey,
-			ExtraMsg:       userErr,
-			FailureMessage: failureMsg,
-		}
-
-	// A payment had to be timed out on chain before it got past
-	// the first hop. In this case, we'll report a permanent
-	// channel failure as this means us, or the remote party had to
-	// go on chain.
-	case pkt.isResolution && htlc.Reason == nil:
-		userErr := fmt.Sprintf("payment was resolved " +
-			"on-chain, then cancelled back")
-		failure = &ForwardingError{
-			ErrorSource:    s.cfg.SelfKey,
-			ExtraMsg:       userErr,
-			FailureMessage: lnwire.FailPermanentChannelFailure{},
-		}
-
-	// If the provided payment is nil, we have discarded the error decryptor
-	// due to a restart. We'll return a fixed error and signal a temporary
-	// channel failure to the router.
-	case payment == nil:
-		userErr := fmt.Sprintf("error decryptor for payment " +
-			"could not be located, likely due to restart")
-		failure = &ForwardingError{
-			ErrorSource:    s.cfg.SelfKey,
-			ExtraMsg:       userErr,
-			FailureMessage: lnwire.NewTemporaryChannelFailure(nil),
-		}
-
-	// A regular multi-hop payment error that we'll need to
-	// decrypt.
-	default:
-		var err error
-		// We'll attempt to fully decrypt the onion encrypted
-		// error. If we're unable to then we'll bail early.
-		failure, err = payment.deobfuscator.DecryptError(htlc.Reason)
-		if err != nil {
-			userErr := fmt.Sprintf("unable to de-obfuscate onion "+
-				"failure, htlc with hash(%x): %v",
-				pkt.circuit.PaymentHash[:], err)
-			log.Error(userErr)
-			failure = &ForwardingError{
-				ErrorSource:    s.cfg.SelfKey,
-				ExtraMsg:       userErr,
-				FailureMessage: lnwire.NewTemporaryChannelFailure(nil),
-			}
-		}
-	}
-
-	return failure
 }
 
 // handlePacketForward is used in cases when we need forward the htlc update

@@ -49,6 +49,7 @@ func (c *testCtx) RestartRouter() error {
 		Graph:              c.graph,
 		Chain:              c.chain,
 		ChainView:          c.chainView,
+		Sphinx:             newMockSphinxGenerator(),
 		Payer:              &mockPaymentAttemptDispatcher{},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
@@ -87,6 +88,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 		Graph:              graphInstance.graph,
 		Chain:              chain,
 		ChainView:          chainView,
+		Sphinx:             newMockSphinxGenerator(),
 		Payer:              &mockPaymentAttemptDispatcher{},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
@@ -307,6 +309,7 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 	// first hop. This should force the router to instead take the
 	// available two hop path (through satoshi).
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			roasbeefLuoji := lnwire.NewShortChanIDFromInt(689530843)
@@ -444,6 +447,7 @@ func TestChannelUpdateValidation(t *testing.T) {
 	// payment with an error originating from the first hop of the route.
 	// The unsigned channel update is attached to the failure message.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			v := ctx.aliases["b"]
@@ -575,6 +579,7 @@ func TestSendPaymentErrorRepeatedFeeInsufficient(t *testing.T) {
 	// outgoing channel to Son goku. This will be a fee related error, so
 	// it should only cause the edge to be pruned after the second attempt.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			roasbeefSongoku := lnwire.NewShortChanIDFromInt(chanID)
@@ -690,6 +695,7 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	// error, we should fail the payment flow all together, as Goku is the
 	// only channel to Sophon.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			if firstHop == roasbeefSongoku {
@@ -751,6 +757,7 @@ func TestSendPaymentErrorNonFinalTimeLockErrors(t *testing.T) {
 	// instead, this should result in the same behavior of roasbeef routing
 	// around the faulty Son Goku node.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			if firstHop == roasbeefSongoku {
@@ -828,6 +835,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// TODO(roasbeef): filtering should be intelligent enough so just not
 	// go through satoshi at all at this point.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			if firstHop == roasbeefLuoji {
@@ -883,6 +891,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// wasn't originally online. This should also halt the send all
 	// together as all paths contain luoji and he can't be reached.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			if firstHop == roasbeefLuoji {
@@ -926,6 +935,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	// roasbeef -> luoji channel has insufficient capacity. This should
 	// again cause us to instead go via the satoshi route.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
+		ctx.router.cfg.Sphinx.(*mockSphinxGenerator),
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
 			if firstHop == roasbeefLuoji {
@@ -1590,6 +1600,7 @@ func TestWakeUpOnStaleBranch(t *testing.T) {
 		Graph:              ctx.graph,
 		Chain:              ctx.chain,
 		ChainView:          ctx.chainView,
+		Sphinx:             newMockSphinxGenerator(),
 		Payer:              &mockPaymentAttemptDispatcher{},
 		ChannelPruneExpiry: time.Hour * 24,
 		GraphPruneInterval: time.Hour * 2,
@@ -2505,9 +2516,10 @@ func TestIsStaleEdgePolicy(t *testing.T) {
 func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 	t.Parallel()
 
+	s := NewSphinxGenerator()
 	sessionKey, _ := btcec.NewPrivateKey(btcec.S256())
 	emptyRoute := &route.Route{}
-	_, _, err := generateSphinxPacket(emptyRoute, testHash[:], sessionKey)
+	_, err := s.GenerateSphinxPacket(emptyRoute, testHash[:], sessionKey)
 	if err != route.ErrNoRouteHopsProvided {
 		t.Fatalf("expected empty hops error: instead got: %v", err)
 	}

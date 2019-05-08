@@ -564,3 +564,119 @@ func TestMigrateGossipMessageStoreKeys(t *testing.T) {
 		migrateGossipMessageStoreKeys, false,
 	)
 }
+
+// TestOutgoingPaymentsMigration checks that OutgoingPayments are migrated to a
+// new bucket structure after the migration.
+func TestOutgoingPaymentsMigration(t *testing.T) {
+	t.Parallel()
+
+	const numPayments = 3
+	var oldPayments []*OutgoingPayment
+
+	// Add fake payments to test database, verifying that it was created.
+	beforeMigrationFunc := func(d *DB) {
+		for i := 0; i < numPayments; i++ {
+			randomPayment, err := makeRandomFakePayment()
+			if err != nil {
+				t.Fatalf("unable to create payment: %v", err)
+			}
+
+			if err := d.AddPayment(randomPayment); err != nil {
+				t.Fatalf("unable to add payment: %v", err)
+			}
+
+			oldPayments = append(oldPayments, randomPayment)
+		}
+
+		payments, err := d.FetchAllPayments()
+		if err != nil {
+			t.Fatalf("unable to fetch payments: %v", err)
+		}
+
+		if len(payments) != numPayments {
+			t.Fatalf("wrong qty of paymets: expected %d got %v",
+				numPayments, len(payments))
+		}
+	}
+
+	// Verify that all payments were migrated.
+	afterMigrationFunc := func(d *DB) {
+		meta, err := d.FetchMeta(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if meta.DbVersionNumber != 1 {
+			t.Fatal("migration 'paymentStatusesMigration' wasn't applied")
+		}
+
+		sentPayments, err := d.FetchPayments()
+		if err != nil {
+			t.Fatalf("unable to fetch sent payments: %v", err)
+		}
+
+		if len(sentPayments) != numPayments {
+			t.Fatalf("expected %d payments, got %d", numPayments,
+				len(sentPayments))
+		}
+
+		graph := d.ChannelGraph()
+		sourceNode, err := graph.SourceNode()
+		if err != nil {
+			t.Fatalf("unable to fetch source node: %v", err)
+		}
+
+		for i, p := range sentPayments {
+			// The payment status should be Completed.
+			if p.Status != StatusCompleted {
+				t.Fatalf("expected Completed, got %v", p.Status)
+			}
+
+			// Order of payments should be be preserved.
+			old := oldPayments[i]
+
+			// Check the individial fields.
+			if p.Info.Value != old.Terms.Value {
+				t.Fatalf("value mismatch")
+			}
+
+			if p.Info.CreationDate != old.CreationDate {
+				t.Fatalf("date mismatch")
+			}
+
+			if !bytes.Equal(p.Info.PaymentRequest, old.PaymentRequest) {
+				t.Fatalf("payreq mismatch")
+			}
+
+			if p.PaymentPreimage != old.PaymentPreimage {
+				t.Fatalf("preimage mismatch")
+			}
+
+			if p.Attempt.Route.TotalFees != old.Fee {
+				t.Fatalf("Fee mismatch")
+			}
+
+			if p.Attempt.Route.TotalTimeLock != old.TimeLockLength {
+				t.Fatalf("timelock mismatch")
+			}
+
+			if p.Attempt.Route.SourcePubKey != sourceNode.PubKeyBytes {
+				t.Fatalf("source mismatch: %x vs %x",
+					p.Attempt.Route.SourcePubKey[:],
+					sourceNode.PubKeyBytes[:])
+			}
+
+			for i, hop := range old.Path {
+				if hop != p.Attempt.Route.Hops[i].PubKeyBytes {
+					t.Fatalf("path mismatch")
+				}
+			}
+		}
+	}
+
+	applyMigration(t,
+		beforeMigrationFunc,
+		afterMigrationFunc,
+		migrateOutgoingPayments,
+		false)
+}

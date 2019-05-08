@@ -790,10 +790,11 @@ func migrateOutgoingPayments(tx *bbolt.Tx) error {
 			})
 		}
 
+		priv, _ := btcec.NewPrivateKey(btcec.S256())
 		var attemptBuf bytes.Buffer
 		s := &PaymentAttemptInfo{
-			PaymentID:  0,                   // unknown.
-			SessionKey: &btcec.PrivateKey{}, // unknown.
+			PaymentID:  0,    // unknown.
+			SessionKey: priv, // unknown.
 			Route:      rt,
 		}
 

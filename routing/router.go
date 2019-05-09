@@ -1795,13 +1795,24 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 		firstHop, paymentID, htlcAdd, errorDecryptor,
 	)
 	if err != nil {
-		return [32]byte{}, true, err
+		log.Errorf("Failed sending attempt for payment %x to "+
+			"switch: %v", paymentHash, err)
+
+		// We must inspect the error to know whether it was critical or
+		// not, to decide whether we should continue trying.
+		finalOutcome := r.processSendError(
+			paySession, route, err,
+		)
+
+		return [32]byte{}, finalOutcome, err
 	}
 
+	// Now ask the switch to return the result of the payment when
+	// available.
 	resultChan, err := r.cfg.Payer.GetPaymentResult(paymentID)
 	if err != nil {
 		log.Errorf("failed getting payment "+
-			"result: %v", err)
+			"result from switch: %v", err)
 		return [32]byte{}, true, err
 	}
 
@@ -1832,7 +1843,12 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 // to continue with an alternative route. This is indicated by the boolean
 // return value.
 func (r *ChannelRouter) processSendError(paySession *paymentSession,
-	rt *route.Route, fErr *htlcswitch.ForwardingError) bool {
+	rt *route.Route, err error) bool {
+
+	fErr, ok := err.(*htlcswitch.ForwardingError)
+	if !ok {
+		return true
+	}
 
 	errSource := fErr.ErrorSource
 	errVertex := route.NewVertex(errSource)

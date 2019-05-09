@@ -24,9 +24,9 @@ const (
 	// is set.
 	PaymentResultSuccess PaymentResultType = 1
 
-	// PaymentResultLocalError indicates that a error was encountered
-	// locally, and the error Reason will be plaintext.
-	PaymentResultLocalError PaymentResultType = 2
+	// PaymentResultPlaintextError indicates that an error was encountered,
+	// and the error Reason is plaintext.
+	PaymentResultPlaintextError PaymentResultType = 2
 
 	// PaymentResultResolutionError indicates that the payment timed out
 	// on-chain, and the channel had to be closed.

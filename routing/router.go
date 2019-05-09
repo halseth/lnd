@@ -1807,7 +1807,7 @@ func (r *ChannelRouter) parseFailedPayment(paymentHash lntypes.Hash,
 
 	// The payment never cleared the link, so we don't need to decrypt the
 	// error, simply decode it them report back to the user.
-	case result.Type == htlcswitch.PaymentResultLocalError:
+	case result.Type == htlcswitch.PaymentResultPlaintextError:
 		var userErr string
 		rd := bytes.NewReader(result.Reason)
 		failureMsg, err := lnwire.DecodeFailure(rd, 0)

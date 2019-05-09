@@ -908,10 +908,14 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 
 		var errType PaymentResultType
 		switch {
+		// In case of a local failure or converted error, the reason
+		// will be plaintext.
 		case pkt.localFailure || pkt.convertedError:
-			errType = PaymentResultLocalError
+			errType = PaymentResultPlaintextError
+
 		case pkt.isResolution:
 			errType = PaymentResultResolutionError
+
 		default:
 			errType = PaymentResultEncryptedError
 		}

@@ -913,9 +913,13 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		case pkt.localFailure || pkt.convertedError:
 			errType = PaymentResultPlaintextError
 
-		case pkt.isResolution:
+		// The payment timed out on chain, and we don't have any error
+		// reason to decrypt.
+		case pkt.isResolution && htlc.Reason == nil:
 			errType = PaymentResultResolutionError
 
+		// In all other cases we will have an error reason that must be
+		// decrypted.
 		default:
 			errType = PaymentResultEncryptedError
 		}

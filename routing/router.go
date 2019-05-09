@@ -1831,7 +1831,7 @@ func (r *ChannelRouter) parseFailedPayment(paymentHash lntypes.Hash,
 	// A payment had to be timed out on chain before it got past the first
 	// hop. In this case, we'll report a permanent channel failure as this
 	// means us, or the remote party had to go on chain.
-	case result.Type == htlcswitch.PaymentResultResolutionError && result.Reason == nil:
+	case result.Type == htlcswitch.PaymentResultResolutionError:
 		userErr := fmt.Sprintf("payment was resolved " +
 			"on-chain, then cancelled back")
 		failure = &htlcswitch.ForwardingError{

@@ -29,7 +29,8 @@ const (
 	PaymentResultPlaintextError PaymentResultType = 2
 
 	// PaymentResultResolutionError indicates that the payment timed out
-	// on-chain, and the channel had to be closed.
+	// on-chain, and the channel had to be closed. In this case the Reason
+	// will be nil.
 	PaymentResultResolutionError PaymentResultType = 3
 
 	// PaymentResultEncryptedError indicates that a multi-hop payment
@@ -48,7 +49,6 @@ type PaymentResult struct {
 	// PaymentResultSuccess.
 	Preimage [32]byte
 
-	// Reason is set for all other result types, and will encode the error
-	// encountered.
+	// Reason will encode the error encountered for certain result types.
 	Reason lnwire.OpaqueReason
 }

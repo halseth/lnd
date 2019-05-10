@@ -913,7 +913,13 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 			return
 		}
 
-		paymentErr = s.parseFailedPayment(payment, pkt, htlc)
+		// The error reason will be unencypted in case this a local
+		// failure or a converted error.
+		unencrypted := pkt.localFailure || pkt.convertedError
+		paymentErr = s.parseFailedPayment(
+			payment.deobfuscator, unencrypted,
+			pkt.isResolution, htlc,
+		)
 
 	default:
 		log.Warnf("Received unknown response type: %T", pkt.htlc)
@@ -931,11 +937,13 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 
 // parseFailedPayment determines the appropriate failure message to return to
 // a user initiated payment. The three cases handled are:
-// 1) A local failure, which should already plaintext.
-// 2) A resolution from the chain arbitrator,
-// 3) A failure from the remote party, which will need to be decrypted using the
-//      payment deobfuscator.
-func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
+// 1) An unencrypted failure, which should already plaintext.
+// 2) A resolution from the chain arbitrator, which possibly has no failure
+//    reason attached.
+// 3) A failure from the remote party, which will need to be decrypted using
+//    the payment deobfuscator.
+func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
+	unencrypted, isResolution bool,
 	htlc *lnwire.UpdateFailHTLC) *ForwardingError {
 
 	var failure *ForwardingError
@@ -945,14 +953,13 @@ func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
 	// The payment never cleared the link, so we don't need to
 	// decrypt the error, simply decode it them report back to the
 	// user.
-	case pkt.localFailure || pkt.convertedError:
+	case unencrypted:
 		var userErr string
 		r := bytes.NewReader(htlc.Reason)
 		failureMsg, err := lnwire.DecodeFailure(r, 0)
 		if err != nil {
-			userErr = fmt.Sprintf("unable to decode onion failure, "+
-				"htlc with hash(%x): %v",
-				pkt.circuit.PaymentHash[:], err)
+			userErr = fmt.Sprintf("unable to decode onion "+
+				"failure: %v", err)
 			log.Error(userErr)
 
 			// As this didn't even clear the link, we don't need to
@@ -970,7 +977,7 @@ func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
 	// the first hop. In this case, we'll report a permanent
 	// channel failure as this means us, or the remote party had to
 	// go on chain.
-	case pkt.isResolution && htlc.Reason == nil:
+	case isResolution && htlc.Reason == nil:
 		userErr := fmt.Sprintf("payment was resolved " +
 			"on-chain, then cancelled back")
 		failure = &ForwardingError{
@@ -982,7 +989,7 @@ func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
 	// If the provided payment is nil, we have discarded the error decryptor
 	// due to a restart. We'll return a fixed error and signal a temporary
 	// channel failure to the router.
-	case payment == nil:
+	case deobfuscator == nil:
 		userErr := fmt.Sprintf("error decryptor for payment " +
 			"could not be located, likely due to restart")
 		failure = &ForwardingError{
@@ -997,11 +1004,10 @@ func (s *Switch) parseFailedPayment(payment *pendingPayment, pkt *htlcPacket,
 		var err error
 		// We'll attempt to fully decrypt the onion encrypted
 		// error. If we're unable to then we'll bail early.
-		failure, err = payment.deobfuscator.DecryptError(htlc.Reason)
+		failure, err = deobfuscator.DecryptError(htlc.Reason)
 		if err != nil {
-			userErr := fmt.Sprintf("unable to de-obfuscate onion "+
-				"failure, htlc with hash(%x): %v",
-				pkt.circuit.PaymentHash[:], err)
+			userErr := fmt.Sprintf("unable to de-obfuscate "+
+				"onion failure: %v", err)
 			log.Error(userErr)
 			failure = &ForwardingError{
 				ErrorSource:    s.cfg.SelfKey,

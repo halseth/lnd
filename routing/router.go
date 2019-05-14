@@ -133,15 +133,14 @@ type PaymentAttemptDispatcher interface {
 	// payment was unsuccessful.
 	SendHTLC(firstHop lnwire.ShortChannelID,
 		paymentID uint64,
-		htlcAdd *lnwire.UpdateAddHTLC,
-		deobfuscator htlcswitch.ErrorDecrypter) error
+		htlcAdd *lnwire.UpdateAddHTLC) error
 
 	// GetPaymentResult returns the the result of the payment attempt with
 	// the given paymentID. The method returns a channel where the payment
 	// result will be sent when available, or an error is encountered. If
 	// the paymentID is unknown, htlcswitch.ErrPaymentIDNotFound will be
 	// returned.
-	GetPaymentResult(paymentID uint64) (
+	GetPaymentResult(paymentID uint64, deobfuscator htlcswitch.ErrorDecrypter) (
 		<-chan *htlcswitch.PaymentResult, error)
 }
 
@@ -1721,7 +1720,7 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 	}
 
 	err = r.cfg.Payer.SendHTLC(
-		firstHop, paymentID, htlcAdd, errorDecryptor,
+		firstHop, paymentID, htlcAdd,
 	)
 	if err != nil {
 		log.Errorf("Failed sending attempt %d for payment %x to "+
@@ -1738,7 +1737,9 @@ func (r *ChannelRouter) sendPaymentAttempt(paySession *paymentSession,
 
 	// Now ask the switch to return the result of the payment when
 	// available.
-	resultChan, err := r.cfg.Payer.GetPaymentResult(paymentID)
+	resultChan, err := r.cfg.Payer.GetPaymentResult(
+		paymentID, errorDecryptor,
+	)
 	if err != nil {
 		log.Errorf("Failed getting result for paymentID %d "+
 			"from switch: %v", paymentID, err)

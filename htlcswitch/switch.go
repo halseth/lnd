@@ -68,15 +68,10 @@ var (
 // updates to be received whether the payment has been rejected or proceed
 // successfully.
 type pendingPayment struct {
-	paymentHash lnwallet.PaymentHash
+	paymentHash lntypes.Hash
 	amount      lnwire.MilliSatoshi
 
-	resultChan chan *PaymentResult
-
-	// deobfuscator is a serializable entity which is used if we received
-	// an error, it deobfuscates the onion failure blob, and extracts the
-	// exact error from it.
-	deobfuscator ErrorDecrypter
+	resultChan chan *networkResult
 }
 
 // plexPacket encapsulates switch packet and adds error channel to receive
@@ -349,7 +344,9 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 // given paymentID. The method returns a channel where the payment result will
 // be sent when available, or an error is encountered. If the paymentID is
 // unknown, ErrPaymentIDNotFound will be returned.
-func (s *Switch) GetPaymentResult(paymentID uint64) (<-chan *PaymentResult, error) {
+func (s *Switch) GetPaymentResult(paymentID uint64,
+	deobfuscator ErrorDecrypter) (<-chan *PaymentResult, error) {
+
 	s.pendingMutex.Lock()
 	payment, ok := s.pendingPayments[paymentID]
 	s.pendingMutex.Unlock()
@@ -358,7 +355,34 @@ func (s *Switch) GetPaymentResult(paymentID uint64) (<-chan *PaymentResult, erro
 		return nil, ErrPaymentIDNotFound
 	}
 
-	return payment.resultChan, nil
+	resultChan := make(chan *PaymentResult, 1)
+
+	// Since the payment was known, we can start a goroutine that can
+	// extract the result when it is available, and pass it on to the
+	// caller.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+
+		var n *networkResult
+		select {
+		case n = <-payment.resultChan:
+		case <-s.quit:
+			return
+		}
+
+		// Extract the result and pass it to the result channel.
+		result, err := s.extractResult(
+			deobfuscator, n, payment.paymentHash,
+		)
+		if err != nil {
+			log.Errorf("Unable to extract result: %v", err)
+			return
+		}
+		resultChan <- result
+	}()
+
+	return resultChan, nil
 }
 
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
@@ -366,7 +390,7 @@ func (s *Switch) GetPaymentResult(paymentID uint64) (<-chan *PaymentResult, erro
 // for this HTLC, and MUST be used only once, otherwise the switch might reject
 // it.
 func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
-	htlc *lnwire.UpdateAddHTLC, deobfuscator ErrorDecrypter) error {
+	htlc *lnwire.UpdateAddHTLC) error {
 
 	// Before sending, double check that we don't already have 1) an
 	// in-flight payment to this payment hash, or 2) a complete payment for
@@ -378,10 +402,9 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	// Create payment and add to the map of payment in order later to be
 	// able to retrieve it and return response to the user.
 	payment := &pendingPayment{
-		resultChan:   make(chan *PaymentResult, 1),
-		paymentHash:  htlc.PaymentHash,
-		amount:       htlc.Amount,
-		deobfuscator: deobfuscator,
+		resultChan:  make(chan *networkResult, 1),
+		paymentHash: htlc.PaymentHash,
+		amount:      htlc.Amount,
 	}
 
 	s.pendingMutex.Lock()
@@ -889,18 +912,10 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 		isResolution: pkt.isResolution,
 	}
 
-	result, err := s.extractResult(
-		payment.deobfuscator, n, pkt.circuit.PaymentHash,
-	)
-	if err != nil {
-		log.Errorf("Unable to extract result: %v", err)
-		return
-	}
-
 	// Deliver the payment error and preimage to the application, if it is
 	// waiting for a response.
 	if payment != nil {
-		payment.resultChan <- result
+		payment.resultChan <- n
 		s.removePendingPayment(pkt.incomingHTLCID)
 	}
 }
@@ -1003,18 +1018,6 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 			ErrorSource:    s.cfg.SelfKey,
 			ExtraMsg:       userErr,
 			FailureMessage: lnwire.FailPermanentChannelFailure{},
-		}
-
-	// If the provided payment is nil, we have discarded the error decryptor
-	// due to a restart. We'll return a fixed error and signal a temporary
-	// channel failure to the router.
-	case deobfuscator == nil:
-		userErr := fmt.Sprintf("error decryptor for payment " +
-			"could not be located, likely due to restart")
-		failure = &ForwardingError{
-			ErrorSource:    s.cfg.SelfKey,
-			ExtraMsg:       userErr,
-			FailureMessage: lnwire.NewTemporaryChannelFailure(nil),
 		}
 
 	// A regular multi-hop payment error that we'll need to

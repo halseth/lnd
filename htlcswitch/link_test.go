@@ -1110,13 +1110,14 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 	// Send payment and expose err channel.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
 	)
 	if err != nil {
 		t.Fatalf("unable to get send payment: %v", err)
 	}
 
-	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(pid)
+	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(
+		pid, newMockDeobfuscator(),
+	)
 	if err != nil {
 		t.Fatalf("unable to get payment result: %v", err)
 	}
@@ -3881,13 +3882,14 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	// properly.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
 	)
 	if err != nil {
 		t.Fatalf("unable to send payment to carol: %v", err)
 	}
 
-	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(pid)
+	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(
+		pid, newMockDeobfuscator(),
+	)
 	if err != nil {
 		t.Fatalf("unable to get payment result: %v", err)
 	}
@@ -3905,7 +3907,6 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 	// as it's a duplicate request.
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
-		newMockDeobfuscator(),
 	)
 	if err != ErrAlreadyPaid {
 		t.Fatalf("ErrAlreadyPaid should have been received got: %v", err)

@@ -1690,7 +1690,7 @@ func (s createAttempt) nextState() (paymentState, error) {
 			"before timeout")
 		lastError := newErr(ErrPaymentAttemptTimeout, errStr)
 
-		return failPayment{s.commonInfo, lastError}, nil
+		return failPayment{s.commonInfo, channeldb.FailureReasonTimeout, lastError}, nil
 
 	case <-s.r.quit:
 		// The payment will be resumed from the current state
@@ -1711,7 +1711,7 @@ func (s createAttempt) nextState() (paymentState, error) {
 		// any of the routes we've found, then mark the payment
 		// as permanently failed.
 		// TODO: lastError
-		return failPayment{s.commonInfo, err}, nil
+		return failPayment{s.commonInfo, channeldb.FailureReasonNoRoute, err}, nil
 	}
 
 	// Generate a new key to be used for this attempt.
@@ -1893,7 +1893,7 @@ func (s processAttemptFailure) nextState() (paymentState, error) {
 			"final outcome: %v",
 			s.payment.PaymentHash, s.failure)
 
-		return failPayment{s.commonInfo, s.failure}, nil
+		return failPayment{s.commonInfo, channeldb.FailureReasonNoRoute, s.failure}, nil
 	}
 
 	return createAttempt{s.commonInfo}, nil
@@ -1929,6 +1929,7 @@ func (s processAttemptSuccess) nextState() (paymentState, error) {
 
 type failPayment struct {
 	commonInfo
+	reason    channeldb.FailureReason
 	lastError error
 }
 
@@ -1936,7 +1937,7 @@ var _ paymentState = (*failPayment)(nil)
 
 func (s failPayment) nextState() (paymentState, error) {
 	err := s.r.cfg.Control.Fail(
-		s.payment.PaymentHash,
+		s.payment.PaymentHash, s.reason,
 	)
 	if err != nil {
 		return nil, err

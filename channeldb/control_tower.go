@@ -24,6 +24,10 @@ var (
 	// recomplete a completed payment.
 	ErrPaymentAlreadyCompleted = errors.New("payment is already completed")
 
+	// ErrPaymentAlreadyFailed is returned in the event we attempt to
+	// re-fail a failed payment.
+	ErrPaymentAlreadyFailed = errors.New("payment has already failed")
+
 	// ErrUnknownPaymentStatus is returned when we do not recognize the
 	// existing state of a payment.
 	ErrUnknownPaymentStatus = errors.New("unknown payment status")
@@ -86,6 +90,10 @@ func (p *paymentControl) ClearForTakeoff(htlc *lnwire.UpdateAddHTLC) error {
 
 		switch paymentStatus {
 
+		// We allow retrying failed payments.
+		case StatusFailed:
+			fallthrough
+
 		// It is safe to reattempt a payment if we know that we haven't
 		// left one in flight. Since this one is grounded or failed,
 		// transition the payment status to InFlight to prevent others.
@@ -139,6 +147,12 @@ func (p *paymentControl) Success(paymentHash [32]byte) error {
 		// meaning it never should have left the switch.
 		case paymentStatus == StatusGrounded:
 			updateErr = ErrPaymentNotInitiated
+
+		// The payment was already failed, and we are now reporting
+		// that it has succeeded. Return an error to not camouflague
+		// this bug.
+		case paymentStatus == StatusFailed:
+			updateErr = ErrPaymentAlreadyFailed
 
 		// A successful response was received for an InFlight payment,
 		// mark it as completed to prevent sending to this payment hash
@@ -198,6 +212,12 @@ func (p *paymentControl) Fail(paymentHash [32]byte) error {
 		// but alert the user that something is wrong.
 		case paymentStatus == StatusCompleted:
 			updateErr = ErrPaymentAlreadyCompleted
+
+		// The payment was already failed, and we are now reporting that
+		// it has failed again. Leave the status as failed, but alert
+		// the user that something is wrong.
+		case paymentStatus == StatusFailed:
+			updateErr = ErrPaymentAlreadyFailed
 
 		default:
 			updateErr = ErrUnknownPaymentStatus

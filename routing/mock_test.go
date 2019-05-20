@@ -1,8 +1,12 @@
 package routing
 
 import (
+	"fmt"
+
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 type mockPaymentAttemptDispatcher struct {
@@ -61,4 +65,51 @@ func (m *mockPaymentAttemptDispatcher) setPaymentResult(
 	f func(firstHop lnwire.ShortChannelID) ([32]byte, error)) {
 
 	m.onPayment = f
+}
+
+type mockPaymentSessionSource struct {
+	routes []*route.Route
+}
+
+var _ PaymentSessionSource = (*mockPaymentSessionSource)(nil)
+
+func (m *mockPaymentSessionSource) NewPaymentSession(routeHints [][]zpay32.HopHint,
+	target route.Vertex) (PaymentSession, error) {
+
+	return &mockPaymentSession{m.routes}, nil
+}
+
+func (m *mockPaymentSessionSource) NewPaymentSessionForRoute(
+	preBuiltRoute *route.Route) PaymentSession {
+	return nil
+}
+
+func (m *mockPaymentSessionSource) NewPaymentSessionEmpty() PaymentSession {
+	return &mockPaymentSession{}
+}
+
+type mockPaymentSession struct {
+	routes []*route.Route
+}
+
+var _ PaymentSession = (*mockPaymentSession)(nil)
+
+func (m *mockPaymentSession) RequestRoute(payment *LightningPayment,
+	height uint32, finalCltvDelta uint16) (*route.Route, error) {
+
+	if len(m.routes) == 0 {
+		return nil, fmt.Errorf("no routes")
+	}
+
+	r := m.routes[0]
+	m.routes = m.routes[1:]
+
+	return r, nil
+}
+
+func (m *mockPaymentSession) ReportVertexFailure(v route.Vertex) {}
+
+func (m *mockPaymentSession) ReportEdgeFailure(e *EdgeLocator) {}
+
+func (m *mockPaymentSession) ReportEdgePolicyFailure(errSource route.Vertex, failedEdge *EdgeLocator) {
 }

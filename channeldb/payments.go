@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -379,6 +381,113 @@ type PaymentAttemptInfo struct {
 
 	// Route is the route attempted to send the HTLC.
 	Route route.Route
+}
+
+// Payment is a wrapper around a payment's PaymentCreationInfo,
+// PaymentAttemptInfo, and preimage. All payments will have the
+// PaymentCreationInfo set, the PaymentAttemptInfo will be set only if at least
+// one payment attempt has been made, while only completed payments will have a
+// non-zero payment preimage.
+type Payment struct {
+	// sequenceNum is a unique identifier used to sort the payments in
+	// order of creation.
+	sequenceNum uint64
+
+	// Status is the current PaymentStatus of this payment.
+	Status PaymentStatus
+
+	// Info holds all static information about this payment, and is
+	// populated when the payment is initiated.
+	Info *PaymentCreationInfo
+
+	// Attempt is the information about the last payment attempt made.
+	//
+	// NOTE: Can be nil if no attempt is yet made.
+	Attempt *PaymentAttemptInfo
+
+	// PaymentPreimage is the preimage of a successful payment. This serves
+	// as a proof of payment. It will be all zeroes for non-settled
+	// payments.
+	PaymentPreimage lntypes.Preimage
+}
+
+// FetchPayments returns all sent payments found in the DB.
+func (db *DB) FetchPayments() ([]*Payment, error) {
+	var payments []*Payment
+
+	err := db.View(func(tx *bbolt.Tx) error {
+		paymentsBucket := tx.Bucket(paymentsRootBucket)
+		if paymentsBucket == nil {
+			return nil
+		}
+
+		return paymentsBucket.ForEach(func(k, v []byte) error {
+			bucket := paymentsBucket.Bucket(k)
+			if bucket == nil {
+				// We only expect sub-buckets to be found in
+				// this top-level bucket.
+				return fmt.Errorf("non bucket element")
+			}
+
+			var (
+				err error
+				p   = &Payment{}
+			)
+
+			seqBytes := bucket.Get(paymentSequenceKey)
+			if seqBytes == nil {
+				return fmt.Errorf("sequence number not found")
+			}
+
+			p.sequenceNum = binary.BigEndian.Uint64(seqBytes)
+
+			// Get the payment status.
+			p.Status = fetchPaymentStatus(bucket)
+
+			// Get the PaymentCreationInfo.
+			b := bucket.Get(paymentCreationInfoKey)
+			if b == nil {
+				return fmt.Errorf("creation info not found")
+			}
+
+			r := bytes.NewReader(b)
+			p.Info, err = deserializePaymentCreationInfo(r)
+			if err != nil {
+				return err
+
+			}
+
+			// Get the PaymentAttemptInfo. This can be unset.
+			b = bucket.Get(paymentAttemptInfoKey)
+			if b != nil {
+				r = bytes.NewReader(b)
+				p.Attempt, err = deserializePaymentAttemptInfo(r)
+				if err != nil {
+					return err
+				}
+			}
+
+			// Get the payment preimage. This is only found for
+			// completed payments.
+			b = bucket.Get(paymentSettleInfoKey)
+			if b != nil {
+				copy(p.PaymentPreimage[:], b[:])
+			}
+
+			payments = append(payments, p)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Before returning, sort the payments by their sequence number.
+	sort.Slice(payments, func(i, j int) bool {
+		return payments[i].sequenceNum < payments[j].sequenceNum
+	})
+
+	return payments, nil
 }
 
 func serializePaymentCreationInfo(w io.Writer, c *PaymentCreationInfo) error {

@@ -743,13 +743,6 @@ func migrateOutgoingPayments(tx *bbolt.Tx) error {
 			return err
 		}
 
-		// Since only completed payments were previously stored as
-		// OutgoingPayments, set the status as Completed.
-		err = bucket.Put(paymentStatusKey, StatusSucceeded.Bytes())
-		if err != nil {
-			return err
-		}
-
 		// Reuse the existing payment sequence number.
 		var seqNum [8]byte
 		copy(seqNum[:], k)

@@ -23,10 +23,6 @@ var (
 	// hash.
 	paymentsRootBucket = []byte("payments-root-bucket")
 
-	// paymentStatusKey is a key used in the payment's sub-bucket to store
-	// the status of the payment.
-	paymentStatusKey = []byte("payment-status-key")
-
 	// paymentSequenceKey is a key used in the payment's sub-bucket to
 	// store the sequence number of the payment.
 	paymentSequenceKey = []byte("payment-sequence-key")

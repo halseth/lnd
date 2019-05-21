@@ -228,37 +228,9 @@ func (p *paymentControl) Success(paymentHash lntypes.Hash,
 			return err
 		}
 
-		// Get the existing status, if any.
-		paymentStatus := fetchPaymentStatus(bucket)
-
-		switch {
-
-		// Our records show the payment as unknown, meaning it never
-		// should have left the switch.
-		case paymentStatus == StatusUnknown:
-			updateErr = ErrPaymentNotInitiated
-			return nil
-
-		// The payment was already failed, and we are now reporting
-		// that it has succeeded. Return an error to not camouflague
-		// this bug.
-		case paymentStatus == StatusFailed:
-			updateErr = ErrPaymentAlreadyFailed
-			return nil
-
-		// A successful response was received for an InFlight payment,
-		// mark it as succeeded to prevent sending to this payment hash
-		// again.
-		case paymentStatus == StatusInFlight:
-
-		// The payment was succeeded previously, alert the caller that
-		// this may be a duplicate call.
-		case paymentStatus == StatusSucceeded:
-			updateErr = ErrPaymentAlreadySucceeded
-			return nil
-
-		default:
-			updateErr = ErrUnknownPaymentStatus
+		// We can only mark in-flight payments as succeeded.
+		if err := ensureInFlight(bucket); err != nil {
+			updateErr = err
 			return nil
 		}
 
@@ -301,36 +273,9 @@ func (p *paymentControl) Fail(paymentHash lntypes.Hash,
 			return err
 		}
 
-		paymentStatus := fetchPaymentStatus(bucket)
-
-		switch {
-
-		// Our records show the payment as unknown, meaning it never
-		// should have left the switch.
-		case paymentStatus == StatusUnknown:
-			updateErr = ErrPaymentNotInitiated
-			return nil
-
-		// A failed response was received for an InFlight payment, mark
-		// it as Failed to allow subsequent attempts.
-		case paymentStatus == StatusInFlight:
-
-		// The payment succeeded previously, and we are now reporting
-		// that it has failed. Leave the status as suceeded, but alert
-		// the user that something is wrong.
-		case paymentStatus == StatusSucceeded:
-			updateErr = ErrPaymentAlreadySucceeded
-			return nil
-
-		// The payment was already failed, and we are now reporting that
-		// it has failed again. Leave the status as failed, but alert
-		// the user that something is wrong.
-		case paymentStatus == StatusFailed:
-			updateErr = ErrPaymentAlreadyFailed
-			return nil
-
-		default:
-			updateErr = ErrUnknownPaymentStatus
+		// We can only mark in-flight payments as failed.
+		if err := ensureInFlight(bucket); err != nil {
+			updateErr = err
 			return nil
 		}
 
@@ -411,6 +356,36 @@ func fetchPaymentStatus(bucket *bbolt.Bucket) PaymentStatus {
 	}
 
 	return StatusUnknown
+}
+
+// ensureInFlight checks whether the payment found in the given bucket has
+// status InFlight, and returns an error otherwise. This should be used to
+// ensure we only mark in-flight payments as succeeded or failed.
+func ensureInFlight(bucket *bbolt.Bucket) error {
+	paymentStatus := fetchPaymentStatus(bucket)
+
+	switch {
+
+	// The payment was indeed InFlight, return.
+	case paymentStatus == StatusInFlight:
+		return nil
+
+	// Our records show the payment as unknown, meaning it never
+	// should have left the switch.
+	case paymentStatus == StatusUnknown:
+		return ErrPaymentNotInitiated
+
+		// The payment succeeded previously.
+	case paymentStatus == StatusSucceeded:
+		return ErrPaymentAlreadySucceeded
+
+	// The payment was already failed.
+	case paymentStatus == StatusFailed:
+		return ErrPaymentAlreadyFailed
+
+	default:
+		return ErrUnknownPaymentStatus
+	}
 }
 
 // InFlightPayment is a wrapper around a payment that has status InFlight.

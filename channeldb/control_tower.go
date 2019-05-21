@@ -197,6 +197,13 @@ func (p *paymentControl) RegisterAttempt(paymentHash lntypes.Hash,
 			return err
 		}
 
+		// We can only register attempts for payments that are
+		// in-flight.
+		if err := ensureInFlight(bucket); err != nil {
+			updateErr = err
+			return nil
+		}
+
 		// Add the payment attempt to the payments bucket.
 		return bucket.Put(paymentAttemptInfoKey, attemptBytes)
 	})

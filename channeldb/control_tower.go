@@ -241,12 +241,6 @@ func (p *paymentControl) Success(paymentHash lntypes.Hash,
 			return nil
 		}
 
-		// We'll delete any failed info to.
-		err = bucket.Delete(paymentFailInfoKey)
-		if err != nil {
-			return err
-		}
-
 		// Record the successful payment info atomically to the
 		// payments record.
 		return bucket.Put(paymentSettleInfoKey, preimage[:])

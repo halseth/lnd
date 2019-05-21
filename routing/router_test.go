@@ -2567,26 +2567,80 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 		t.Fatalf("unable to create route: %v", err)
 	}
 
+	// A payment state machine test case consists of several ordered steps,
+	// that we use for driving the scenario.
 	type testCase struct {
-		steps  []string
+		// steps is a list of steps to perform during the testcase.
+		steps []string
+
+		// routes is the sequence of routes we will provide to the
+		// router when it requests a new route.
 		routes []*route.Route
 	}
 
 	const (
-		routerInitPayment       = "Router:init-payment"
-		routerRegisterAttempt   = "Router:register-attempt"
-		routerSuccess           = "Router:success"
-		routerFail              = "Router:fail"
-		sendToSwitchSuccess     = "SendToSwitch:success"
+		// routerInitPayment is a test step where we expect the router
+		// to call the InitPayment method on the control tower.
+		routerInitPayment = "Router:init-payment"
+
+		// routerRegisterAttempt is a test step where we expect the
+		// router to call the RegisterAttempt method on the control
+		// tower.
+		routerRegisterAttempt = "Router:register-attempt"
+
+		// routerSuccess is a test step where we expect the router to
+		// call the Success method on the control tower.
+		routerSuccess = "Router:success"
+
+		// routerFail is a test step where we expect the router to call
+		// the Fail method on the control tower.
+		routerFail = "Router:fail"
+
+		// sendToSwitchSuccess is a step where we expect the router to
+		// call send the payment attempt to the switch, and we will
+		// respond with a non-error, indicating that the payment
+		// attempt was successfully forwarded.
+		sendToSwitchSuccess = "SendToSwitch:success"
+
+		// getPaymentResultSuccess is a test step where we expect the
+		// router to call the GetPaymentResult method, and we will
+		// respond with a successful payment result.
 		getPaymentResultSuccess = "GetPaymentResult:success"
+
+		// getPaymentResultFailure is a test step where we expect the
+		// router to call the GetPaymentResult method, and we will
+		// respond with a forwarding error.
 		getPaymentResultFailure = "GetPaymentResult:failure"
-		resendPayment           = "ResendPayment"
-		startRouter             = "StartRouter"
-		stopRouter              = "StopRouter"
-		paymentError            = "PaymentError"
-		paymentSuccess          = "PaymentSuccess"
-		resentPaymentSuccess    = "ResentPaymentSuccess"
-		resentPaymentError      = "ResentPaymentError"
+
+		// resendPayment is a test step where we manually try to resend
+		// the same payment, making sure the router responds with an
+		// error indicating that it is alreayd in flight.
+		resendPayment = "ResendPayment"
+
+		// startRouter is a step where we manually start the router,
+		// used to test that it automatically will resume payments at
+		// startup.
+		startRouter = "StartRouter"
+
+		// stopRouter is a test step where we manually make the router
+		// shut down.
+		stopRouter = "StopRouter"
+
+		// paymentSuccess is a step where assert that we receive a
+		// successful result for the original payment made.
+		paymentSuccess = "PaymentSuccess"
+
+		// paymentError is a step where assert that we receive an error
+		// for the original payment made.
+		paymentError = "PaymentError"
+
+		// resentPaymentSuccess is a step where assert that we receive
+		// a successful result for a payment that was resent.
+		resentPaymentSuccess = "ResentPaymentSuccess"
+
+		// resentPaymentError is a step where assert that we receive an
+		// error for a payment that was resent.
+		resentPaymentError = "ResentPaymentError"
 	)
 
 	tests := []testCase{
@@ -2609,9 +2663,15 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerInitPayment,
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
+
+				// Make the first sent attempt fail.
 				getPaymentResultFailure,
+
+				// The router should retry.
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
+
+				// Make the second sent attempt succeed.
 				getPaymentResultSuccess,
 				routerSuccess,
 				paymentSuccess,
@@ -2626,7 +2686,12 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerInitPayment,
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
+
+				// Make the first sent attempt fail.
 				getPaymentResultFailure,
+
+				// Since there are no more routes to try, the
+				// payment should fail.
 				routerFail,
 				paymentError,
 			},
@@ -2650,15 +2715,33 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 			steps: []string{
 				routerInitPayment,
 				routerRegisterAttempt,
+
+				// Manually resend the payment, the router
+				// should attempt to init with the control
+				// tower, but fail since it is already in
+				// flight.
 				resendPayment,
 				routerInitPayment,
 				resentPaymentError,
+
+				// The original payment should proceed as
+				// normal.
 				sendToSwitchSuccess,
+
+				// Again resend the payment and assert it's not
+				// allowed.
 				resendPayment,
 				routerInitPayment,
 				resentPaymentError,
+
+				// Notify about a success for the original
+				// payment.
 				getPaymentResultSuccess,
 				routerSuccess,
+
+				// Now that the original payment finished,
+				// resend it again to ensure this is not
+				// allowed.
 				resendPayment,
 				routerInitPayment,
 				resentPaymentError,
@@ -2673,8 +2756,15 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerInitPayment,
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
+
+				// Shut down the router. The original caller
+				// should get notified about this.
 				stopRouter,
 				paymentError,
+
+				// Start the router again, and ensure the
+				// router registers the success with the
+				// control tower.
 				startRouter,
 				getPaymentResultSuccess,
 				routerSuccess,
@@ -2688,12 +2778,23 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerInitPayment,
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
+
+				// Resending the payment at this stage should
+				// not be allowed.
 				resendPayment,
 				routerInitPayment,
 				resentPaymentError,
+
+				// Make the first attempt fail.
 				getPaymentResultFailure,
 				routerFail,
+
+				// Since we have no more routes to try, the
+				// original payment should fail.
 				paymentError,
+
+				// Now resend the payment again. This should be
+				// allowed, since the payment has failed.
 				resendPayment,
 				routerInitPayment,
 				routerRegisterAttempt,

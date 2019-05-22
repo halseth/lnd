@@ -497,6 +497,19 @@ func (db *DB) FetchPayments() ([]*Payment, error) {
 	return payments, nil
 }
 
+// DeletePayments deletes all payments from the DB.
+func (db *DB) DeletePayments() error {
+	return db.Update(func(tx *bbolt.Tx) error {
+		err := tx.DeleteBucket(paymentsRootBucket)
+		if err != nil && err != bbolt.ErrBucketNotFound {
+			return err
+		}
+
+		_, err = tx.CreateBucket(paymentsRootBucket)
+		return err
+	})
+}
+
 func serializePaymentCreationInfo(w io.Writer, c *PaymentCreationInfo) error {
 	var scratch [8]byte
 

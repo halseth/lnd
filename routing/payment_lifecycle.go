@@ -144,20 +144,15 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				log.Errorf("Failed sending attempt %d for payment "+
 					"%x to switch: %v", paymentID, p.payment.PaymentHash, err)
 
-				// We must inspect the error to know whether it was
-				// critical or not, to decide whether we should
-				// continue trying.
-				finalOutcome := p.router.processSendError(
-					p.paySession, route, err,
-				)
-				if finalOutcome {
+				// We must inspect the error to know whether it
+				// was critical or not, to decide whether we
+				// should continue trying.
+				if err := p.handleSendError(err); err != nil {
 					return [32]byte{}, nil, err
 				}
 
-				p.lastError = err
-
-				// We make another payment attempt.
-				p.attempt = nil
+				// Error was handled successfully, make a new
+				// payment attempt.
 				continue
 			}
 
@@ -237,24 +232,15 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			log.Errorf("Attempt to send payment %x failed: %v",
 				p.payment.PaymentHash, result.Error)
 
-			finalOutcome := p.router.processSendError(
-				p.paySession, &p.attempt.Route, result.Error,
-			)
-
-			if finalOutcome {
-				log.Errorf("Payment %x failed with "+
-					"final outcome: %v",
-					p.payment.PaymentHash, result.Error)
-
-				// Terminal state, return the error we
-				// encountered.
-				return [32]byte{}, nil, result.Error
+			// We must inspect the error to know whether it was
+			// critical or not, to decide whether we should
+			// continue trying.
+			if err := p.handleSendError(result.Error); err != nil {
+				return [32]byte{}, nil, err
 			}
 
-			p.lastError = result.Error
-
-			// We make another payment attempt.
-			p.attempt = nil
+			// Error was handled successfully, make a new payment
+			// attempt.
 			continue
 		}
 
@@ -267,4 +253,26 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 		return result.Preimage, &p.attempt.Route, nil
 	}
 
+}
+
+// handleSendError inspects the given error and determines whether we should
+// make another payment attempt.
+func (p *paymentLifecycle) handleSendError(sendErr error) error {
+	finalOutcome := p.router.processSendError(
+		p.paySession, &p.attempt.Route, sendErr,
+	)
+
+	if finalOutcome {
+		log.Errorf("Payment %x failed with final outcome: %v",
+			p.payment.PaymentHash, sendErr)
+
+		// Terminal state, return the error we encountered.
+		return sendErr
+	}
+
+	// We get ready to make another payment attempt.
+	p.lastError = sendErr
+	p.attempt = nil
+
+	return nil
 }

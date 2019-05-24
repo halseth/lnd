@@ -989,6 +989,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 	// the first hop. In this case, we'll report a permanent
 	// channel failure as this means us, or the remote party had to
 	// go on chain.
+	// TODO: check reason length instead
 	case isResolution && htlc.Reason == nil:
 		userErr := fmt.Sprintf("payment was resolved "+
 			"on-chain, then cancelled back (hash=%v, pid=%d)",

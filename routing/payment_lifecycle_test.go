@@ -129,6 +129,10 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 		// to call the Fail method on the control tower.
 		routerFailPayment = "Router:fail-payment"
 
+		// routerAckResult is a step where we expect the router to ACK
+		// the last result we delivered from GetPaymentResult.
+		routerAckResult = "Router:ack"
+
 		// sendToSwitchSuccess is a step where we expect the router to
 		// call send the payment attempt to the switch, and we will
 		// respond with a non-error, indicating that the payment
@@ -197,6 +201,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				sendToSwitchSuccess,
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 				paymentSuccess,
 			},
 			routes: []*route.Route{rt},
@@ -213,6 +218,10 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				getPaymentResultTempFailure,
 				routerFailAttempt,
 
+				// The router will decide to retry, then ACK
+				// the result.
+				routerAckResult,
+
 				// The router should retry.
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
@@ -220,7 +229,29 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// Make the second sent attempt succeed.
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 				paymentSuccess,
+			},
+			routes: []*route.Route{rt, rt},
+		},
+		{
+			// A payment flow with a critical failure on the first
+			// attempt, prompting the router to not retry.
+			steps: []string{
+				routerInitPayment,
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// Make the sent attempt fail with a critical
+				// error.
+				getPaymentResultTerminalFailure,
+
+				// The router should NOT retry, but fail the
+				// payment immediately, before ACKing the
+				// result.
+				routerFailAttempt,
+				routerAckResult,
+				paymentError,
 			},
 			routes: []*route.Route{rt, rt},
 		},
@@ -235,6 +266,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// Make the first sent attempt fail.
 				sendToSwitchResultFailure,
 				routerFailAttempt,
+				routerAckResult,
 
 				// The router should retry.
 				routerRegisterAttempt,
@@ -243,6 +275,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// Make the second sent attempt succeed.
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 				paymentSuccess,
 			},
 			routes: []*route.Route{rt, rt},
@@ -259,6 +292,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// Make the first sent attempt fail.
 				getPaymentResultTempFailure,
 				routerFailAttempt,
+				routerAckResult,
 
 				// Since there are no more routes to try, the
 				// payment should fail.
@@ -308,6 +342,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// payment.
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 
 				// Now that the original payment finished,
 				// resend it again to ensure this is not
@@ -338,6 +373,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				startRouter,
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 			},
 			routes: []*route.Route{rt},
 		},
@@ -358,6 +394,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// Make the first attempt fail.
 				getPaymentResultTempFailure,
 				routerFailAttempt,
+				routerAckResult,
 
 				// Since we have no more routes to try, the
 				// original payment should fail.
@@ -372,6 +409,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				sendToSwitchSuccess,
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 				resentPaymentSuccess,
 			},
 			routes: []*route.Route{rt},
@@ -412,6 +450,10 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerSettleAttempt,
 				routerSettleAttempt,
 				routerSettleAttempt,
+				routerAckResult,
+				routerAckResult,
+				routerAckResult,
+				routerAckResult,
 
 				// And the final result is obviously
 				// successful.
@@ -446,6 +488,8 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				getPaymentResultTempFailure,
 				routerFailAttempt,
 				routerFailAttempt,
+				routerAckResult,
+				routerAckResult,
 
 				routerRegisterAttempt,
 				sendToSwitchSuccess,
@@ -461,6 +505,10 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerSettleAttempt,
 				routerSettleAttempt,
 				routerSettleAttempt,
+				routerAckResult,
+				routerAckResult,
+				routerAckResult,
+				routerAckResult,
 
 				// Overall payment succeeds.
 				paymentSuccess,
@@ -501,11 +549,15 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerFailAttempt,
 				routerFailAttempt,
 				routerFailAttempt,
+				routerAckResult,
+				routerAckResult,
+				routerAckResult,
 
 				// The fourth shard succeed against all odds,
 				// making the overall payment succeed.
 				getPaymentResultSuccess,
 				routerSettleAttempt,
+				routerAckResult,
 				paymentSuccess,
 			},
 			routes: []*route.Route{shard, shard, shard, shard},
@@ -535,6 +587,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				// The first shard fail with a terminal error.
 				getPaymentResultTerminalFailure,
 				routerFailAttempt,
+				routerAckResult,
 				routerFailPayment,
 
 				// Remaining 3 shards fail.
@@ -544,6 +597,9 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				routerFailAttempt,
 				routerFailAttempt,
 				routerFailAttempt,
+				routerAckResult,
+				routerAckResult,
+				routerAckResult,
 
 				// Payment fails.
 				paymentError,
@@ -570,7 +626,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 	// setupRouter is a helper method that creates and starts the router in
 	// the desired configuration for this test.
 	setupRouter := func() (*ChannelRouter, chan error,
-		chan *htlcswitch.PaymentResult, chan error) {
+		chan *resultTuple, chan error) {
 
 		chain := newMockChain(startingBlockHeight)
 		chainView := newMockChainView(chain)
@@ -579,7 +635,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 		// synchonize with the interaction to the Switch.
 		sendResult := make(chan error)
 		paymentResultErr := make(chan error)
-		paymentResult := make(chan *htlcswitch.PaymentResult)
+		paymentResult := make(chan *resultTuple)
 
 		payer := &mockPayer{
 			sendResult:       sendResult,
@@ -677,6 +733,10 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 			paymentResult <- err
 		}()
 
+		// resultAck will be the ack channel for the last result given
+		// to GetPaymentResult.
+		var resultAck chan struct{}
+
 		var resendResult chan error
 		for _, step := range test.steps {
 			switch step {
@@ -765,9 +825,13 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 			// to be called, and we respond with the preimage to
 			// complete the payment.
 			case getPaymentResultSuccess:
+				resultAck = make(chan struct{})
 				select {
-				case getPaymentResult <- &htlcswitch.PaymentResult{
-					Preimage: preImage,
+				case getPaymentResult <- &resultTuple{
+					&htlcswitch.PaymentResult{
+						Preimage: preImage,
+					},
+					resultAck,
 				}:
 				case <-time.After(stepTimeout):
 					t.Fatalf("unable to send result")
@@ -777,14 +841,17 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 			// to be called, and we respond with a forwarding
 			// error, indicating that the router should retry.
 			case getPaymentResultTempFailure:
+				resultAck = make(chan struct{})
 				failure := htlcswitch.NewForwardingError(
 					&lnwire.FailTemporaryChannelFailure{},
 					1,
 				)
 
 				select {
-				case getPaymentResult <- &htlcswitch.PaymentResult{
-					Error: failure,
+				case getPaymentResult <- &resultTuple{
+					&htlcswitch.PaymentResult{
+						Error: failure,
+					}, resultAck,
 				}:
 				case <-time.After(stepTimeout):
 					t.Fatalf("unable to get result")
@@ -795,17 +862,29 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 			// terminal error, indiating the router should stop
 			// making payment attempts.
 			case getPaymentResultTerminalFailure:
+				resultAck = make(chan struct{})
 				failure := htlcswitch.NewForwardingError(
 					&lnwire.FailIncorrectDetails{},
 					1,
 				)
 
 				select {
-				case getPaymentResult <- &htlcswitch.PaymentResult{
-					Error: failure,
+				case getPaymentResult <- &resultTuple{
+					&htlcswitch.PaymentResult{
+						Error: failure,
+					}, resultAck,
 				}:
 				case <-time.After(stepTimeout):
 					t.Fatalf("unable to get result")
+				}
+
+			// In this step we'll wait for an ACK of the last
+			// attempt made.
+			case routerAckResult:
+				select {
+				case <-resultAck:
+				case <-time.After(1 * time.Second):
+					t.Fatalf("did not get ack from router")
 				}
 
 			// In this step we manually try to resend the same

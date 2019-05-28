@@ -150,10 +150,18 @@ func (m *mockPaymentSession) RequestRoute(_, _ lnwire.MilliSatoshi,
 	return r, nil
 }
 
+// resultTuple is s struct we use to pipe a result and an ack channel into the
+// mock payer, such that we can control the results that are delivered to the
+// router, and wait for it to ack them.
+type resultTuple struct {
+	result *htlcswitch.PaymentResult
+	ack    chan struct{}
+}
+
 type mockPayer struct {
 	sendResult       chan error
 	paymentResultErr chan error
-	paymentResult    chan *htlcswitch.PaymentResult
+	paymentResult    chan *resultTuple
 	quit             chan struct{}
 }
 
@@ -179,8 +187,8 @@ func (m *mockPayer) GetPaymentResult(paymentID uint64, _ lntypes.Hash,
 	select {
 	case res := <-m.paymentResult:
 		resChan := make(chan *htlcswitch.PaymentResult, 1)
-		resChan <- res
-		return resChan, make(chan struct{}), nil
+		resChan <- res.result
+		return resChan, res.ack, nil
 	case err := <-m.paymentResultErr:
 		return nil, nil, err
 	case <-m.quit:

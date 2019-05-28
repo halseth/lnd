@@ -170,7 +170,7 @@ type PaymentAttemptDispatcher interface {
 	// unknown, ErrPaymentIDNotFound will be returned.
 	GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 		deobfuscator htlcswitch.ErrorDecrypter) (
-		<-chan *htlcswitch.PaymentResult, error)
+		<-chan *htlcswitch.PaymentResult, chan<- struct{}, error)
 }
 
 // PaymentSessionSource is an interface that defines a source for the router to

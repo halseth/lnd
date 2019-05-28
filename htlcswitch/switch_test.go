@@ -2114,7 +2114,7 @@ func TestSwitchSendPayment(t *testing.T) {
 
 	// First check that the switch will correctly respond that this payment
 	// ID is unknown.
-	_, err = s.GetPaymentResult(
+	_, _, err = s.GetPaymentResult(
 		paymentID, rhash, newMockDeobfuscator(),
 	)
 	if err != ErrPaymentIDNotFound {
@@ -2132,7 +2132,7 @@ func TestSwitchSendPayment(t *testing.T) {
 			return
 		}
 
-		resultChan, err := s.GetPaymentResult(
+		resultChan, ack, err := s.GetPaymentResult(
 			paymentID, rhash, newMockDeobfuscator(),
 		)
 		if err != nil {
@@ -2144,6 +2144,7 @@ func TestSwitchSendPayment(t *testing.T) {
 		if !ok {
 			errChan <- fmt.Errorf("shutting down")
 		}
+		close(ack)
 
 		if result.Error != nil {
 			errChan <- result.Error
@@ -2530,7 +2531,7 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	// added anything to the store yet, ErrPaymentIDNotFound should be
 	// returned.
 	lookup <- nil
-	_, err = s.GetPaymentResult(
+	_, _, err = s.GetPaymentResult(
 		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
 	)
 	if err != ErrPaymentIDNotFound {
@@ -2540,7 +2541,7 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	// Next let the lookup find the circuit in the circuit map. It should
 	// subscribe to payment results, and return the result when available.
 	lookup <- &PaymentCircuit{}
-	resultChan, err := s.GetPaymentResult(
+	resultChan, ack, err := s.GetPaymentResult(
 		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
 	)
 	if err != nil {
@@ -2577,6 +2578,8 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 				preimg, res.Preimage)
 		}
 
+		close(ack)
+
 	case <-time.After(1 * time.Second):
 		t.Fatalf("result not received")
 	}
@@ -2585,7 +2588,7 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	// in the circuit map, it should be immediately available from the
 	// store.
 	lookup <- nil
-	resultChan, err = s.GetPaymentResult(
+	resultChan, ack, err = s.GetPaymentResult(
 		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
 	)
 	if err != nil {
@@ -2606,6 +2609,8 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 			t.Fatalf("expected preimg %v, got %v",
 				preimg, res.Preimage)
 		}
+
+		close(ack)
 
 	case <-time.After(1 * time.Second):
 		t.Fatalf("result not received")

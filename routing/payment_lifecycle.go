@@ -482,7 +482,7 @@ func (p *shardHandler) collectResult(attempt *channeldb.HTLCAttemptInfo) (
 
 	// Now ask the switch to return the result of the payment when
 	// available.
-	resultChan, err := p.router.cfg.Payer.GetPaymentResult(
+	resultChan, ack, err := p.router.cfg.Payer.GetPaymentResult(
 		attempt.AttemptID, p.paymentHash, errorDecryptor,
 	)
 	switch {
@@ -542,6 +542,10 @@ func (p *shardHandler) collectResult(attempt *channeldb.HTLCAttemptInfo) (
 			return nil, err
 		}
 
+		// Now that we have decided what to do with the error,
+		// we ACK it.
+		close(ack)
+
 		return &shardResult{
 			attempt: attempt,
 			err:     result.Error,
@@ -574,6 +578,9 @@ func (p *shardHandler) collectResult(attempt *channeldb.HTLCAttemptInfo) (
 		log.Errorf("Unable to succeed payment attempt: %v", err)
 		return nil, err
 	}
+
+	// ACK the result.
+	close(ack)
 
 	return &shardResult{
 		attempt: htlcAttempt,

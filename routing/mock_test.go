@@ -56,7 +56,7 @@ func (m *mockPaymentAttemptDispatcher) SendHTLC(firstHop lnwire.ShortChannelID,
 
 func (m *mockPaymentAttemptDispatcher) GetPaymentResult(paymentID uint64,
 	_ lntypes.Hash, _ htlcswitch.ErrorDecrypter) (
-	<-chan *htlcswitch.PaymentResult, error) {
+	<-chan *htlcswitch.PaymentResult, chan<- struct{}, error) {
 
 	c := make(chan *htlcswitch.PaymentResult, 1)
 
@@ -65,11 +65,11 @@ func (m *mockPaymentAttemptDispatcher) GetPaymentResult(paymentID uint64,
 	m.Unlock()
 
 	if !ok {
-		return nil, htlcswitch.ErrPaymentIDNotFound
+		return nil, nil, htlcswitch.ErrPaymentIDNotFound
 	}
 	c <- res
 
-	return c, nil
+	return c, make(chan struct{}), nil
 
 }
 
@@ -173,17 +173,18 @@ func (m *mockPayer) SendHTLC(_ lnwire.ShortChannelID,
 }
 
 func (m *mockPayer) GetPaymentResult(paymentID uint64, _ lntypes.Hash,
-	_ htlcswitch.ErrorDecrypter) (<-chan *htlcswitch.PaymentResult, error) {
+	_ htlcswitch.ErrorDecrypter) (<-chan *htlcswitch.PaymentResult,
+	chan<- struct{}, error) {
 
 	select {
 	case res := <-m.paymentResult:
 		resChan := make(chan *htlcswitch.PaymentResult, 1)
 		resChan <- res
-		return resChan, nil
+		return resChan, make(chan struct{}), nil
 	case err := <-m.paymentResultErr:
-		return nil, err
+		return nil, nil, err
 	case <-m.quit:
-		return nil, fmt.Errorf("test quitting")
+		return nil, nil, fmt.Errorf("test quitting")
 	}
 }
 

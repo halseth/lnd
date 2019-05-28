@@ -826,7 +826,7 @@ func preparePayment(sendingPeer, receivingPeer lnpeer.Peer,
 		if err != nil {
 			return err
 		}
-		resultChan, err := sender.htlcSwitch.GetPaymentResult(
+		resultChan, ack, err := sender.htlcSwitch.GetPaymentResult(
 			pid, hash, newMockDeobfuscator(),
 		)
 		if err != nil {
@@ -837,6 +837,7 @@ func preparePayment(sendingPeer, receivingPeer lnpeer.Peer,
 		if !ok {
 			return fmt.Errorf("shutting down")
 		}
+		close(ack)
 
 		if result.Error != nil {
 			return result.Error
@@ -1369,7 +1370,7 @@ func (n *twoHopNetwork) makeHoldPayment(sendingPeer, receivingPeer lnpeer.Peer,
 	}
 
 	go func() {
-		resultChan, err := sender.htlcSwitch.GetPaymentResult(
+		resultChan, ack, err := sender.htlcSwitch.GetPaymentResult(
 			pid, rhash, newMockDeobfuscator(),
 		)
 		if err != nil {
@@ -1382,6 +1383,7 @@ func (n *twoHopNetwork) makeHoldPayment(sendingPeer, receivingPeer lnpeer.Peer,
 			paymentErr <- fmt.Errorf("shutting down")
 			return
 		}
+		close(ack)
 
 		if result.Error != nil {
 			paymentErr <- result.Error

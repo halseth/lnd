@@ -1153,7 +1153,7 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 		t.Fatalf("unable to get send payment: %v", err)
 	}
 
-	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(
+	resultChan, ack, err := n.aliceServer.htlcSwitch.GetPaymentResult(
 		pid, htlc.PaymentHash, newMockDeobfuscator(),
 	)
 	if err != nil {
@@ -1171,6 +1171,7 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("no result arrive")
 	}
+	close(ack)
 
 	assertFailureCode(
 		t, result.Error, lnwire.CodeIncorrectOrUnknownPaymentDetails,
@@ -3958,7 +3959,7 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 		t.Fatalf("unable to send payment to carol: %v", err)
 	}
 
-	resultChan, err := n.aliceServer.htlcSwitch.GetPaymentResult(
+	resultChan, ack, err := n.aliceServer.htlcSwitch.GetPaymentResult(
 		pid, htlc.PaymentHash, newMockDeobfuscator(),
 	)
 	if err != nil {
@@ -3980,6 +3981,7 @@ func TestChannelLinkAcceptDuplicatePayment(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected shutdown")
 		}
+		close(ack)
 
 		if result.Error != nil {
 			t.Fatalf("payment failed: %v", result.Error)

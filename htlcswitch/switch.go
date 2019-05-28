@@ -334,8 +334,13 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 // result is received on the channel, the HTLC is guaranteed to no longer be in
 // flight. The switch shutting down is signaled by closing the channel. If the
 // paymentID is unknown, ErrPaymentIDNotFound will be returned.
+//
+// The returned ACK channel should be closed by the caller when the result from
+// the result channel is handled. This instructs the Switch that it is safe to
+// delete the result from its database.
 func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
-	deobfuscator ErrorDecrypter) (<-chan *PaymentResult, error) {
+	deobfuscator ErrorDecrypter) (<-chan *PaymentResult, chan<- struct{},
+	error) {
 
 	var (
 		nChan  <-chan *networkResult
@@ -352,7 +357,7 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 	if s.circuits.LookupCircuit(outKey) == nil {
 		res, err := s.networkResults.getResult(paymentID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		c := make(chan *networkResult, 1)
 		c <- res
@@ -362,11 +367,12 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 		// result.
 		nChan, err = s.networkResults.subscribeResult(paymentID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	resultChan := make(chan *PaymentResult, 1)
+	ackChan := make(chan struct{})
 
 	// Since the payment was known, we can start a goroutine that can
 	// extract the result when it is available, and pass it on to the
@@ -401,7 +407,7 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 		resultChan <- result
 	}()
 
-	return resultChan, nil
+	return resultChan, ackChan, nil
 }
 
 // SendHTLC is used by other subsystems which aren't belong to htlc switch

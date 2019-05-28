@@ -258,3 +258,23 @@ func fetchResult(tx *bbolt.Tx, pid uint64) (*networkResult, error) {
 
 	return deserializeNetworkResult(r)
 }
+
+// deleteResult deletes any result for the given payment ID from the store.
+func (store *networkResultStore) deleteResult(paymentID uint64) error {
+	store.paymentIDMtx.Lock(paymentID)
+	defer store.paymentIDMtx.Unlock(paymentID)
+
+	var paymentIDBytes [8]byte
+	binary.BigEndian.PutUint64(paymentIDBytes[:], paymentID)
+
+	return store.db.Batch(func(tx *bbolt.Tx) error {
+		networkResults, err := tx.CreateBucketIfNotExists(
+			networkResultStoreBucketKey,
+		)
+		if err != nil {
+			return err
+		}
+
+		return networkResults.Delete(paymentIDBytes[:])
+	})
+}

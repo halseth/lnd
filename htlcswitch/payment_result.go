@@ -258,3 +258,23 @@ func fetchResult(tx kvdb.RTx, pid uint64) (*networkResult, error) {
 
 	return deserializeNetworkResult(r)
 }
+
+// deleteResult deletes any result for the given payment ID from the store.
+func (store *networkResultStore) deleteResult(paymentID uint64) error {
+	store.paymentIDMtx.Lock(paymentID)
+	defer store.paymentIDMtx.Unlock(paymentID)
+
+	var paymentIDBytes [8]byte
+	binary.BigEndian.PutUint64(paymentIDBytes[:], paymentID)
+
+	return kvdb.Batch(store.db, func(tx kvdb.RwTx) error {
+		networkResults, err := tx.CreateTopLevelBucket(
+			networkResultStoreBucketKey,
+		)
+		if err != nil {
+			return err
+		}
+
+		return networkResults.Delete(paymentIDBytes[:])
+	})
+}

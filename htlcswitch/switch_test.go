@@ -2584,12 +2584,19 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 		t.Fatalf("result not received")
 	}
 
-	// As a final test, try to get the result again. Now that is no longer
+	// Add another result to the store, before subscribing to the result.
+	const paymentID2 = 124
+	err = s.networkResults.storeResult(paymentID2, n)
+	if err != nil {
+		t.Fatalf("unable to store result: %v", err)
+	}
+
+	// Try to get the result. Now that is no longer
 	// in the circuit map, it should be immediately available from the
 	// store.
 	lookup <- nil
 	resultChan, ack, err = s.GetPaymentResult(
-		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
+		paymentID2, lntypes.Hash{}, newMockDeobfuscator(),
 	)
 	if err != nil {
 		t.Fatalf("unable to get payment result: %v", err)
@@ -2614,6 +2621,22 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 
 	case <-time.After(1 * time.Second):
 		t.Fatalf("result not received")
+	}
+
+	// Short sleep to let the switch delete the ACKed results.
+	time.Sleep(500 * time.Millisecond)
+
+	// Now that both results are ACKed, the switch should delete them from
+	// its store. We check that by trying to get them again, expecting them
+	// not to be found.
+	for _, pid := range []uint64{paymentID, paymentID2} {
+		lookup <- nil
+		_, _, err = s.GetPaymentResult(
+			pid, lntypes.Hash{}, newMockDeobfuscator(),
+		)
+		if err != ErrPaymentIDNotFound {
+			t.Fatalf("expected ErrPaymentIDNotFound, got %v", err)
+		}
 	}
 }
 

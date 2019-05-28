@@ -180,7 +180,6 @@ func TestNetworkResultStore(t *testing.T) {
 
 	// Since we don't delete results from the store (yet), make sure we
 	// will get subscriptions for all of them.
-	// TODO(halseth): check deletion when we have reliable handoff.
 	for i := uint64(0); i < numResults; i++ {
 		sub, err := store.subscribeResult(i)
 		if err != nil {
@@ -193,4 +192,15 @@ func TestNetworkResultStore(t *testing.T) {
 			t.Fatalf("no result received")
 		}
 	}
+
+	// Finally, delete the result.
+	if err := store.deleteResult(3); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.getResult(3)
+	if err != ErrPaymentIDNotFound {
+		t.Fatalf("expected ErrPaymentIDNotFound, got %v", err)
+	}
+
 }

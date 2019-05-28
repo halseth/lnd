@@ -438,6 +438,25 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 			return
 		}
 		resultChan <- result
+
+		// We wait for the caller to ACK that the result has been
+		// handled. After the ACK is received, it is assumed safe to
+		// delete the result from the store.
+		// TODO(halseth): If we crash before handling the ack, we will
+		// have a stray result in the switch db. Should garbage collect
+		// on startup by checking payments DB? Or let switch pipe all
+		// results to router on startup, such that it can handle/or
+		// ignore accordingly.
+		select {
+		case <-ackChan:
+		case <-s.quit:
+			return
+		}
+
+		if err := s.networkResults.deleteResult(paymentID); err != nil {
+			log.Errorf("Unable to delete stored network result "+
+				"for pid=%v: %v", paymentID, err)
+		}
 	}()
 
 	return resultChan, ackChan, nil

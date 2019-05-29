@@ -884,7 +884,7 @@ func (l *channelLink) htlcManager() {
 		if err != nil {
 			log.Warnf("Error when syncing channel states: %v", err)
 
-			_, localDataLoss :=
+			errDataLoss, localDataLoss :=
 				err.(*lnwallet.ErrCommitSyncLocalDataLoss)
 
 			switch {
@@ -909,6 +909,13 @@ func (l *channelLink) htlcManager() {
 			// what they sent us before.
 			// TODO(halseth): ban peer?
 			case err == lnwallet.ErrInvalidLocalUnrevokedCommitPoint:
+				err = l.channel.MarkBorked()
+				if err != nil {
+					log.Errorf("Unable to mark channel "+
+						"borked: %v", err)
+					return
+				}
+
 				l.fail(
 					LinkFailureError{
 						code:       ErrSyncError,
@@ -922,13 +929,22 @@ func (l *channelLink) htlcManager() {
 			// We have lost state and cannot safely force close the
 			// channel. Fail the channel and wait for the remote to
 			// hopefully force close it. The remote has sent us its
-			// latest unrevoked commitment point, that we stored in
-			// the database, that we can use to retrieve the funds
-			// when the remote closes the channel.
+			// latest unrevoked commitment point, and we'll store
+			// it in the database, such that we can attempt to
+			// recover the funds if the remote force closes the
+			// channel.
 			// TODO(halseth): mark this, such that we prevent
 			// channel from being force closed by the user or
 			// contractcourt etc.
 			case localDataLoss:
+				err := l.channel.MarkDataLoss(
+					errDataLoss.CommitPoint,
+				)
+				if err != nil {
+					log.Errorf("Unable to mark channel "+
+						"data loss: %v", err)
+					return
+				}
 
 			// We determined the commit chains were not possible to
 			// sync. We cautiously fail the channel, but don't
@@ -936,6 +952,11 @@ func (l *channelLink) htlcManager() {
 			// TODO(halseth): can we safely force close in any
 			// cases where this error is returned?
 			case err == lnwallet.ErrCannotSyncCommitChains:
+				if err := l.channel.MarkBorked(); err != nil {
+					log.Errorf("Unable to mark channel "+
+						"borked: %v", err)
+					return
+				}
 
 			// Other, unspecified error.
 			default:

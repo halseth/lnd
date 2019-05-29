@@ -81,16 +81,6 @@ var (
 	ErrInvalidLocalUnrevokedCommitPoint = fmt.Errorf("unrevoked commit " +
 		"point is invalid")
 
-	// ErrCommitSyncLocalDataLoss is returned in the case that we receive a
-	// valid commit secret within the ChannelReestablish message from the
-	// remote node AND they advertise a RemoteCommitTailHeight higher than
-	// our current known height. This means we have lost some critical
-	// data, and must fail the channel and MUST NOT force close it. Instead
-	// we should wait for the remote to force close it, such that we can
-	// attempt to sweep our funds.
-	ErrCommitSyncLocalDataLoss = fmt.Errorf("possible local commitment " +
-		"state data loss")
-
 	// ErrCommitSyncRemoteDataLoss is returned in the case that we receive
 	// a ChannelReestablish message from the remote that advertises a
 	// NextLocalCommitHeight that is lower than what they have already
@@ -100,6 +90,24 @@ var (
 	ErrCommitSyncRemoteDataLoss = fmt.Errorf("possible remote commitment " +
 		"state data loss")
 )
+
+// ErrCommitSyncLocalDataLoss is returned in the case that we receive a valid
+// commit secret within the ChannelReestablish message from the remote node AND
+// they advertise a RemoteCommitTailHeight higher than our current known
+// height. This means we have lost some critical data, and must fail the
+// channel and MUST NOT force close it. Instead we should wait for the remote
+// to force close it, such that we can attempt to sweep our funds. The
+// commitment point needed to sweep the remote's force close is encapsuled.
+type ErrCommitSyncLocalDataLoss struct {
+	// CommitPoint is the last unrevoked commit point, sent to us by the
+	// remote when we determined we had lost state.
+	CommitPoint *btcec.PublicKey
+}
+
+func (e *ErrCommitSyncLocalDataLoss) Error() string {
+	return "possible local commitment " +
+		"state data loss"
+}
 
 // channelState is an enum like type which represents the current state of a
 // particular channel.
@@ -3318,7 +3326,10 @@ func (lc *LightningChannel) ProcessChanSyncMsg(
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		return nil, nil, nil, ErrCommitSyncLocalDataLoss
+
+		return nil, nil, nil, &ErrCommitSyncLocalDataLoss{
+			CommitPoint: msg.LocalUnrevokedCommitPoint,
+		}
 
 	// If the height of our commitment chain reported by the remote party
 	// is behind our view of the chain, then they probably lost some state,

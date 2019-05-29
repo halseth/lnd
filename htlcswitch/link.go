@@ -879,7 +879,16 @@ func (l *channelLink) htlcManager() {
 			// what they sent us before.
 			// TODO(halseth): ban peer?
 			case err == lnwallet.ErrInvalidLocalUnrevokedCommitPoint:
-				err = l.channel.MarkBorked()
+				forceClose, err := l.channel.ForceClose()
+				if err != nil {
+					log.Errorf("Unable to force close "+
+						"channel: %v", err)
+					return
+				}
+
+				err = l.channel.MarkCommitmentBroadcasted(
+					forceClose.CloseTx,
+				)
 				if err != nil {
 					log.Errorf("Unable to mark channel "+
 						"borked: %v", err)

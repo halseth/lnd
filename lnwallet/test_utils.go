@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"io"
 	"io/ioutil"
+	prand "math/rand"
 	"net"
 	"os"
 	"sync"
@@ -110,7 +111,7 @@ func CreateTestChannels() (*LightningChannel, *LightningChannel, func(), error) 
 
 	prevOut := &wire.OutPoint{
 		Hash:  chainhash.Hash(testHdSeed),
-		Index: 0,
+		Index: prand.Uint32(),
 	}
 	fundingTxIn := wire.NewTxIn(prevOut, nil, nil)
 

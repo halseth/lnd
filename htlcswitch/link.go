@@ -909,7 +909,26 @@ func (l *channelLink) htlcManager() {
 			// what they sent us before.
 			// TODO(halseth): ban peer?
 			case err == lnwallet.ErrInvalidLocalUnrevokedCommitPoint:
-				err = l.channel.MarkBorked()
+				// TODO: let contractcourt handle force close,
+				// not mark borked here.
+				// TODO: if the peer
+				// crashes at this point, and
+				// we force close, we will never resend
+				// chansync message. Should store it such that
+				// we can respond with it if the peer attempts
+				// to sync channel again. correction: this is
+				// already handled in the peer for fully closed
+				// channels.
+				forceClose, err := l.channel.ForceClose()
+				if err != nil {
+					log.Errorf("Unable to force close "+
+						"channel: %v", err)
+					return
+				}
+
+				err = l.channel.MarkCommitmentBroadcasted(
+					forceClose.CloseTx,
+				)
 				if err != nil {
 					log.Errorf("Unable to mark channel "+
 						"borked: %v", err)
@@ -937,6 +956,15 @@ func (l *channelLink) htlcManager() {
 			// channel from being force closed by the user or
 			// contractcourt etc.
 			case localDataLoss:
+				// TODO: peer that lost data must resend chan
+				// sync message after each reconnect. NOw we
+				// risk marking data loss, and if the remote
+				// isnt able to close the channel, we won't
+				// resend chansync message next reconnect
+				// (since link won't be started again), and the
+				// remote might not recognize it needs to force
+				// close.
+				// Store chanSyncmessage here?
 				err := l.channel.MarkDataLoss(
 					errDataLoss.CommitPoint,
 				)

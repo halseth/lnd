@@ -232,12 +232,10 @@ func newActiveChannelArbitrator(channel *channeldb.OpenChannel,
 		ShortChanID: channel.ShortChanID(),
 		BlockEpochs: blockEpoch,
 		ForceCloseChan: func() (*lnwallet.LocalForceCloseSummary, error) {
-			// First, we mark the channel as borked, this ensure
-			// that no new state transitions can happen, and also
-			// that the link won't be loaded into the switch.
-			if err := channel.MarkBorked(); err != nil {
-				return nil, err
-			}
+
+			// TODO: Must BORK first to avoid any updates? Or get a
+			// lock ensuring no updates won't be made before
+			// marking commitment broadcasted.
 
 			// With the channel marked as borked, we'll now remove
 			// the link from the switch if its there. If the link
@@ -263,7 +261,20 @@ func newActiveChannelArbitrator(channel *channeldb.OpenChannel,
 			if err != nil {
 				return nil, err
 			}
-			return chanMachine.ForceClose()
+			closeSummary, err := chanMachine.ForceClose()
+			if err != nil {
+				return nil, err
+			}
+
+			// First, we mark the channel as borked, this ensure
+			// that no new state transitions can happen, and also
+			// that the link won't be loaded into the switch.
+			err = channel.MarkCommitmentBroadcasted(closeSummary.CloseTx)
+			if err != nil {
+				return nil, err
+			}
+
+			return closeSummary, nil
 		},
 		MarkCommitmentBroadcasted: channel.MarkCommitmentBroadcasted,
 		MarkChannelClosed: func(summary *channeldb.ChannelCloseSummary) error {

@@ -906,6 +906,8 @@ func (c *chainWatcher) dispatchContractBreach(spendEvent *chainntnfs.SpendDetail
 		"ChannelPoint(%v). Revoked state #%v was broadcast!!!",
 		c.cfg.chanState.FundingOutpoint, broadcastStateNum)
 
+	// TODO: store remote breach tx here also?
+	// TODO: needed? do the same for remote force closes?
 	if err := c.cfg.chanState.MarkBorked(); err != nil {
 		return fmt.Errorf("unable to mark channel as borked: %v", err)
 	}

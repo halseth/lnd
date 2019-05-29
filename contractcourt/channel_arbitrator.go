@@ -830,12 +830,6 @@ func (c *ChannelArbitrator) stateStep(
 			}
 		}
 
-		if err := c.cfg.MarkCommitmentBroadcasted(closeTx); err != nil {
-			log.Errorf("ChannelArbitrator(%v): unable to "+
-				"mark commitment broadcasted: %v",
-				c.cfg.ChanPoint, err)
-		}
-
 		// We go to the StateCommitmentBroadcasted state, where we'll
 		// be waiting for the commitment to be confirmed.
 		nextState = StateCommitmentBroadcasted

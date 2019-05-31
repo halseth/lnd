@@ -56,7 +56,7 @@ type networkResult struct {
 
 	// isResolution indicates whether this is a resolution message, in
 	// which the failure reason might not be included.
-	isResolution bool
+	//isResolution bool
 }
 
 // serializeNetworkResult serializes the networkResult.

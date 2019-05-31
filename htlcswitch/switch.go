@@ -919,7 +919,8 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 	case *lnwire.UpdateFailHTLC:
 		paymentErr := s.parseFailedPayment(
 			deobfuscator, paymentID, paymentHash, n.localFailure,
-			n.isResolution, htlc,
+			//	n.isResolution,
+			htlc,
 		)
 
 		return &PaymentResult{
@@ -941,7 +942,8 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 //    the payment deobfuscator.
 func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 	paymentID uint64, paymentHash lntypes.Hash, localFailure,
-	isResolution bool, htlc *lnwire.UpdateFailHTLC) *ForwardingError {
+	//isResolution bool,
+	htlc *lnwire.UpdateFailHTLC) *ForwardingError {
 
 	var failure *ForwardingError
 
@@ -977,21 +979,6 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 			FailureMessage: failureMsg,
 		}
 
-	// A payment had to be timed out on chain before it got past
-	// the first hop. In this case, we'll report a permanent
-	// channel failure as this means us, or the remote party had to
-	// go on chain.
-	// TODO: check reason length instead
-	case isResolution && htlc.Reason == nil:
-		userErr := fmt.Sprintf("payment was resolved "+
-			"on-chain, then cancelled back (hash=%v, pid=%d)",
-			paymentHash, paymentID)
-		failure = &ForwardingError{
-			ErrorSource:    s.cfg.SelfKey,
-			ExtraMsg:       userErr,
-			FailureMessage: lnwire.FailPermanentChannelFailure{},
-		}
-
 	// A regular multi-hop payment error that we'll need to
 	// decrypt.
 	default:
@@ -1018,7 +1005,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 // handlePacketForward is used in cases when we need forward the htlc update
 // from one channel link to another and be able to propagate the settle/fail
 // updates back. This behaviour is achieved by creation of payment circuits.
-func (s *Switch) handlePacketForward(packet *htlcPacket) error {
+func (s *Switch) handlePacketForward(packet *htlcPacket, isResolution bool) error {
 	switch htlc := packet.htlc.(type) {
 
 	// Channel link forwarded us a new htlc, therefore we initiate the
@@ -1180,7 +1167,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 			// If this is a resolution message, then we'll need to
 			// encrypt it as it's actually internally sourced.
-			case packet.isResolution:
+			case isResolution:
 				var err error
 				// TODO(roasbeef): don't need to pass actually?
 				failure := &lnwire.FailPermanentChannelFailure{}
@@ -1596,7 +1583,7 @@ out:
 			pkt := &htlcPacket{
 				outgoingChanID: resolutionMsg.SourceChan,
 				outgoingHTLCID: resolutionMsg.HtlcIndex,
-				isResolution:   true,
+				//isResolution:   true,
 			}
 
 			// Resolution messages will either be cancelling
@@ -1618,7 +1605,7 @@ out:
 			// encounter is due to the circuit already being
 			// closed. This is fine, as processing this message is
 			// meant to be idempotent.
-			err := s.handlePacketForward(pkt)
+			err := s.handlePacketForward(pkt, true)
 			if err != nil {
 				log.Errorf("Unable to forward resolution msg: %v", err)
 			}
@@ -1630,7 +1617,7 @@ out:
 		// packet concretely, then either forward it along, or
 		// interpret a return packet to a locally initialized one.
 		case cmd := <-s.htlcPlex:
-			cmd.err <- s.handlePacketForward(cmd.pkt)
+			cmd.err <- s.handlePacketForward(cmd.pkt, false)
 
 		// When this time ticks, then it indicates that we should
 		// collect all the forwarding events since the last internal,

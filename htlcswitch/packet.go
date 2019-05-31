@@ -66,13 +66,6 @@ type htlcPacket struct {
 	// be looked up in the circuit map.
 	hasSource bool
 
-	// isResolution is set to true if this packet was actually an incoming
-	// resolution message from an outside sub-system. We'll treat these as
-	// if they emanated directly from the switch. As a result, we'll
-	// encrypt all errors related to this packet as if we were the first
-	// hop.
-	isResolution bool
-
 	// circuit holds a reference to an Add's circuit which is persisted in
 	// the switch during successful forwarding.
 	circuit *PaymentCircuit

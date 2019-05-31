@@ -52,7 +52,7 @@ type networkResult struct {
 
 	// unencrypted indicates whether the failure encoded in the message is
 	// unencrypted, and hence doesn't need to be decrypted.
-	unencrypted bool
+	localFailure bool
 
 	// isResolution indicates whether this is a resolution message, in
 	// which the failure reason might not be included.
@@ -65,7 +65,7 @@ func serializeNetworkResult(w io.Writer, n *networkResult) error {
 		return err
 	}
 
-	return channeldb.WriteElements(w, n.unencrypted, n.isResolution)
+	return channeldb.WriteElements(w, n.localFailure, n.isResolution)
 }
 
 // deserializeNetworkResult deserializes the networkResult.
@@ -82,7 +82,7 @@ func deserializeNetworkResult(r io.Reader) (*networkResult, error) {
 	}
 
 	if err := channeldb.ReadElements(r,
-		&n.unencrypted, &n.isResolution,
+		&n.localFailure, &n.isResolution,
 	); err != nil {
 		return nil, err
 	}

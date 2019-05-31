@@ -857,11 +857,10 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 
 	// The error reason will be unencypted in case this a local
 	// failure or a converted error.
-	unencrypted := pkt.localFailure || pkt.convertedError
 	n := &networkResult{
 		msg:          pkt.htlc,
-		unencrypted:  unencrypted,
-		isResolution: pkt.isResolution,
+		localFailure: pkt.localFailure,
+		//isResolution: pkt.isResolution,
 	}
 
 	// Store the result to the db. This will also notify subscribers about
@@ -919,7 +918,7 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 	// user payment and return fail response.
 	case *lnwire.UpdateFailHTLC:
 		paymentErr := s.parseFailedPayment(
-			deobfuscator, paymentID, paymentHash, n.unencrypted,
+			deobfuscator, paymentID, paymentHash, n.localFailure,
 			n.isResolution, htlc,
 		)
 
@@ -935,23 +934,29 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 
 // parseFailedPayment determines the appropriate failure message to return to
 // a user initiated payment. The three cases handled are:
-// 1) An unencrypted failure, which should already plaintext.
+// 1) An localFailure failure, which should already plaintext.
 // 2) A resolution from the chain arbitrator, which possibly has no failure
 //    reason attached.
 // 3) A failure from the remote party, which will need to be decrypted using
 //    the payment deobfuscator.
 func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
-	paymentID uint64, paymentHash lntypes.Hash, unencrypted,
+	paymentID uint64, paymentHash lntypes.Hash, localFailure,
 	isResolution bool, htlc *lnwire.UpdateFailHTLC) *ForwardingError {
 
 	var failure *ForwardingError
+
+	convertedError := false
+	convertedErrorSize := lnwire.FailureMessageLength + 4
+	if len(htlc.Reason) == convertedErrorSize {
+		convertedError = true
+	}
 
 	switch {
 
 	// The payment never cleared the link, so we don't need to
 	// decrypt the error, simply decode it them report back to the
 	// user.
-	case unencrypted:
+	case localFailure || convertedError:
 		var userErr string
 		r := bytes.NewReader(htlc.Reason)
 		failureMsg, err := lnwire.DecodeFailure(r, 0)
@@ -1156,6 +1161,19 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 		fail, isFail := htlc.(*lnwire.UpdateFailHTLC)
 		if isFail && !packet.hasSource {
+			// If the failure message lacks an HMAC (but includes
+			// the 4 bytes for encoding the message and padding
+			// lengths, then this means that we received it as an
+			// UpdateFailMalformedHTLC. As a result, we'll signal
+			// that we need to convert this error within the switch
+			// to an actual error, by encrypting it as if we were
+			// the originating hop.
+			convertedError := false
+			convertedErrorSize := lnwire.FailureMessageLength + 4
+			if len(fail.Reason) == convertedErrorSize {
+				convertedError = true
+			}
+
 			switch {
 			// No message to encrypt, locally sourced payment.
 			case circuit.ErrorEncrypter == nil:
@@ -1179,7 +1197,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 			// UpdateFailMalformedHTLC, then we'll need to convert
 			// this into a proper well formatted onion error as
 			// there's no HMAC currently.
-			case packet.convertedError:
+			case convertedError:
 				log.Infof("Converting malformed HTLC error "+
 					"for circuit for Circuit(%x: "+
 					"(%s, %d) <-> (%s, %d))", packet.circuit.PaymentHash,

@@ -2449,18 +2449,6 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
 				},
 			}
 
-			// If the failure message lacks an HMAC (but includes
-			// the 4 bytes for encoding the message and padding
-			// lengths, then this means that we received it as an
-			// UpdateFailMalformedHTLC. As a result, we'll signal
-			// that we need to convert this error within the switch
-			// to an actual error, by encrypting it as if we were
-			// the originating hop.
-			convertedErrorSize := lnwire.FailureMessageLength + 4
-			if len(pd.FailReason) == convertedErrorSize {
-				failPacket.convertedError = true
-			}
-
 			// Add the packet to the batch to be forwarded, and
 			// notify the overflow queue that a spare spot has been
 			// freed up within the commitment state.

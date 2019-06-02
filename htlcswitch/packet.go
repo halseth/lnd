@@ -59,7 +59,9 @@ type htlcPacket struct {
 	// localFailure is set to true if an HTLC fails for a local payment before
 	// the first hop. In this case, the failure reason is simply encoded, not
 	// encrypted with any shared secret.
-	localFailure bool
+	//localFailure bool
+	// maybe enought to have one bool "unencrypted" to for all failures,
+	// since teht is really ehat we need to knsoe
 
 	// hasSource is set to true if the incomingChanID and incomingHTLCID
 	// fields of a forwarded fail packet are already set and do not need to

@@ -1279,8 +1279,8 @@ func (l *channelLink) handleDownStreamPkt(pkt *htlcPacket, isReProcess bool) {
 				l.warnf("Unable to handle downstream add HTLC: %v", err)
 
 				var (
-					localFailure = false
-					reason       lnwire.OpaqueReason
+					//localFailure = false
+					reason lnwire.OpaqueReason
 				)
 
 				var failure lnwire.FailureMessage
@@ -1306,7 +1306,7 @@ func (l *channelLink) handleDownStreamPkt(pkt *htlcPacket, isReProcess bool) {
 						return
 					}
 					reason = lnwire.OpaqueReason(b.Bytes())
-					localFailure = true
+					//localFailure = true
 				} else {
 					var err error
 					reason, err = pkt.obfuscator.EncryptFirstHop(failure)
@@ -1323,7 +1323,7 @@ func (l *channelLink) handleDownStreamPkt(pkt *htlcPacket, isReProcess bool) {
 					circuit:        pkt.circuit,
 					sourceRef:      pkt.sourceRef,
 					hasSource:      true,
-					localFailure:   localFailure,
+					//localFailure:   localFailure,
 					htlc: &lnwire.UpdateFailHTLC{
 						Reason: reason,
 					},

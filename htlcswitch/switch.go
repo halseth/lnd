@@ -858,8 +858,8 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	// The error reason will be unencypted in case this a local
 	// failure or a converted error.
 	n := &networkResult{
-		msg:          pkt.htlc,
-		localFailure: pkt.localFailure,
+		msg: pkt.htlc,
+		//		localFailure: pkt.localFailure,
 		//isResolution: pkt.isResolution,
 	}
 
@@ -918,7 +918,7 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 	// user payment and return fail response.
 	case *lnwire.UpdateFailHTLC:
 		paymentErr := s.parseFailedPayment(
-			deobfuscator, paymentID, paymentHash, n.localFailure,
+			deobfuscator, paymentID, paymentHash, //n.localFailure,
 			//	n.isResolution,
 			htlc,
 		)
@@ -941,7 +941,7 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 // 3) A failure from the remote party, which will need to be decrypted using
 //    the payment deobfuscator.
 func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
-	paymentID uint64, paymentHash lntypes.Hash, localFailure,
+	paymentID uint64, paymentHash lntypes.Hash, //localFailure,
 	//isResolution bool,
 	htlc *lnwire.UpdateFailHTLC) *ForwardingError {
 
@@ -953,12 +953,13 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 		convertedError = true
 	}
 
+	localFai := true
 	switch {
 
 	// The payment never cleared the link, so we don't need to
 	// decrypt the error, simply decode it them report back to the
 	// user.
-	case localFailure || convertedError:
+	case localFai || convertedError:
 		var userErr string
 		r := bytes.NewReader(htlc.Reason)
 		failureMsg, err := lnwire.DecodeFailure(r, 0)

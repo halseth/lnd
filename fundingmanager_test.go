@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"math/big"
 	"net"
 	"os"
@@ -566,17 +567,29 @@ func openChannel(t *testing.T, alice, bob *testNode, localFundingAmt,
 	return fundingOutPoint
 }
 
+// fundAllVal should be used as localFundingAmt to trigger a use-all-funds
+// channel funding.
+const fundAllVal = math.MaxInt64
+
 // fundChannel takes the funding process to the point where the funding
 // transaction is confirmed on-chain. Returns the funding tx.
 func fundChannel(t *testing.T, alice, bob *testNode, localFundingAmt,
 	pushAmt btcutil.Amount, numConfs uint32,
 	updateChan chan *lnrpc.OpenStatusUpdate, announceChan bool) *wire.MsgTx {
 
+	// If the local funding amount is set to fundAllVal, then we assume
+	// that a fundAll channel funding is intended.
+	fundAll := false
+	if localFundingAmt == fundAllVal {
+		fundAll = true
+		localFundingAmt = 0
+	}
 	// Create a funding request and start the workflow.
 	errChan := make(chan error, 1)
 	initReq := &openChanReq{
 		targetPubkey:    bob.privKey.PubKey(),
 		chainHash:       *activeNetParams.GenesisHash,
+		fundAll:         fundAll,
 		localFundingAmt: localFundingAmt,
 		pushAmt:         lnwire.NewMSatFromSatoshis(pushAmt),
 		fundingFeePerKw: 1000,
@@ -2722,5 +2735,64 @@ func TestFundingManagerMaxConfs(t *testing.T) {
 	if !strings.Contains(string(err.Data), "minimum depth") {
 		t.Fatalf("expected ErrNumConfsTooLarge, got \"%v\"",
 			string(err.Data))
+	}
+}
+
+// TestFundingManagerFundAll tests that we can initiate a funding request to
+// use the funds remaining in the wallet. This should produce a funding tx with
+// no change output.
+func TestFundingManagerFundAll(t *testing.T) {
+	t.Parallel()
+
+	alice, bob := setupFundingManagers(t, DefaultMaxPendingChannels)
+	defer tearDownFundingManagers(t, alice, bob)
+
+	// We set up our mock wallet to control a list of UTXOs that sum to
+	// less than the max channel size.
+	allCoins := []*lnwallet.Utxo{
+		&lnwallet.Utxo{
+			AddressType: lnwallet.WitnessPubKey,
+			Value: btcutil.Amount(
+				0.05 * btcutil.SatoshiPerBitcoin,
+			),
+			PkScript: make([]byte, 22),
+			OutPoint: wire.OutPoint{
+				Hash:  chainhash.Hash{},
+				Index: 0,
+			},
+		},
+		&lnwallet.Utxo{
+			AddressType: lnwallet.WitnessPubKey,
+			Value: btcutil.Amount(
+				0.06 * btcutil.SatoshiPerBitcoin,
+			),
+			PkScript: make([]byte, 22),
+			OutPoint: wire.OutPoint{
+				Hash:  chainhash.Hash{},
+				Index: 1,
+			},
+		},
+	}
+
+	alice.fundingMgr.cfg.Wallet.WalletController.(*mockWalletController).utxos = allCoins
+
+	// We will consume the channel updates as we go, so no buffering is needed.
+	updateChan := make(chan *lnrpc.OpenStatusUpdate)
+
+	// Initiate a fund channel, and inspect the funding tx.
+	localAmt := btcutil.Amount(fundAllVal)
+	pushAmt := btcutil.Amount(0)
+	fundingTx := fundChannel(
+		t, alice, bob, localAmt, pushAmt, 1, updateChan, true,
+	)
+
+	// The funding tx should have only one output.
+	if len(fundingTx.TxOut) != 1 {
+		t.Fatalf("expected 1 output, had %v", len(fundingTx.TxOut))
+	}
+
+	// Inputs should be all funds in the wallet.
+	if len(fundingTx.TxIn) != len(allCoins) {
+		t.Fatalf("Fad %d inputs, expected %d", len(fundingTx.TxIn), len(allCoins))
 	}
 }

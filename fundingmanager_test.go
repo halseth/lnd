@@ -554,6 +554,24 @@ func tearDownFundingManagers(t *testing.T, a, b *testNode) {
 func openChannel(t *testing.T, alice, bob *testNode, localFundingAmt,
 	pushAmt btcutil.Amount, numConfs uint32,
 	updateChan chan *lnrpc.OpenStatusUpdate, announceChan bool) *wire.OutPoint {
+
+	publ := fundChannel(
+		t, alice, bob, localFundingAmt, pushAmt, numConfs, updateChan,
+		announceChan,
+	)
+	fundingOutPoint := &wire.OutPoint{
+		Hash:  publ.TxHash(),
+		Index: 0,
+	}
+	return fundingOutPoint
+}
+
+// fundChannel takes the funding process to the point where the funding
+// transaction is confirmed on-chain. Returns the funding tx.
+func fundChannel(t *testing.T, alice, bob *testNode, localFundingAmt,
+	pushAmt btcutil.Amount, numConfs uint32,
+	updateChan chan *lnrpc.OpenStatusUpdate, announceChan bool) *wire.MsgTx {
+
 	// Create a funding request and start the workflow.
 	errChan := make(chan error, 1)
 	initReq := &openChanReq{
@@ -561,6 +579,7 @@ func openChannel(t *testing.T, alice, bob *testNode, localFundingAmt,
 		chainHash:       *activeNetParams.GenesisHash,
 		localFundingAmt: localFundingAmt,
 		pushAmt:         lnwire.NewMSatFromSatoshis(pushAmt),
+		fundingFeePerKw: 1000,
 		private:         !announceChan,
 		updates:         updateChan,
 		err:             errChan,
@@ -645,17 +664,12 @@ func openChannel(t *testing.T, alice, bob *testNode, localFundingAmt,
 		t.Fatalf("alice did not publish funding tx")
 	}
 
-	fundingOutPoint := &wire.OutPoint{
-		Hash:  publ.TxHash(),
-		Index: 0,
-	}
-
 	// Finally, make sure neither have active reservation for the channel
 	// now pending open in the database.
 	assertNumPendingReservations(t, alice, bobPubKey, 0)
 	assertNumPendingReservations(t, bob, alicePubKey, 0)
 
-	return fundingOutPoint
+	return publ
 }
 
 func assertErrorNotSent(t *testing.T, msgChan chan lnwire.Message) {

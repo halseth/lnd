@@ -484,15 +484,16 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 	if req.LocalFundingAmt != 0 {
 		// Coin selection is done on the basis of sat/kw, so we'll use
 		// the fee rate passed in to perform coin selection.
-		err := l.selectCoinsAndChange(
+		coins, change, _, err := l.selectCoinsAndChange(
 			req.FundingFeePerKw, req.LocalFundingAmt, req.MinConfs,
-			reservation.ourContribution,
 		)
 		if err != nil {
 			req.err <- err
 			req.resp <- nil
 			return
 		}
+		reservation.ourContribution.Inputs = coins
+		reservation.ourContribution.ChangeOutputs = change
 	}
 
 	// Next, we'll grab a series of keys from the wallet which will be used
@@ -1281,13 +1282,14 @@ func (l *LightningWallet) WithCoinSelectLock(f func() error) error {
 }
 
 // selectCoinsAndChange performs coin selection in order to obtain witness
-// outputs which sum to at least 'numCoins' amount of satoshis. If coin
-// selection is successful/possible, then the selected coins are available
-// within the passed contribution's inputs. If necessary, a change address will
-// also be generated.
+// outputs which sum to at least 'amt' amount of satoshis. If necessary,
+// a change address will also be generated. If coin selection is
+// successful/possible, then the selected coins and change outputs are
+// returned. This method locks the selected outputs, and a function closure to
+// unlock them in case of an error is returned.
 func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
-	amt btcutil.Amount, minConfs int32,
-	contribution *ChannelContribution) error {
+	amt btcutil.Amount, minConfs int32) ([]*wire.TxIn, []*wire.TxOut,
+	func(), error) {
 
 	// We hold the coin select mutex while querying for outputs, and
 	// performing coin selection in order to avoid inadvertent double
@@ -1302,7 +1304,7 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	// number of confirmations required.
 	coins, err := l.ListUnspentWitness(minConfs, math.MaxInt32)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
 
 	// Perform coin selection over our available, unlocked unspent outputs
@@ -1310,13 +1312,13 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	// requirements.
 	selectedCoins, changeAmt, err := coinSelect(feeRate, amt, coins)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
 
 	// Lock the selected coins. These coins are now "reserved", this
 	// prevents concurrent funding requests from referring to and this
 	// double-spending the same set of coins.
-	contribution.Inputs = make([]*wire.TxIn, len(selectedCoins))
+	inputs := make([]*wire.TxIn, len(selectedCoins))
 	for i, coin := range selectedCoins {
 		outpoint := &coin.OutPoint
 		l.lockedOutPoints[*outpoint] = struct{}{}
@@ -1324,30 +1326,42 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 
 		// Empty sig script, we'll actually sign if this reservation is
 		// queued up to be completed (the other side accepts).
-		contribution.Inputs[i] = wire.NewTxIn(outpoint, nil, nil)
+		inputs[i] = wire.NewTxIn(outpoint, nil, nil)
 	}
 
 	// Record any change output(s) generated as a result of the coin
 	// selection, but only if the addition of the output won't lead to the
 	// creation of dust.
+	var changeOutputs []*wire.TxOut
 	if changeAmt != 0 && changeAmt > DefaultDustLimit() {
 		changeAddr, err := l.NewAddress(WitnessPubKey, true)
 		if err != nil {
-			return err
+			return nil, nil, nil, err
 		}
 		changeScript, err := txscript.PayToAddrScript(changeAddr)
 		if err != nil {
-			return err
+			return nil, nil, nil, err
 		}
 
-		contribution.ChangeOutputs = make([]*wire.TxOut, 1)
-		contribution.ChangeOutputs[0] = &wire.TxOut{
+		changeOutputs = make([]*wire.TxOut, 1)
+		changeOutputs[0] = &wire.TxOut{
 			Value:    int64(changeAmt),
 			PkScript: changeScript,
 		}
 	}
 
-	return nil
+	unlock := func() {
+		l.coinSelectMtx.Lock()
+		defer l.coinSelectMtx.Unlock()
+
+		for _, coin := range selectedCoins {
+			outpoint := &coin.OutPoint
+			delete(l.lockedOutPoints, *outpoint)
+			l.UnlockOutpoint(*outpoint)
+		}
+	}
+
+	return inputs, changeOutputs, unlock, nil
 }
 
 // DeriveStateHintObfuscator derives the bytes to be used for obfuscating the

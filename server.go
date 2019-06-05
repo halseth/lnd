@@ -2926,6 +2926,7 @@ type openChanReq struct {
 
 	chainHash chainhash.Hash
 
+	localSpendAmt   btcutil.Amount
 	localFundingAmt btcutil.Amount
 
 	pushAmt lnwire.MilliSatoshi

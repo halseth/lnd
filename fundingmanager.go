@@ -2723,7 +2723,6 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 	var (
 		peerKey        = msg.peer.IdentityKey()
 		localAmt       = msg.localFundingAmt
-		capacity       = localAmt
 		minHtlc        = msg.minHtlc
 		remoteCsvDelay = msg.remoteCsvDelay
 	)
@@ -2737,10 +2736,11 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		ourDustLimit = defaultLitecoinDustLimit
 	}
 
-	fndgLog.Infof("Initiating fundingRequest(localAmt=%v, remoteAmt=%v, "+
-		"capacity=%v, chainhash=%v, peer=%x, dustLimit=%v, min_confs=%v)",
-		localAmt, msg.pushAmt, capacity, msg.chainHash,
-		peerKey.SerializeCompressed(), ourDustLimit, msg.minConfs)
+	fndgLog.Infof("Initiating fundingRequest(localAmt=%v "+
+		"(fundAll=%v), pushAmt=%v, chainhash=%v, peer=%x, "+
+		"dustLimit=%v, min_confs=%v)", localAmt, msg.fundAll,
+		msg.pushAmt, msg.chainHash, peerKey.SerializeCompressed(),
+		ourDustLimit, msg.minConfs)
 
 	// First, we'll query the fee estimator for a fee that should get the
 	// commitment transaction confirmed by the next few blocks (conf target
@@ -2767,6 +2767,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		ChainHash:        &msg.chainHash,
 		NodeID:           peerKey,
 		NodeAddr:         msg.peer.Address(),
+		FundAll:          msg.fundAll,
 		LocalFundingAmt:  localAmt,
 		RemoteFundingAmt: 0,
 		CommitFeePerKw:   commitFeePerKw,
@@ -2781,6 +2782,12 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		msg.err <- err
 		return
 	}
+
+	// Now that we have successfully reserved funds for this channel in the
+	// wallet, we can fetch the final channel capacity. This is done at
+	// this point since the final capacity might change in case of
+	// fundAll=true.
+	capacity := reservation.Capacity()
 
 	// Obtain a new pending channel ID which is used to track this
 	// reservation throughout its lifetime.

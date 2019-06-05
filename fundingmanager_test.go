@@ -235,7 +235,8 @@ func createTestWallet(cdb *channeldb.DB, netParams *chaincfg.Params,
 }
 
 func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
-	addr *lnwire.NetAddress, tempTestDir string) (*testNode, error) {
+	addr *lnwire.NetAddress, maxPending int, tempTestDir string,
+	options ...cfgOption) (*testNode, error) {
 
 	netParams := activeNetParams.Params
 	estimator := lnwallet.NewStaticFeeEstimator(62500, 0)
@@ -281,7 +282,7 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 
 	var chanIDSeed [32]byte
 
-	f, err := newFundingManager(fundingConfig{
+	fundingCfg := fundingConfig{
 		IDKey:        privKey.PubKey(),
 		Wallet:       lnw,
 		Notifier:     chainNotifier,
@@ -362,8 +363,15 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 		},
 		ZombieSweeperInterval:  1 * time.Hour,
 		ReservationTimeout:     1 * time.Nanosecond,
+		MaxPendingChannels:     maxPending,
 		NotifyOpenChannelEvent: func(wire.OutPoint) {},
-	})
+	}
+
+	for _, op := range options {
+		op(&fundingCfg)
+	}
+
+	f, err := newFundingManager(fundingCfg)
 	if err != nil {
 		t.Fatalf("failed creating fundingManager: %v", err)
 	}
@@ -467,12 +475,10 @@ func recreateAliceFundingManager(t *testing.T, alice *testNode) {
 	}
 }
 
-func setupFundingManagers(t *testing.T, maxPendingChannels int) (*testNode, *testNode) {
-	// We need to set the global config, as fundingManager uses
-	// MaxPendingChannels, and it is usually set in lndMain().
-	cfg = &config{
-		MaxPendingChannels: maxPendingChannels,
-	}
+type cfgOption func(*fundingConfig)
+
+func setupFundingManagers(t *testing.T, maxPendingChannels int,
+	options ...cfgOption) (*testNode, *testNode) {
 
 	aliceTestDir, err := ioutil.TempDir("", "alicelnwallet")
 	if err != nil {
@@ -480,7 +486,8 @@ func setupFundingManagers(t *testing.T, maxPendingChannels int) (*testNode, *tes
 	}
 
 	alice, err := createTestFundingManager(
-		t, alicePrivKey, aliceAddr, aliceTestDir,
+		t, alicePrivKey, aliceAddr, maxPendingChannels, aliceTestDir,
+		options...,
 	)
 	if err != nil {
 		t.Fatalf("failed creating fundingManager: %v", err)
@@ -491,7 +498,10 @@ func setupFundingManagers(t *testing.T, maxPendingChannels int) (*testNode, *tes
 		t.Fatalf("unable to create temp directory: %v", err)
 	}
 
-	bob, err := createTestFundingManager(t, bobPrivKey, bobAddr, bobTestDir)
+	bob, err := createTestFundingManager(
+		t, bobPrivKey, bobAddr, maxPendingChannels, bobTestDir,
+		options...,
+	)
 	if err != nil {
 		t.Fatalf("failed creating fundingManager: %v", err)
 	}
@@ -2544,13 +2554,12 @@ func TestFundingManagerMaxPendingChannels(t *testing.T) {
 // option, namely that non-zero incoming push amounts are disabled.
 func TestFundingManagerRejectPush(t *testing.T) {
 	// Enable 'rejectpush' option and initialize funding managers.
-	alice, bob := setupFundingManagers(t, DefaultMaxPendingChannels)
-	rejectPush := cfg.RejectPush
-	cfg.RejectPush = true
-	defer func() {
-		tearDownFundingManagers(t, alice, bob)
-		cfg.RejectPush = rejectPush
-	}()
+	alice, bob := setupFundingManagers(
+		t, DefaultMaxPendingChannels, func(cfg *fundingConfig) {
+			cfg.RejectPush = true
+		},
+	)
+	defer tearDownFundingManagers(t, alice, bob)
 
 	// Create a funding request and start the workflow.
 	updateChan := make(chan *lnrpc.OpenStatusUpdate)

@@ -1026,6 +1026,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 		ZombieSweeperInterval:  1 * time.Minute,
 		ReservationTimeout:     10 * time.Minute,
 		MinChanSize:            btcutil.Amount(cfg.MinChanSize),
+		MaxPendingChannels:     cfg.MaxPendingChannels,
+		RejectPush:             cfg.RejectPush,
 		NotifyOpenChannelEvent: s.channelNotifier.NotifyOpenChannelEvent,
 	})
 	if err != nil {

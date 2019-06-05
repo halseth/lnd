@@ -69,6 +69,11 @@ type InitFundingReserveMsg struct {
 	// workflow.
 	NodeAddr net.Addr
 
+	// FundAll should be set true if we intend to use all our remaining
+	// funds to open the channel. Can currently only be used together with
+	// LocalFundingAmt == 0 and RemoteFundingAmt == 0.
+	FundAll bool
+
 	// LocalFundingAmnt is the amount of funds requested from us for this
 	// channel.
 	LocalFundingAmt btcutil.Amount
@@ -432,8 +437,16 @@ func (l *LightningWallet) InitChannelReservation(
 // validate a funding reservation request.
 func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg) {
 	// It isn't possible to create a channel with zero funds committed.
-	if req.LocalFundingAmt+req.RemoteFundingAmt == 0 {
+	if req.LocalFundingAmt+req.RemoteFundingAmt == 0 && !req.FundAll {
 		err := ErrZeroCapacity()
+		req.err <- err
+		req.resp <- nil
+		return
+	}
+
+	if req.LocalFundingAmt+req.RemoteFundingAmt > 0 && req.FundAll {
+		err := fmt.Errorf("Local and remote fund amt must be zero when " +
+			"fundAll=true")
 		req.err <- err
 		req.resp <- nil
 		return
@@ -470,9 +483,24 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 	capacity := req.RemoteFundingAmt
 	localFundingAmt := btcutil.Amount(0)
 
+	switch {
+
+	// If we are attempting to use all our remaining funds to open the
+	// channel, select all our coins as inputs.
+	case req.FundAll:
+		coins, localFundingAmt, unlock, err = l.selectAllCoins(
+			req.FundingFeePerKw, req.MinConfs,
+		)
+		if err != nil {
+			req.err <- err
+			req.resp <- nil
+			return
+		}
+		capacity = localFundingAmt
+
 	// Otherwise, attempt to obtain enough coins to meet the required
 	// funding amount.
-	if req.LocalFundingAmt != 0 {
+	case req.LocalFundingAmt != 0:
 		// Coin selection is done on the basis of sat/kw, so we'll use
 		// the fee rate passed in to perform coin selection.
 		var err error
@@ -1378,6 +1406,91 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	}
 
 	return inputs, changeOutputs, unlock, nil
+}
+
+// selectAllCoins selects all witness outputs found in our wallet, to be used
+// for channel funding. Since we intend no funds to be left after opening this
+// channel, no change output will be produced. If coin selection is successful,
+// then the selected coins are returned, and the size of the funding output.
+// This method locks the selected outputs, and a function closure to unlock
+// them in case of an error is returned.
+func (l *LightningWallet) selectAllCoins(feeRate SatPerKWeight,
+	minConfs int32) ([]*wire.TxIn, btcutil.Amount, func(), error) {
+
+	// We hold the coin select mutex while querying for outputs, and
+	// performing coin selection in order to avoid inadvertent double
+	// spends across funding transactions.
+	l.coinSelectMtx.Lock()
+	defer l.coinSelectMtx.Unlock()
+
+	walletLog.Infof("Selecting all coins for funding tx using %v "+
+		"sat/kw as fee rate", int64(feeRate))
+
+	// Find all unlocked unspent witness outputs that satisfy the minimum
+	// number of confirmations required.
+	allCoins, err := l.ListUnspentWitness(minConfs, math.MaxInt32)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	// Lock the selected coins. These coins are now "reserved", this
+	// prevents concurrent funding requests from referring to and this
+	// double-spending the same set of coins.
+	var totalSat btcutil.Amount
+	inputs := make([]*wire.TxIn, len(allCoins))
+	for i, coin := range allCoins {
+		outpoint := &coin.OutPoint
+		l.lockedOutPoints[*outpoint] = struct{}{}
+		l.LockOutpoint(*outpoint)
+
+		// Empty sig script, we'll actually sign if this reservation is
+		// queued up to be completed (the other side accepts).
+		inputs[i] = wire.NewTxIn(outpoint, nil, nil)
+	}
+
+	unlock := func() {
+		l.coinSelectMtx.Lock()
+		defer l.coinSelectMtx.Unlock()
+
+		for _, coin := range allCoins {
+			outpoint := &coin.OutPoint
+			delete(l.lockedOutPoints, *outpoint)
+			l.UnlockOutpoint(*outpoint)
+		}
+	}
+
+	// Make a fee estimate to determine how much will be left for our
+	// funding output.
+	var weightEstimate input.TxWeightEstimator
+	for _, utxo := range allCoins {
+		switch utxo.AddressType {
+		case WitnessPubKey:
+			weightEstimate.AddP2WKHInput()
+		case NestedWitnessPubKey:
+			weightEstimate.AddNestedP2WKHInput()
+		default:
+			unlock()
+			return nil, 0, nil, fmt.Errorf("Unsupported address type: %v",
+				utxo.AddressType)
+		}
+
+		totalSat += utxo.Value
+	}
+
+	// Channel funding multisig output is P2WSH.
+	weightEstimate.AddP2WSHOutput()
+
+	// Based on the estimated size and fee rate, find the expected fee.
+	totalWeight := int64(weightEstimate.Weight())
+	fee := feeRate.FeeForWeight(totalWeight)
+	if totalSat <= fee {
+		unlock()
+		return nil, 0, nil, fmt.Errorf("Not enough funds to pay fee")
+	}
+
+	// We return the selected inputs together with the value of the final
+	// funding output.
+	return inputs, totalSat - fee, unlock, nil
 }
 
 // DeriveStateHintObfuscator derives the bytes to be used for obfuscating the

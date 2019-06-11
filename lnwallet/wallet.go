@@ -1320,48 +1320,76 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	// creation of dust.
 	var changeOutputs []*wire.TxOut
 	if changeAmt != 0 && changeAmt > DefaultDustLimit() {
-		changeAddr, err := l.NewAddress(WitnessPubKey, true)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		changeScript, err := txscript.PayToAddrScript(changeAddr)
+		change, err := l.createChangeOutput(changeAmt)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 
 		changeOutputs = make([]*wire.TxOut, 1)
-		changeOutputs[0] = &wire.TxOut{
-			Value:    int64(changeAmt),
-			PkScript: changeScript,
-		}
+		changeOutputs[0] = change
+	}
+
+	inputs := make([]*wire.TxIn, len(coins))
+	for i, coin := range selectedCoins {
+		// Empty sig script, we'll actually sign if this reservation is
+		// queued up to be completed (the other side accepts).
+		op := coin.OutPoint
+		inputs[i] = wire.NewTxIn(&op, nil, nil)
 	}
 
 	// Lock the selected coins. These coins are now "reserved", this
 	// prevents concurrent funding requests from referring to and this
 	// double-spending the same set of coins.
-	inputs := make([]*wire.TxIn, len(selectedCoins))
-	for i, coin := range selectedCoins {
+	unlock, err := l.lockCoins(selectedCoins)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return inputs, changeOutputs, unlock, nil
+}
+
+// createChangeOutput creates an output of the given amount that pays to a new
+// change address.
+func (l *LightningWallet) createChangeOutput(changeAmt btcutil.Amount) (
+	*wire.TxOut, error) {
+
+	changeAddr, err := l.NewAddress(WitnessPubKey, true)
+	if err != nil {
+		return nil, err
+	}
+	changeScript, err := txscript.PayToAddrScript(changeAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &wire.TxOut{
+		Value:    int64(changeAmt),
+		PkScript: changeScript,
+	}, nil
+}
+
+// lockCoins locks the given UTXOs such that they will be reserved and
+// ineglible for use by other transactions. A function closure to unlock them
+// is returned.
+func (l *LightningWallet) lockCoins(coins []*Utxo) (func(), error) {
+	for _, coin := range coins {
 		outpoint := &coin.OutPoint
 		l.lockedOutPoints[*outpoint] = struct{}{}
 		l.LockOutpoint(*outpoint)
-
-		// Empty sig script, we'll actually sign if this reservation is
-		// queued up to be completed (the other side accepts).
-		inputs[i] = wire.NewTxIn(outpoint, nil, nil)
 	}
 
 	unlock := func() {
 		l.coinSelectMtx.Lock()
 		defer l.coinSelectMtx.Unlock()
 
-		for _, coin := range selectedCoins {
+		for _, coin := range coins {
 			outpoint := &coin.OutPoint
 			delete(l.lockedOutPoints, *outpoint)
 			l.UnlockOutpoint(*outpoint)
 		}
 	}
 
-	return inputs, changeOutputs, unlock, nil
+	return unlock, nil
 }
 
 // DeriveStateHintObfuscator derives the bytes to be used for obfuscating the

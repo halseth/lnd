@@ -1297,7 +1297,10 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	// Perform coin selection over our available, unlocked unspent outputs
 	// in order to find enough coins to meet the funding amount
 	// requirements.
-	selectedCoins, changeAmt, err := coinSelect(feeRate, amt, coins)
+	dustLimit := DefaultDustLimit()
+	selectedCoins, _, changeAmt, err := coinSelect(
+		feeRate, amt, dustLimit, coins,
+	)
 	if err != nil {
 		return err
 	}
@@ -1317,9 +1320,8 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	}
 
 	// Record any change output(s) generated as a result of the coin
-	// selection, but only if the addition of the output won't lead to the
-	// creation of dust.
-	if changeAmt != 0 && changeAmt > DefaultDustLimit() {
+	// selection.
+	if changeAmt != 0 {
 		changeAddr, err := l.NewAddress(WitnessPubKey, true)
 		if err != nil {
 			return err
@@ -1392,11 +1394,13 @@ func selectInputs(amt btcutil.Amount, coins []*Utxo) (btcutil.Amount, []*Utxo, e
 }
 
 // coinSelect attempts to select a sufficient amount of coins, including a
-// change output to fund amt satoshis, adhering to the specified fee rate. The
-// specified fee rate should be expressed in sat/kw for coin selection to
-// function properly.
-func coinSelect(feeRate SatPerKWeight, amt btcutil.Amount,
-	coins []*Utxo) ([]*Utxo, btcutil.Amount, error) {
+// change output to fund amt satoshis, adhering to the specified fee rate. It
+// returns the size of the created funding ouput, as well as the size of the
+// change output if any. The specified fee rate should be expressed in sat/kw
+// for coin selection to function properly, and the passed dustLimit is used to
+// clamp the outputs created.
+func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
+	coins []*Utxo) ([]*Utxo, btcutil.Amount, btcutil.Amount, error) {
 
 	amtNeeded := amt
 	for {
@@ -1404,7 +1408,7 @@ func coinSelect(feeRate SatPerKWeight, amt btcutil.Amount,
 		// the required fee.
 		totalSat, selectedUtxos, err := selectInputs(amtNeeded, coins)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 
 		var weightEstimate input.TxWeightEstimator
@@ -1416,8 +1420,8 @@ func coinSelect(feeRate SatPerKWeight, amt btcutil.Amount,
 			case NestedWitnessPubKey:
 				weightEstimate.AddNestedP2WKHInput()
 			default:
-				return nil, 0, fmt.Errorf("Unsupported address type: %v",
-					utxo.AddressType)
+				return nil, 0, 0, fmt.Errorf("Unsupported "+
+					"address type: %v", utxo.AddressType)
 			}
 		}
 
@@ -1449,7 +1453,10 @@ func coinSelect(feeRate SatPerKWeight, amt btcutil.Amount,
 		// If the fee is sufficient, then calculate the size of the
 		// change output.
 		changeAmt := overShootAmt - requiredFee
+		if changeAmt <= dustLimit {
+			changeAmt = 0
+		}
 
-		return selectedUtxos, changeAmt, nil
+		return selectedUtxos, amt, changeAmt, nil
 	}
 }

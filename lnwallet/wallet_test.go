@@ -41,8 +41,9 @@ func TestCoinSelect(t *testing.T) {
 	}
 
 	type testCase struct {
-		outputValue btcutil.Amount
-		coins       []*Utxo
+		outputValue  btcutil.Amount
+		coins        []*Utxo
+		subtractFees bool
 
 		expectedInput      []btcutil.Amount
 		expectedFundingAmt btcutil.Amount
@@ -153,11 +154,102 @@ func TestCoinSelect(t *testing.T) {
 			// non-change transaction.
 			expectedChange: 0,
 		},
+		{
+			// We have 1.0 BTC available, spend them all. This
+			// should lead to a funding TX with one output, the
+			// rest goes to fees.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       1 * btcutil.SatoshiPerBitcoin,
+				},
+			},
+			outputValue:  1 * btcutil.SatoshiPerBitcoin,
+			subtractFees: true,
+
+			// The one and only input will be selected.
+			expectedInput: []btcutil.Amount{
+				1 * btcutil.SatoshiPerBitcoin,
+			},
+			expectedFundingAmt: 1*btcutil.SatoshiPerBitcoin - fee(1, false),
+			expectedChange:     0,
+		},
+
+		{
+			// The total funds available is below the dust limit
+			// after paying fees.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       fee(1, false) + dust,
+				},
+			},
+			outputValue:  fee(1, false) + dust,
+			subtractFees: true,
+
+			expectErr: true,
+		},
+
+		{
+			// After subtracting fees, the resulting change output
+			// is below the dust limit. The remainder should go
+			// towards the funing output.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       1 * btcutil.SatoshiPerBitcoin,
+				},
+			},
+			outputValue:  1*btcutil.SatoshiPerBitcoin - dust,
+			subtractFees: true,
+
+			expectedInput: []btcutil.Amount{
+				1 * btcutil.SatoshiPerBitcoin,
+			},
+			expectedFundingAmt: 1*btcutil.SatoshiPerBitcoin - fee(1, false),
+			expectedChange:     0,
+		},
+
+		{
+			// We got just enough funds to create an output above the dust limit.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       fee(1, false) + dustLimit + 1,
+				},
+			},
+			outputValue:  fee(1, false) + dustLimit + 1,
+			subtractFees: true,
+
+			expectedInput: []btcutil.Amount{
+				fee(1, false) + dustLimit + 1,
+			},
+			expectedFundingAmt: dustLimit + 1,
+			expectedChange:     0,
+		},
+		{
+			// Amount left is below dust limit after adding a
+			// change output, leading to a no-change tx.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       fee(1, false) + 2*(dustLimit+1),
+				},
+			},
+			outputValue:  fee(1, false) + dustLimit + 1,
+			subtractFees: true,
+
+			expectedInput: []btcutil.Amount{
+				fee(1, false) + 2*(dustLimit+1),
+			},
+			expectedFundingAmt: 2 * (dustLimit + 1),
+			expectedChange:     0,
+		},
 	}
 
 	for _, test := range testCases {
 		selected, localFundingAmt, changeAmt, err := coinSelect(
-			feeRate, test.outputValue, dustLimit, test.coins,
+			feeRate, test.outputValue, dustLimit, test.subtractFees, test.coins,
 		)
 		if !test.expectErr && err != nil {
 			t.Fatalf(err.Error())

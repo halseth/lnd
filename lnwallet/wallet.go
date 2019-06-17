@@ -1299,7 +1299,7 @@ func (l *LightningWallet) selectCoinsAndChange(feeRate SatPerKWeight,
 	// requirements.
 	dustLimit := DefaultDustLimit()
 	selectedCoins, _, changeAmt, err := coinSelect(
-		feeRate, amt, dustLimit, coins,
+		feeRate, amt, dustLimit, false, coins,
 	)
 	if err != nil {
 		return err
@@ -1399,8 +1399,14 @@ func selectInputs(amt btcutil.Amount, coins []*Utxo) (btcutil.Amount, []*Utxo, e
 // change output if any. The specified fee rate should be expressed in sat/kw
 // for coin selection to function properly, and the passed dustLimit is used to
 // clamp the outputs created.
+//
+// If subtractFees is true, then the estimated fee will be taken from the
+// output amount, meaning that the resuling funding output might be smaller
+// than the passed amt. The resulting funding output value will be returned,
+// along with the change amount if any.
 func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
-	coins []*Utxo) ([]*Utxo, btcutil.Amount, btcutil.Amount, error) {
+	subtractFees bool, coins []*Utxo) ([]*Utxo, btcutil.Amount,
+	btcutil.Amount, error) {
 
 	amtNeeded := amt
 	for {
@@ -1441,6 +1447,13 @@ func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
 		outputAmt := amt
 		rem := totalSat - amt - requiredFee
 
+		// If we want to let the fee be subtracted from our output
+		// amount instead of being in addition to it, we'll adjust it.
+		if subtractFees {
+			outputAmt = amt - requiredFee
+			rem = totalSat - amt
+		}
+
 		// If we didn't have enough to cover the fee our for the output
 		// to be above the dust limit, increase our targeted amount and
 		// do another round of coin selection.
@@ -1453,6 +1466,9 @@ func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
 		// selected inputs. We'll remember the resulting values for
 		// now, while we try to add a change output.
 		changeAmt := btcutil.Amount(0)
+		if subtractFees {
+			outputAmt += rem
+		}
 
 		// Assume that change output is a P2WKH output.
 		//
@@ -1469,6 +1485,13 @@ func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
 		// fees.
 		outputAmtWithChange := amt
 		remAmtWithChange := totalSat - amt - requiredFee
+
+		// Again, if fees are meant to be taken from the output amount,
+		// adjust values.
+		if subtractFees {
+			outputAmtWithChange = amt - requiredFee
+			remAmtWithChange = totalSat - amt
+		}
 
 		// If adding a change output lead to both outputs being above
 		// the dust limit, we'll add the change ouput. Otherwise we'll

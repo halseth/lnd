@@ -106,6 +106,53 @@ func TestCoinSelect(t *testing.T) {
 			// Change will be below dust limit, and therefore be 0.
 			expectedChange: 0,
 		},
+		{
+			// We have a 1 BTC input, and want to create an output
+			// as big as possible, leaving just a dust amount not
+			// big enough to pay the fee for a change output.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       1 * btcutil.SatoshiPerBitcoin,
+				},
+			},
+			// We tune the output value to be the maximum amount
+			// possible, without leaving enough for fees for a
+			// change output to be created.
+			outputValue: 1*btcutil.SatoshiPerBitcoin - fee(1, false) - dust,
+
+			expectedInput: []btcutil.Amount{
+				1 * btcutil.SatoshiPerBitcoin,
+			},
+
+			expectedFundingAmt: 1*btcutil.SatoshiPerBitcoin - fee(1, false) - dust,
+			// Since we won't have enough funds to pay the extra
+			// fees for a change output, we expect it to not be
+			// added.
+			expectedChange: 0,
+		},
+		{
+			// We have a 1 BTC input, and want to create an output
+			// as big as possible, such that there is nothing left
+			// for change.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       1 * btcutil.SatoshiPerBitcoin,
+				},
+			},
+			// We tune the output value to be the maximum amount
+			// possible, leaving just enough for fees.
+			outputValue: 1*btcutil.SatoshiPerBitcoin - fee(1, false),
+
+			expectedInput: []btcutil.Amount{
+				1 * btcutil.SatoshiPerBitcoin,
+			},
+			expectedFundingAmt: 1*btcutil.SatoshiPerBitcoin - fee(1, false),
+			// We have just enough left to pay the fee for a
+			// non-change transaction.
+			expectedChange: 0,
+		},
 	}
 
 	for _, test := range testCases {

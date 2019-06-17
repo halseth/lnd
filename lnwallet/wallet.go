@@ -1428,35 +1428,56 @@ func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
 		// Channel funding multisig output is P2WSH.
 		weightEstimate.AddP2WSHOutput()
 
+		// At this point we've got two possibilities, either create a
+		// change output, or not. We'll first try without creating a
+		// change output.
+		//
+		// Estimate the fee required for a transaction without a change
+		// output.
+		totalWeight := int64(weightEstimate.Weight())
+		requiredFee := feeRate.FeeForWeight(totalWeight)
+
+		// Calculate how much would be left after subtracting the fee.
+		outputAmt := amt
+		rem := totalSat - amt - requiredFee
+
+		// If we didn't have enough to cover the fee our for the output
+		// to be above the dust limit, increase our targeted amount and
+		// do another round of coin selection.
+		if rem < 0 || outputAmt <= dustLimit {
+			amtNeeded = amt + requiredFee
+			continue
+		}
+
+		// We were able to create a transaction with no change from the
+		// selected inputs. We'll remember the resulting values for
+		// now, while we try to add a change output.
+		changeAmt := btcutil.Amount(0)
+
 		// Assume that change output is a P2WKH output.
 		//
 		// TODO: Handle wallets that generate non-witness change
 		// addresses.
 		weightEstimate.AddP2WKHOutput()
 
-		// The difference between the selected amount and the amount
-		// requested will be used to pay fees, and generate a change
-		// output with the remaining.
-		overShootAmt := totalSat - amt
+		// Now that we have added the change output, redo the fee
+		// estimate.
+		totalWeight = int64(weightEstimate.Weight())
+		requiredFee = feeRate.FeeForWeight(totalWeight)
 
-		// Based on the estimated size and fee rate, if the excess
-		// amount isn't enough to pay fees, then increase the requested
-		// coin amount by the estimate required fee, performing another
-		// round of coin selection.
-		totalWeight := int64(weightEstimate.Weight())
-		requiredFee := feeRate.FeeForWeight(totalWeight)
-		if overShootAmt < requiredFee {
-			amtNeeded = amt + requiredFee
-			continue
+		// Calculate the new change amount we'll have left after paying
+		// fees.
+		outputAmtWithChange := amt
+		remAmtWithChange := totalSat - amt - requiredFee
+
+		// If adding a change output lead to both outputs being above
+		// the dust limit, we'll add the change ouput. Otherwise we'll
+		// go with the no change tx we originally found.
+		if remAmtWithChange > dustLimit && outputAmtWithChange > dustLimit {
+			outputAmt = outputAmtWithChange
+			changeAmt = remAmtWithChange
 		}
 
-		// If the fee is sufficient, then calculate the size of the
-		// change output.
-		changeAmt := overShootAmt - requiredFee
-		if changeAmt <= dustLimit {
-			changeAmt = 0
-		}
-
-		return selectedUtxos, amt, changeAmt, nil
+		return selectedUtxos, outputAmt, changeAmt, nil
 	}
 }

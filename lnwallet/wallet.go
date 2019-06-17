@@ -1501,6 +1501,17 @@ func coinSelect(feeRate SatPerKWeight, amt, dustLimit btcutil.Amount,
 			changeAmt = remAmtWithChange
 		}
 
+		// Sanity check the resulting ouput values to make sure we
+		// don't burn a great part to fees.
+		totalOut := outputAmt + changeAmt
+		fee := totalSat - totalOut
+
+		// Fail if more than 20% goes to fees.
+		if fee > totalOut/5 {
+			return nil, 0, 0, fmt.Errorf("fee %v on total output"+
+				"value %v", fee, totalOut)
+		}
+
 		return selectedUtxos, outputAmt, changeAmt, nil
 	}
 }

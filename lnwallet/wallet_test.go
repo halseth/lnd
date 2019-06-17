@@ -245,6 +245,20 @@ func TestCoinSelect(t *testing.T) {
 			expectedFundingAmt: 2 * (dustLimit + 1),
 			expectedChange:     0,
 		},
+
+		{
+			// If more than 20% of funds goes to fees, it should fail.
+			coins: []*Utxo{
+				&Utxo{
+					AddressType: WitnessPubKey,
+					Value:       5 * fee(1, false),
+				},
+			},
+			outputValue:  5 * fee(1, false),
+			subtractFees: true,
+
+			expectErr: true,
+		},
 	}
 
 	for _, test := range testCases {

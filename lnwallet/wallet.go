@@ -453,6 +453,30 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 	capacity := req.LocalFundingAmt + req.RemoteFundingAmt
 	localFundingAmt := req.LocalFundingAmt
 
+	var (
+		coins  []*wire.TxIn
+		change []*wire.TxOut
+		err    error
+	)
+
+	// If we're on the receiving end of a single funder channel then we
+	// don't need to perform any coin selection, and the remote contributes
+	// all funds. Otherwise, attempt to obtain enough coins to meet the
+	// required funding amount.
+	if req.LocalFundingAmt != 0 {
+		// Coin selection is done on the basis of sat/kw, so we'll use
+		// the fee rate passed in to perform coin selection.
+		var err error
+		coins, change, _, err = l.selectCoinsAndChange(
+			req.FundingFeePerKw, req.LocalFundingAmt, req.MinConfs,
+		)
+		if err != nil {
+			req.err <- err
+			req.resp <- nil
+			return
+		}
+	}
+
 	id := atomic.AddUint64(&l.nextFundingID, 1)
 	reservation, err := NewChannelReservation(
 		capacity, localFundingAmt, req.CommitFeePerKw, l, id,
@@ -468,26 +492,11 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 	reservation.Lock()
 	defer reservation.Unlock()
 
+	reservation.ourContribution.Inputs = coins
+	reservation.ourContribution.ChangeOutputs = change
+
 	reservation.nodeAddr = req.NodeAddr
 	reservation.partialState.IdentityPub = req.NodeID
-
-	// If we're on the receiving end of a single funder channel then we
-	// don't need to perform any coin selection. Otherwise, attempt to
-	// obtain enough coins to meet the required funding amount.
-	if req.LocalFundingAmt != 0 {
-		// Coin selection is done on the basis of sat/kw, so we'll use
-		// the fee rate passed in to perform coin selection.
-		coins, change, _, err := l.selectCoinsAndChange(
-			req.FundingFeePerKw, req.LocalFundingAmt, req.MinConfs,
-		)
-		if err != nil {
-			req.err <- err
-			req.resp <- nil
-			return
-		}
-		reservation.ourContribution.Inputs = coins
-		reservation.ourContribution.ChangeOutputs = change
-	}
 
 	// Next, we'll grab a series of keys from the wallet which will be used
 	// for the duration of the channel. The keys include: our multi-sig

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
@@ -212,8 +213,9 @@ type UtxoSweeperConfig struct {
 	// certain on-chain events.
 	Notifier chainntnfs.ChainNotifier
 
-	// ChainIO is used  to determine the current block height.
-	ChainIO lnwallet.BlockChainIO
+	// GetBestBlock is a function closure used to determine the current
+	// block height.
+	GetBestBlock func() (*chainhash.Hash, int32, error)
 
 	// Store stores the published sweeper txes.
 	Store SweeperStore
@@ -324,7 +326,7 @@ func (s *UtxoSweeper) Start() error {
 	s.relayFeeRate = s.cfg.FeeEstimator.RelayFeePerKW()
 
 	// Register for block epochs to retry sweeping every block.
-	bestHash, bestHeight, err := s.cfg.ChainIO.GetBestBlock()
+	bestHash, bestHeight, err := s.cfg.GetBestBlock()
 	if err != nil {
 		return fmt.Errorf("get best block: %v", err)
 	}

@@ -355,6 +355,8 @@ func (s *UtxoSweeper) Start() error {
 		}
 	}()
 
+	fmt.Println("sweeper started")
+
 	return nil
 }
 
@@ -456,6 +458,7 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch,
 		// are already trying to sweep this input and if not, set up a
 		// listener for spend and schedule a sweep.
 		case input := <-s.newInputs:
+			fmt.Println("new input registered")
 			outpoint := *input.input.OutPoint()
 			pendInput, pending := s.pendingInputs[outpoint]
 			if pending {
@@ -481,6 +484,7 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch,
 				feePreference:    input.feePreference,
 			}
 			s.pendingInputs[outpoint] = pendInput
+			fmt.Println("waiting for spend")
 
 			// Start watching for spend of this input, either by us
 			// or the remote party.
@@ -490,11 +494,13 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch,
 				input.input.HeightHint(),
 			)
 			if err != nil {
+				fmt.Println("error waiting for spend: %v", err)
 				err := fmt.Errorf("wait for spend: %v", err)
 				s.signalAndRemove(&outpoint, Result{Err: err})
 				continue
 			}
 			pendInput.ntfnRegCancel = cancel
+			fmt.Println("scheduling sweep")
 
 			// Check to see if with this new input a sweep tx can be
 			// formed.
@@ -579,6 +585,7 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch,
 		// The timer expires and we are going to (re)sweep.
 		case <-s.timer:
 			log.Debugf("Sweep timer expired")
+			fmt.Println("batch ticker ticking")
 
 			// Set timer to nil so we know that a new timer needs to
 			// be started when new inputs arrive.
@@ -705,8 +712,10 @@ func (s *UtxoSweeper) clusterBySweepFeeRate() []inputCluster {
 func (s *UtxoSweeper) scheduleSweep(currentHeight int32) error {
 	// The timer is already ticking, no action needed for the sweep to
 	// happen.
+	fmt.Println("scheduleing sweep")
 	if s.timer != nil {
 		log.Debugf("Timer still ticking")
+		fmt.Println("stil ticking")
 		return nil
 	}
 
@@ -729,12 +738,14 @@ func (s *UtxoSweeper) scheduleSweep(currentHeight int32) error {
 		}
 	}
 	if !startTimer {
+		fmt.Println("not starting timeer")
 		return nil
 	}
 
 	// Start sweep timer to create opportunity for more inputs to be added
 	// before a tx is constructed.
 	s.timer = s.cfg.NewBatchTimer()
+	fmt.Println("timer started")
 
 	log.Debugf("Sweep timer started")
 
@@ -950,6 +961,7 @@ func (s *UtxoSweeper) waitForSpend(outpoint wire.OutPoint,
 	if err != nil {
 		return nil, fmt.Errorf("register spend ntfn: %v", err)
 	}
+	fmt.Println("registered spend nt")
 
 	s.wg.Add(1)
 	go func() {

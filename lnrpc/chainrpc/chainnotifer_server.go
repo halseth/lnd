@@ -451,3 +451,9 @@ func (s *Server) RegisterBlockEpochNtfn(in *BlockEpoch,
 		}
 	}
 }
+
+func (s *Server) BestBlock(ctx context.Context, req *BestBlockRequest) (
+	*BestBlockResponse, error) {
+
+	return &BestBlockResponse{}, nil
+}

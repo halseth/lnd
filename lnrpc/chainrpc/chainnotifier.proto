@@ -140,6 +140,18 @@ message BlockEpoch {
     uint32 height = 2;
 }
 
+message BestBlockRequest{
+}
+
+message BestBlockResponse{
+    // The hash of the block.
+    bytes hash = 1;
+
+    // The height of the block.
+    uint32 height = 2;
+}
+
+
 service ChainNotifier {
     /*
     RegisterConfirmationsNtfn is a synchronous response-streaming RPC that
@@ -174,4 +186,6 @@ service ChainNotifier {
     missing processing a single block within the chain.
     */
     rpc RegisterBlockEpochNtfn(BlockEpoch) returns (stream BlockEpoch);
+
+    rpc BestBlock(BestBlockRequest) returns (BestBlockResponse);
 }

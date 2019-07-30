@@ -3255,6 +3255,7 @@ func (lc *LightningChannel) ProcessChanSyncMsg(
 			// In this case, we'll return an error to indicate the
 			// remote node sent us the wrong values. This will let
 			// the caller act accordingly.
+			// TODO: mark borked in db
 			walletLog.Errorf("ChannelPoint(%v), sync failed: "+
 				"remote provided invalid commit secret!",
 				lc.channelState.FundingOutpoint)

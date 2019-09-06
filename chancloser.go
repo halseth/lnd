@@ -438,6 +438,10 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 		// Before publishing the closing tx, we persist it to the
 		// database, such that it can be republished if something goes
 		// wrong.
+		// TODO: for coop close, does it even make sense to resync a
+		// channel after broadcasting close tx? It will end up in
+		// chain, and the remote realize it is closed.
+		// Maybe just do it to make it as general as possible.
 		err = c.cfg.channel.MarkCommitmentBroadcasted(closeTx)
 		if err != nil {
 			return nil, false, err

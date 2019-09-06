@@ -2442,6 +2442,9 @@ func (p *peer) resendChanSyncMsg(cid lnwire.ChannelID) error {
 			"peer %v: %v", p, err)
 	}
 
+	// TODO: we only have the chan sync message if the channel is closed
+	// (confirmed) we can write it to the immediately when we bork the
+	// channel (new PR?). correction: we have it, since it is calculated from the channel state
 	if c.LastChanSyncMsg == nil {
 		return fmt.Errorf("no chan sync message stored for channel %v",
 			cid)

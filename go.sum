@@ -87,8 +87,8 @@ github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0 h1:Ovs26xHkKqVztRpIrF/92Bcuy
 github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0/go.mod h1:8NvIoxWQoOIhqOTXgfV/d3M/q6VIi02HzZEHgUlZvzk=
 github.com/grpc-ecosystem/grpc-gateway v0.0.0-20170724004829-f2862b476edc h1:3NXdOHZ1YlN6SGP3FPbn4k73O2MeEp065abehRwGFxI=
 github.com/grpc-ecosystem/grpc-gateway v0.0.0-20170724004829-f2862b476edc/go.mod h1:RSKVYQBd5MCa4OVpNdGskqpgL2+G+NZTnrVHpWWfpdw=
-github.com/halseth/neutrino v0.0.0-20191002122603-23b70b25e8ec h1:xeTrtVMYFEwVwWRgM0WjE3DfTgZU+sZ6apcLi/N5iJ0=
-github.com/halseth/neutrino v0.0.0-20191002122603-23b70b25e8ec/go.mod h1:VZ4v9K1ZiGbUaFS3citkyxeuQhhjZBEVW8KXEMtbgak=
+github.com/halseth/neutrino v0.0.0-20191002123945-b8ce1ec54007 h1:yYX1zrjKZIjehxlaZFROHtuz1J9GvzlAHRNr3r98iWA=
+github.com/halseth/neutrino v0.0.0-20191002123945-b8ce1ec54007/go.mod h1:VZ4v9K1ZiGbUaFS3citkyxeuQhhjZBEVW8KXEMtbgak=
 github.com/hpcloud/tail v1.0.0 h1:nfCOvKYfkgYP8hkirhJocXT2+zOD8yUNjXaWfTlyFKI=
 github.com/hpcloud/tail v1.0.0/go.mod h1:ab1qPbhIpdTxEkNHXyeSf5vhxWSCs/tWer42PpOxQnU=
 github.com/jackpal/gateway v1.0.5 h1:qzXWUJfuMdlLMtt0a3Dgt+xkWQiA5itDEITVJtuSwMc=

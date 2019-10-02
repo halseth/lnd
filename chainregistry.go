@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/coreos/bbolt"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightninglabs/neutrino/headerfs"
 	"github.com/lightningnetwork/lnd/chainntnfs"
@@ -703,7 +703,15 @@ func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error
 	}
 
 	dbName := filepath.Join(dbPath, "neutrino.db")
-	db, err := walletdb.Create("bdb", dbName)
+
+	// Specify bbolt freelist options to reduce heap pressure in case the
+	// freelist grows to be very large.
+	options := &bbolt.Options{
+		NoFreelistSync: true,
+		FreelistType:   bbolt.FreelistMapType,
+	}
+
+	db, err := bbolt.Open(dbName, 0600, options)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create neutrino "+
 			"database: %v", err)

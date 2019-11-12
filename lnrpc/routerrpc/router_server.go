@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/btcsuite/btcutil"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -202,6 +203,8 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 // pre-image, along with the final route will be returned.
 func (s *Server) SendPayment(req *SendPaymentRequest,
 	stream Router_SendPaymentServer) error {
+
+	log.Infof("%v", spew.Sdump(req))
 
 	payment, err := s.cfg.RouterBackend.extractIntentFromSendRequest(req)
 	if err != nil {

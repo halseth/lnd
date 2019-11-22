@@ -5716,14 +5716,11 @@ type LocalForceCloseSummary struct {
 // ForceClose executes a unilateral closure of the transaction at the current
 // lowest commitment height of the channel. Following a force closure, all
 // state transitions, or modifications to the state update logs will be
-// rejected. Additionally, this function also returns a LocalForceCloseSummary
-// which includes the necessary details required to sweep all the time-locked
-// outputs within the commitment transaction.
+// rejected. This function returns our latest commitment transaction, that can
+// be used to close the channel.
 //
 // TODO(roasbeef): all methods need to abort if in dispute state
-// TODO(roasbeef): method to generate CloseSummaries for when the remote peer
-// does a unilateral close
-func (lc *LightningChannel) ForceClose() (*LocalForceCloseSummary, error) {
+func (lc *LightningChannel) ForceClose() (*wire.MsgTx, error) {
 	lc.Lock()
 	defer lc.Unlock()
 
@@ -5734,17 +5731,7 @@ func (lc *LightningChannel) ForceClose() (*LocalForceCloseSummary, error) {
 		return nil, fmt.Errorf("cannot force close channel with "+
 			"state: %v", lc.channelState.ChanStatus())
 	}
-
-	commitTx, err := lc.getSignedCommitTx()
-	if err != nil {
-		return nil, err
-	}
-
-	localCommitment := lc.channelState.LocalCommitment
-	summary, err := NewLocalForceCloseSummary(
-		lc.channelState, lc.Signer, commitTx,
-		localCommitment,
-	)
+	closeTx, err := lc.getSignedCommitTx()
 	if err != nil {
 		return nil, err
 	}
@@ -5753,7 +5740,7 @@ func (lc *LightningChannel) ForceClose() (*LocalForceCloseSummary, error) {
 	// contested state.
 	lc.status = channelDispute
 
-	return summary, nil
+	return closeTx, nil
 }
 
 // NewLocalForceCloseSummary generates a LocalForceCloseSummary from the given

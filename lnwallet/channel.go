@@ -5678,7 +5678,8 @@ type AnchorResolutions struct {
 }
 
 // NewAnchorResolutions returns the anchor resolutions for the channel state.
-func NewAnchorResolutions(chanState *channeldb.OpenChannel) (
+// The confirmed boolean indicates where to get the channel data from.
+func NewAnchorResolutions(chanState *channeldb.OpenChannel, confirmed bool) (
 	*AnchorResolutions, error) {
 
 	// Derive our local anchor script, which will be found on each of the
@@ -5723,7 +5724,9 @@ func NewAnchorResolutions(chanState *channeldb.OpenChannel) (
 	}
 
 	// Fetch the two latest commitments.
-	localCommit, remoteCommit, err := chanState.LatestCommitments()
+	localCommit, remoteCommit, err := chanState.LatestCommitmentsFrom(
+		confirmed,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -5735,7 +5738,9 @@ func NewAnchorResolutions(chanState *channeldb.OpenChannel) (
 	}
 
 	// Get their pending commit, if any.
-	remotePendingCommit, err := chanState.RemoteCommitChainTip()
+	remotePendingCommit, err := chanState.RemoteCommitChainTipFrom(
+		confirmed,
+	)
 	if err != nil && err != channeldb.ErrNoPendingCommit {
 		return nil, err
 	}

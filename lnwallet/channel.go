@@ -397,7 +397,7 @@ func (c *commitment) populateHtlcIndexes() error {
 	// populateIndex is a helper function that populates the necessary
 	// indexes within the commitment view for a particular HTLC.
 	populateIndex := func(htlc *types.PaymentDescriptor, incoming bool) error {
-		isDust := htlcIsDust(incoming, c.isOurs, c.feePerKw,
+		isDust := types.HtlcIsDust(incoming, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), c.dustLimit)
 
 		var err error
@@ -570,7 +570,7 @@ func (lc *LightningChannel) diskHtlcToPayDesc(feeRate chainfee.SatPerKWeight,
 	// generate them in order to locate the outputs within the commitment
 	// transaction. As we'll mark dust with a special output index in the
 	// on-disk state snapshot.
-	isDustLocal := htlcIsDust(htlc.Incoming, true, feeRate,
+	isDustLocal := types.HtlcIsDust(htlc.Incoming, true, feeRate,
 		htlc.Amt.ToSatoshis(), lc.channelState.LocalChanCfg.DustLimit)
 	if !isDustLocal && localCommitKeys != nil {
 		ourP2WSH, ourWitnessScript, err = genHtlcScript(
@@ -580,7 +580,7 @@ func (lc *LightningChannel) diskHtlcToPayDesc(feeRate chainfee.SatPerKWeight,
 			return pd, err
 		}
 	}
-	isDustRemote := htlcIsDust(htlc.Incoming, false, feeRate,
+	isDustRemote := types.HtlcIsDust(htlc.Incoming, false, feeRate,
 		htlc.Amt.ToSatoshis(), lc.channelState.RemoteChanCfg.DustLimit)
 	if !isDustRemote && remoteCommitKeys != nil {
 		theirP2WSH, theirWitnessScript, err = genHtlcScript(
@@ -1215,7 +1215,7 @@ func (lc *LightningChannel) logUpdateToPayDesc(logUpdate *channeldb.LogUpdate,
 		pd.OnionBlob = make([]byte, len(wireMsg.OnionBlob))
 		copy(pd.OnionBlob[:], wireMsg.OnionBlob[:])
 
-		isDustRemote := htlcIsDust(false, false, feeRate,
+		isDustRemote := types.HtlcIsDust(false, false, feeRate,
 			wireMsg.Amount.ToSatoshis(), remoteDustLimit)
 		if !isDustRemote {
 			theirP2WSH, theirWitnessScript, err := genHtlcScript(
@@ -1825,7 +1825,7 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 
 		// If the HTLC is dust, then we'll skip it as it doesn't have
 		// an output on the commitment transaction.
-		if htlcIsDust(
+		if types.HtlcIsDust(
 			htlc.Incoming, false,
 			chainfee.SatPerKWeight(revokedSnapshot.FeePerKw),
 			htlc.Amt.ToSatoshis(), chanState.RemoteChanCfg.DustLimit,
@@ -1916,72 +1916,10 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 	}, nil
 }
 
-// htlcTimeoutFee returns the fee in satoshis required for an HTLC timeout
-// transaction based on the current fee rate.
-func htlcTimeoutFee(feePerKw chainfee.SatPerKWeight) btcutil.Amount {
-	return feePerKw.FeeForWeight(input.HtlcTimeoutWeight)
-}
-
-// htlcSuccessFee returns the fee in satoshis required for an HTLC success
-// transaction based on the current fee rate.
-func htlcSuccessFee(feePerKw chainfee.SatPerKWeight) btcutil.Amount {
-	return feePerKw.FeeForWeight(input.HtlcSuccessWeight)
-}
-
-// htlcIsDust determines if an HTLC output is dust or not depending on two
-// bits: if the HTLC is incoming and if the HTLC will be placed on our
-// commitment transaction, or theirs. These two pieces of information are
-// require as we currently used second-level HTLC transactions as off-chain
-// covenants. Depending on the two bits, we'll either be using a timeout or
-// success transaction which have different weights.
-func htlcIsDust(incoming, ourCommit bool, feePerKw chainfee.SatPerKWeight,
-	htlcAmt, dustLimit btcutil.Amount) bool {
-
-	// First we'll determine the fee required for this HTLC based on if this is
-	// an incoming HTLC or not, and also on whose commitment transaction it
-	// will be placed on.
-	var htlcFee btcutil.Amount
-	switch {
-
-	// If this is an incoming HTLC on our commitment transaction, then the
-	// second-level transaction will be a success transaction.
-	case incoming && ourCommit:
-		htlcFee = htlcSuccessFee(feePerKw)
-
-	// If this is an incoming HTLC on their commitment transaction, then
-	// we'll be using a second-level timeout transaction as they've added
-	// this HTLC.
-	case incoming && !ourCommit:
-		htlcFee = htlcTimeoutFee(feePerKw)
-
-	// If this is an outgoing HTLC on our commitment transaction, then
-	// we'll be using a timeout transaction as we're the sender of the
-	// HTLC.
-	case !incoming && ourCommit:
-		htlcFee = htlcTimeoutFee(feePerKw)
-
-	// If this is an outgoing HTLC on their commitment transaction, then
-	// we'll be using an HTLC success transaction as they're the receiver
-	// of this HTLC.
-	case !incoming && !ourCommit:
-		htlcFee = htlcSuccessFee(feePerKw)
-	}
-
-	return (htlcAmt - htlcFee) < dustLimit
-}
-
-// htlcView represents the "active" HTLCs at a particular point within the
-// history of the HTLC update log.
-type htlcView struct {
-	ourUpdates   []*types.PaymentDescriptor
-	theirUpdates []*types.PaymentDescriptor
-	feePerKw     chainfee.SatPerKWeight
-}
-
 // fetchHTLCView returns all the candidate HTLC updates which should be
 // considered for inclusion within a commitment based on the passed HTLC log
 // indexes.
-func (lc *LightningChannel) fetchHTLCView(theirLogIndex, ourLogIndex uint64) *htlcView {
+func (lc *LightningChannel) fetchHTLCView(theirLogIndex, ourLogIndex uint64) *types.HtlcView {
 	var ourHTLCs []*types.PaymentDescriptor
 	for e := lc.localUpdateLog.Front(); e != nil; e = e.Next() {
 		htlc := e.Value.(*types.PaymentDescriptor)
@@ -2006,9 +1944,9 @@ func (lc *LightningChannel) fetchHTLCView(theirLogIndex, ourLogIndex uint64) *ht
 		}
 	}
 
-	return &htlcView{
-		ourUpdates:   ourHTLCs,
-		theirUpdates: theirHTLCs,
+	return &types.HtlcView{
+		OurUpdates:   ourHTLCs,
+		TheirUpdates: theirHTLCs,
 	}
 }
 
@@ -2036,7 +1974,7 @@ func (lc *LightningChannel) fetchCommitmentView(remoteChain bool,
 	ourBalance, theirBalance, _, filteredHTLCView := lc.computeView(
 		htlcView, remoteChain, true,
 	)
-	feePerKw := filteredHTLCView.feePerKw
+	feePerKw := filteredHTLCView.FeePerKw
 
 	// Determine how many current HTLCs are over the dust limit, and should
 	// be counted for the purpose of fee calculation.
@@ -2068,12 +2006,12 @@ func (lc *LightningChannel) fetchCommitmentView(remoteChain bool,
 	// In order to ensure _none_ of the HTLC's associated with this new
 	// commitment are mutated, we'll manually copy over each HTLC to its
 	// respective slice.
-	c.outgoingHTLCs = make([]types.PaymentDescriptor, len(filteredHTLCView.ourUpdates))
-	for i, htlc := range filteredHTLCView.ourUpdates {
+	c.outgoingHTLCs = make([]types.PaymentDescriptor, len(filteredHTLCView.OurUpdates))
+	for i, htlc := range filteredHTLCView.OurUpdates {
 		c.outgoingHTLCs[i] = *htlc
 	}
-	c.incomingHTLCs = make([]types.PaymentDescriptor, len(filteredHTLCView.theirUpdates))
-	for i, htlc := range filteredHTLCView.theirUpdates {
+	c.incomingHTLCs = make([]types.PaymentDescriptor, len(filteredHTLCView.TheirUpdates))
+	for i, htlc := range filteredHTLCView.TheirUpdates {
 		c.incomingHTLCs[i] = *htlc
 	}
 
@@ -2093,14 +2031,14 @@ func (lc *LightningChannel) fundingTxIn() wire.TxIn {
 // createCommitmentTx generates the unsigned commitment transaction for a
 // commitment view and assigns to txn field.
 func (lc *LightningChannel) createCommitmentTx(c *commitment,
-	filteredHTLCView *htlcView, keyRing *commitmenttx.KeyRing) error {
+	filteredHTLCView *types.HtlcView, keyRing *commitmenttx.KeyRing) error {
 
 	ourBalance := c.ourBalance
 	theirBalance := c.theirBalance
 
 	numHTLCs := int64(0)
-	for _, htlc := range filteredHTLCView.ourUpdates {
-		if htlcIsDust(false, c.isOurs, c.feePerKw,
+	for _, htlc := range filteredHTLCView.OurUpdates {
+		if types.HtlcIsDust(false, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), c.dustLimit) {
 
 			continue
@@ -2108,8 +2046,8 @@ func (lc *LightningChannel) createCommitmentTx(c *commitment,
 
 		numHTLCs++
 	}
-	for _, htlc := range filteredHTLCView.theirUpdates {
-		if htlcIsDust(true, c.isOurs, c.feePerKw,
+	for _, htlc := range filteredHTLCView.TheirUpdates {
+		if types.HtlcIsDust(true, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), c.dustLimit) {
 
 			continue
@@ -2172,8 +2110,8 @@ func (lc *LightningChannel) createCommitmentTx(c *commitment,
 	// Check whether there are any htlcs left in the view. We need this to
 	// determing whether to add anchor outputs.
 	hasHtlcs := false
-	for _, htlc := range filteredHTLCView.ourUpdates {
-		if htlcIsDust(false, c.isOurs, c.feePerKw,
+	for _, htlc := range filteredHTLCView.OurUpdates {
+		if types.HtlcIsDust(false, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), localCfg.DustLimit) {
 			continue
 		}
@@ -2181,8 +2119,8 @@ func (lc *LightningChannel) createCommitmentTx(c *commitment,
 		hasHtlcs = true
 		break
 	}
-	for _, htlc := range filteredHTLCView.theirUpdates {
-		if htlcIsDust(true, c.isOurs, c.feePerKw,
+	for _, htlc := range filteredHTLCView.TheirUpdates {
+		if types.HtlcIsDust(true, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), localCfg.DustLimit) {
 			continue
 		}
@@ -2211,8 +2149,8 @@ func (lc *LightningChannel) createCommitmentTx(c *commitment,
 	// commitment outputs and should correspond to zero values for the
 	// purposes of sorting.
 	cltvs := make([]uint32, len(commitTx.TxOut))
-	for _, htlc := range filteredHTLCView.ourUpdates {
-		if htlcIsDust(false, c.isOurs, c.feePerKw,
+	for _, htlc := range filteredHTLCView.OurUpdates {
+		if types.HtlcIsDust(false, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), c.dustLimit) {
 			continue
 		}
@@ -2223,8 +2161,8 @@ func (lc *LightningChannel) createCommitmentTx(c *commitment,
 		}
 		cltvs = append(cltvs, htlc.Timeout)
 	}
-	for _, htlc := range filteredHTLCView.theirUpdates {
-		if htlcIsDust(true, c.isOurs, c.feePerKw,
+	for _, htlc := range filteredHTLCView.TheirUpdates {
+		if types.HtlcIsDust(true, c.isOurs, c.feePerKw,
 			htlc.Amount.ToSatoshis(), c.dustLimit) {
 			continue
 		}
@@ -2288,15 +2226,15 @@ func (lc *LightningChannel) createCommitmentTx(c *commitment,
 // once for each height, and only in concert with signing a new commitment.
 // TODO(halseth): return htlcs to mutate instead of mutating inside
 // method.
-func (lc *LightningChannel) evaluateHTLCView(view *htlcView, ourBalance,
+func (lc *LightningChannel) evaluateHTLCView(view *types.HtlcView, ourBalance,
 	theirBalance *lnwire.MilliSatoshi, nextHeight uint64,
-	remoteChain, mutateState bool) *htlcView {
+	remoteChain, mutateState bool) *types.HtlcView {
 
 	// We initialize the view's fee rate to the fee rate of the unfiltered
 	// view. If any fee updates are found when evaluating the view, it will
 	// be updated.
-	newView := &htlcView{
-		feePerKw: view.feePerKw,
+	newView := &types.HtlcView{
+		FeePerKw: view.FeePerKw,
 	}
 
 	// We use two maps, one for the local log and one for the remote log to
@@ -2309,7 +2247,7 @@ func (lc *LightningChannel) evaluateHTLCView(view *htlcView, ourBalance,
 	// First we run through non-add entries in both logs, populating the
 	// skip sets and mutating the current chain state (crediting balances,
 	// etc) to reflect the settle/timeout entry encountered.
-	for _, entry := range view.ourUpdates {
+	for _, entry := range view.OurUpdates {
 		switch entry.EntryType {
 		// Skip adds for now. They will be processed below.
 		case types.Add:
@@ -2353,7 +2291,7 @@ func (lc *LightningChannel) evaluateHTLCView(view *htlcView, ourBalance,
 		processRemoveEntry(entry, ourBalance, theirBalance,
 			nextHeight, remoteChain, true, mutateState)
 	}
-	for _, entry := range view.theirUpdates {
+	for _, entry := range view.TheirUpdates {
 		switch entry.EntryType {
 		// Skip adds for now. They will be processed below.
 		case types.Add:
@@ -2402,7 +2340,7 @@ func (lc *LightningChannel) evaluateHTLCView(view *htlcView, ourBalance,
 	// Next we take a second pass through all the log entries, skipping any
 	// settled HTLCs, and debiting the chain state balance due to any newly
 	// added HTLCs.
-	for _, entry := range view.ourUpdates {
+	for _, entry := range view.OurUpdates {
 		isAdd := entry.EntryType == types.Add
 		if _, ok := skipUs[entry.HtlcIndex]; !isAdd || ok {
 			continue
@@ -2410,9 +2348,9 @@ func (lc *LightningChannel) evaluateHTLCView(view *htlcView, ourBalance,
 
 		processAddEntry(entry, ourBalance, theirBalance, nextHeight,
 			remoteChain, false, mutateState)
-		newView.ourUpdates = append(newView.ourUpdates, entry)
+		newView.OurUpdates = append(newView.OurUpdates, entry)
 	}
-	for _, entry := range view.theirUpdates {
+	for _, entry := range view.TheirUpdates {
 		isAdd := entry.EntryType == types.Add
 		if _, ok := skipThem[entry.HtlcIndex]; !isAdd || ok {
 			continue
@@ -2420,7 +2358,7 @@ func (lc *LightningChannel) evaluateHTLCView(view *htlcView, ourBalance,
 
 		processAddEntry(entry, ourBalance, theirBalance, nextHeight,
 			remoteChain, true, mutateState)
-		newView.theirUpdates = append(newView.theirUpdates, entry)
+		newView.TheirUpdates = append(newView.TheirUpdates, entry)
 	}
 
 	return newView
@@ -2517,7 +2455,7 @@ func processRemoveEntry(htlc *types.PaymentDescriptor, ourBalance,
 // processFeeUpdate processes a log update that updates the current commitment
 // fee.
 func processFeeUpdate(feeUpdate *types.PaymentDescriptor, nextHeight uint64,
-	remoteChain bool, mutateState bool, view *htlcView) {
+	remoteChain bool, mutateState bool, view *types.HtlcView) {
 
 	// Fee updates are applied for all commitments after they are
 	// sent/received, so we consider them being added and removed at the
@@ -2538,7 +2476,7 @@ func processFeeUpdate(feeUpdate *types.PaymentDescriptor, nextHeight uint64,
 
 	// If the update wasn't already locked in, update the current fee rate
 	// to reflect this update.
-	view.feePerKw = chainfee.SatPerKWeight(feeUpdate.Amount.ToSatoshis())
+	view.FeePerKw = chainfee.SatPerKWeight(feeUpdate.Amount.ToSatoshis())
 
 	if mutateState {
 		*addHeight = nextHeight
@@ -2574,7 +2512,7 @@ func genRemoteHtlcSigJobs(keyRing *commitmenttx.KeyRing,
 	// dust output after taking into account second-level HTLC fees, then a
 	// sigJob will be generated and appended to the current batch.
 	for _, htlc := range remoteCommitView.incomingHTLCs {
-		if htlcIsDust(true, false, feePerKw, htlc.Amount.ToSatoshis(),
+		if types.HtlcIsDust(true, false, feePerKw, htlc.Amount.ToSatoshis(),
 			dustLimit) {
 			continue
 		}
@@ -2590,7 +2528,7 @@ func genRemoteHtlcSigJobs(keyRing *commitmenttx.KeyRing,
 		// HTLC timeout transaction for them. The output of the timeout
 		// transaction needs to account for fees, so we'll compute the
 		// required fee and output now.
-		htlcFee := htlcTimeoutFee(feePerKw)
+		htlcFee := types.HtlcTimeoutFee(feePerKw)
 		outputAmt := htlc.Amount.ToSatoshis() - htlcFee
 
 		// With the fee calculate, we can properly create the HTLC
@@ -2627,7 +2565,7 @@ func genRemoteHtlcSigJobs(keyRing *commitmenttx.KeyRing,
 		sigBatch = append(sigBatch, sigJob)
 	}
 	for _, htlc := range remoteCommitView.outgoingHTLCs {
-		if htlcIsDust(false, false, feePerKw, htlc.Amount.ToSatoshis(),
+		if types.HtlcIsDust(false, false, feePerKw, htlc.Amount.ToSatoshis(),
 			dustLimit) {
 			continue
 		}
@@ -2641,7 +2579,7 @@ func genRemoteHtlcSigJobs(keyRing *commitmenttx.KeyRing,
 		// HTLC success transaction for them. The output of the timeout
 		// transaction needs to account for fees, so we'll compute the
 		// required fee and output now.
-		htlcFee := htlcSuccessFee(feePerKw)
+		htlcFee := types.HtlcSuccessFee(feePerKw)
 		outputAmt := htlc.Amount.ToSatoshis() - htlcFee
 
 		// With the proper output amount calculated, we can now
@@ -2845,7 +2783,7 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	if predictAdded != nil {
 		// If we are adding an HTLC, this will be an Add to the local
 		// update log.
-		view.ourUpdates = append(view.ourUpdates, predictAdded)
+		view.OurUpdates = append(view.OurUpdates, predictAdded)
 	}
 
 	commitChain := lc.localCommitChain
@@ -2858,7 +2796,7 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	ourBalance, theirBalance, commitWeight, filteredView := lc.computeView(
 		view, remoteChain, false,
 	)
-	feePerKw := filteredView.feePerKw
+	feePerKw := filteredView.FeePerKw
 
 	// Calculate the commitment fee, and subtract it from the initiator's
 	// balance.
@@ -2954,7 +2892,7 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	// First check that the remote updates won't violate it's channel
 	// constraints.
 	err := validateUpdates(
-		filteredView.theirUpdates, lc.remoteChanCfg,
+		filteredView.TheirUpdates, lc.remoteChanCfg,
 	)
 	if err != nil {
 		return err
@@ -2963,7 +2901,7 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	// Secondly check that our updates won't violate our channel
 	// constraints.
 	err = validateUpdates(
-		filteredView.ourUpdates, lc.localChanCfg,
+		filteredView.OurUpdates, lc.localChanCfg,
 	)
 	if err != nil {
 		return err
@@ -3437,7 +3375,7 @@ func (lc *LightningChannel) ProcessChanSyncMsg(
 	return updates, openedCircuits, closedCircuits, nil
 }
 
-// computeView takes the given htlcView, and calculates the balances, filtered
+// computeView takes the given types.HtlcView, and calculates the balances, filtered
 // view (settling unsettled HTLCs), commitment weight and feePerKw, after
 // applying the HTLCs to the latest commitment. The returned balances are the
 // balances *before* subtracting the commitment fee from the initiator's
@@ -3445,9 +3383,9 @@ func (lc *LightningChannel) ProcessChanSyncMsg(
 //
 // If the updateState boolean is set true, the add and remove heights of the
 // HTLCs will be set to the next commitment height.
-func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
+func (lc *LightningChannel) computeView(view *types.HtlcView, remoteChain bool,
 	updateState bool) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, int64,
-	*htlcView) {
+	*types.HtlcView) {
 
 	commitChain := lc.localCommitChain
 	dustLimit := lc.localChanCfg.DustLimit
@@ -3483,7 +3421,7 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 	// Initiate feePerKw to the last committed fee for this chain as we'll
 	// need this to determine which HTLCs are dust, and also the final fee
 	// rate.
-	view.feePerKw = commitChain.tip().feePerKw
+	view.FeePerKw = commitChain.tip().feePerKw
 
 	// We evaluate the view at this stage, meaning settled and failed HTLCs
 	// will remove their corresponding added HTLCs.  The resulting filtered
@@ -3493,21 +3431,21 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 	// changed, so we'll also set the feePerKw to this new value.
 	filteredHTLCView := lc.evaluateHTLCView(view, &ourBalance,
 		&theirBalance, nextHeight, remoteChain, updateState)
-	feePerKw := filteredHTLCView.feePerKw
+	feePerKw := filteredHTLCView.FeePerKw
 
 	// Now go through all HTLCs at this stage, to calculate the total
 	// weight, needed to calculate the transaction fee.
 	var totalHtlcWeight int64
-	for _, htlc := range filteredHTLCView.ourUpdates {
-		if htlcIsDust(remoteChain, !remoteChain, feePerKw,
+	for _, htlc := range filteredHTLCView.OurUpdates {
+		if types.HtlcIsDust(remoteChain, !remoteChain, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit) {
 			continue
 		}
 
 		totalHtlcWeight += input.HTLCWeight
 	}
-	for _, htlc := range filteredHTLCView.theirUpdates {
-		if htlcIsDust(!remoteChain, !remoteChain, feePerKw,
+	for _, htlc := range filteredHTLCView.TheirUpdates {
+		if types.HtlcIsDust(!remoteChain, !remoteChain, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit) {
 			continue
 		}
@@ -3568,7 +3506,7 @@ func genHtlcSigValidationJobs(localCommitmentView *commitment,
 					Index: uint32(htlc.LocalOutputIndex),
 				}
 
-				htlcFee := htlcSuccessFee(feePerKw)
+				htlcFee := types.HtlcSuccessFee(feePerKw)
 				outputAmt := htlc.Amount.ToSatoshis() - htlcFee
 
 				successTx, err := createHtlcSuccessTx(op,
@@ -3620,7 +3558,7 @@ func genHtlcSigValidationJobs(localCommitmentView *commitment,
 					Index: uint32(htlc.LocalOutputIndex),
 				}
 
-				htlcFee := htlcTimeoutFee(feePerKw)
+				htlcFee := types.HtlcTimeoutFee(feePerKw)
 				outputAmt := htlc.Amount.ToSatoshis() - htlcFee
 
 				timeoutTx, err := createHtlcTimeoutTx(op,
@@ -5145,7 +5083,7 @@ func newOutgoingHtlcResolution(signer input.Signer,
 	// In order to properly reconstruct the HTLC transaction, we'll need to
 	// re-calculate the fee required at this state, so we can add the
 	// correct output value amount to the transaction.
-	htlcFee := htlcTimeoutFee(feePerKw)
+	htlcFee := types.HtlcTimeoutFee(feePerKw)
 	secondLevelOutputAmt := htlc.Amt.ToSatoshis() - htlcFee
 
 	// With the fee calculated, re-construct the second level timeout
@@ -5282,7 +5220,7 @@ func newIncomingHtlcResolution(signer input.Signer, localChanCfg *channeldb.Chan
 
 	// First, we'll reconstruct the original HTLC success transaction,
 	// taking into account the fee rate used.
-	htlcFee := htlcSuccessFee(feePerKw)
+	htlcFee := types.HtlcSuccessFee(feePerKw)
 	secondLevelOutputAmt := htlc.Amt.ToSatoshis() - htlcFee
 	successTx, err := createHtlcSuccessTx(
 		op, secondLevelOutputAmt, csvDelay,
@@ -5408,7 +5346,7 @@ func extractHtlcResolutions(feePerKw chainfee.SatPerKWeight, ourCommit bool,
 		// We'll skip any HTLC's which were dust on the commitment
 		// transaction, as these don't have a corresponding output
 		// within the commitment transaction.
-		if htlcIsDust(htlc.Incoming, ourCommit, feePerKw,
+		if types.HtlcIsDust(htlc.Incoming, ourCommit, feePerKw,
 			htlc.Amt.ToSatoshis(), dustLimit) {
 			continue
 		}
@@ -5820,7 +5758,7 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 
 	// If we are the channel initiator, we must remember to subtract the
 	// commitment fee from our available balance.
-	commitFee := filteredView.feePerKw.FeeForWeight(commitWeight)
+	commitFee := filteredView.FeePerKw.FeeForWeight(commitWeight)
 
 	// If the current commitment type has anchors (AnchorSize is non-zero)
 	// it will also be paid by the initiator.

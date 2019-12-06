@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -215,4 +218,66 @@ type PaymentDescriptor struct {
 	// isForwarded denotes if an incoming HTLC has been forwarded to any
 	// possible upstream peers in the route.
 	IsForwarded bool
+}
+
+// htlcTimeoutFee returns the fee in satoshis required for an HTLC timeout
+// transaction based on the current fee rate.
+func HtlcTimeoutFee(feePerKw chainfee.SatPerKWeight) btcutil.Amount {
+	return feePerKw.FeeForWeight(input.HtlcTimeoutWeight)
+}
+
+// htlcSuccessFee returns the fee in satoshis required for an HTLC success
+// transaction based on the current fee rate.
+func HtlcSuccessFee(feePerKw chainfee.SatPerKWeight) btcutil.Amount {
+	return feePerKw.FeeForWeight(input.HtlcSuccessWeight)
+}
+
+// htlcIsDust determines if an HTLC output is dust or not depending on two
+// bits: if the HTLC is incoming and if the HTLC will be placed on our
+// commitment transaction, or theirs. These two pieces of information are
+// require as we currently used second-level HTLC transactions as off-chain
+// covenants. Depending on the two bits, we'll either be using a timeout or
+// success transaction which have different weights.
+func HtlcIsDust(incoming, ourCommit bool, feePerKw chainfee.SatPerKWeight,
+	htlcAmt, dustLimit btcutil.Amount) bool {
+
+	// First we'll determine the fee required for this HTLC based on if this is
+	// an incoming HTLC or not, and also on whose commitment transaction it
+	// will be placed on.
+	var htlcFee btcutil.Amount
+	switch {
+
+	// If this is an incoming HTLC on our commitment transaction, then the
+	// second-level transaction will be a success transaction.
+	case incoming && ourCommit:
+		htlcFee = HtlcSuccessFee(feePerKw)
+
+	// If this is an incoming HTLC on their commitment transaction, then
+	// we'll be using a second-level timeout transaction as they've added
+	// this HTLC.
+	case incoming && !ourCommit:
+		htlcFee = HtlcTimeoutFee(feePerKw)
+
+	// If this is an outgoing HTLC on our commitment transaction, then
+	// we'll be using a timeout transaction as we're the sender of the
+	// HTLC.
+	case !incoming && ourCommit:
+		htlcFee = HtlcTimeoutFee(feePerKw)
+
+	// If this is an outgoing HTLC on their commitment transaction, then
+	// we'll be using an HTLC success transaction as they're the receiver
+	// of this HTLC.
+	case !incoming && !ourCommit:
+		htlcFee = HtlcSuccessFee(feePerKw)
+	}
+
+	return (htlcAmt - htlcFee) < dustLimit
+}
+
+// htlcView represents the "active" HTLCs at a particular point within the
+// history of the HTLC update log.
+type HtlcView struct {
+	OurUpdates   []*PaymentDescriptor
+	TheirUpdates []*PaymentDescriptor
+	FeePerKw     chainfee.SatPerKWeight
 }

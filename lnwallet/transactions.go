@@ -2,7 +2,6 @@ package lnwallet
 
 import (
 	"encoding/binary"
-	"fmt"
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
@@ -134,48 +133,6 @@ func createHtlcTimeoutTx(htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
 	})
 
 	return timeoutTx, nil
-}
-
-// SetStateNumHint encodes the current state number within the passed
-// commitment transaction by re-purposing the locktime and sequence fields in
-// the commitment transaction to encode the obfuscated state number.  The state
-// number is encoded using 48 bits. The lower 24 bits of the lock time are the
-// lower 24 bits of the obfuscated state number and the lower 24 bits of the
-// sequence field are the higher 24 bits. Finally before encoding, the
-// obfuscator is XOR'd against the state number in order to hide the exact
-// state number from the PoV of outside parties.
-func SetStateNumHint(commitTx *wire.MsgTx, stateNum uint64,
-	obfuscator [StateHintSize]byte) error {
-
-	// With the current schema we are only able to encode state num
-	// hints up to 2^48. Therefore if the passed height is greater than our
-	// state hint ceiling, then exit early.
-	if stateNum > maxStateHint {
-		return fmt.Errorf("unable to encode state, %v is greater "+
-			"state num that max of %v", stateNum, maxStateHint)
-	}
-
-	if len(commitTx.TxIn) != 1 {
-		return fmt.Errorf("commitment tx must have exactly 1 input, "+
-			"instead has %v", len(commitTx.TxIn))
-	}
-
-	// Convert the obfuscator into a uint64, then XOR that against the
-	// targeted height in order to obfuscate the state number of the
-	// commitment transaction in the case that either commitment
-	// transaction is broadcast directly on chain.
-	var obfs [8]byte
-	copy(obfs[2:], obfuscator[:])
-	xorInt := binary.BigEndian.Uint64(obfs[:])
-
-	stateNum = stateNum ^ xorInt
-
-	// Set the height bit of the sequence number in order to disable any
-	// sequence locks semantics.
-	commitTx.TxIn[0].Sequence = uint32(stateNum>>24) | wire.SequenceLockTimeDisabled
-	commitTx.LockTime = uint32(stateNum&0xFFFFFF) | TimelockShift
-
-	return nil
 }
 
 // GetStateNumHint recovers the current state number given a commitment

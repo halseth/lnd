@@ -19,6 +19,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwallet/types"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/ticker"
 )
@@ -1795,7 +1796,7 @@ func (s *Switch) reforwardSettleFails(fwdPkgs []*channeldb.FwdPkg) {
 			// been received. So we'll forward the HTLC to the
 			// switch which will handle propagating the settle to
 			// the prior hop.
-			case lnwallet.Settle:
+			case types.Settle:
 				settlePacket := &htlcPacket{
 					outgoingChanID: fwdPkg.Source,
 					outgoingHTLCID: pd.ParentIndex,
@@ -1814,7 +1815,7 @@ func (s *Switch) reforwardSettleFails(fwdPkgs []*channeldb.FwdPkg) {
 			// received. As a result a new slot will be freed up in our
 			// commitment state, so we'll forward this to the switch so the
 			// backwards undo can continue.
-			case lnwallet.Fail:
+			case types.Fail:
 				// Fetch the reason the HTLC was canceled so we can
 				// continue to propagate it.
 				failPacket := &htlcPacket{

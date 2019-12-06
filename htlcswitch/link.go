@@ -25,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwallet/types"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/queue"
 	"github.com/lightningnetwork/lnd/ticker"
@@ -373,7 +374,7 @@ type channelLink struct {
 
 // hodlHtlc contains htlc data that is required for resolution.
 type hodlHtlc struct {
-	pd         *lnwallet.PaymentDescriptor
+	pd         *types.PaymentDescriptor
 	obfuscator hop.ErrorEncrypter
 }
 
@@ -2357,7 +2358,7 @@ func (l *channelLink) updateChannelFee(feePerKw chainfee.SatPerKWeight) error {
 // have already been acknowledged in the forwarding package will not be sent to
 // the switch.
 func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
-	settleFails []*lnwallet.PaymentDescriptor) {
+	settleFails []*types.PaymentDescriptor) {
 
 	if len(settleFails) == 0 {
 		return
@@ -2382,7 +2383,7 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
 		// A settle for an HTLC we previously forwarded HTLC has been
 		// received. So we'll forward the HTLC to the switch which will
 		// handle propagating the settle to the prior hop.
-		case lnwallet.Settle:
+		case types.Settle:
 			// If hodl.SettleIncoming is requested, we will not
 			// forward the SETTLE to the switch and will not signal
 			// a free slot on the commitment transaction.
@@ -2410,7 +2411,7 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
 		// been received. As a result a new slot will be freed up in
 		// our commitment state, so we'll forward this to the switch so
 		// the backwards undo can continue.
-		case lnwallet.Fail:
+		case types.Fail:
 			// If hodl.SettleIncoming is requested, we will not
 			// forward the FAIL to the switch and will not signal a
 			// free slot on the commitment transaction.
@@ -2465,7 +2466,7 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
 // whether we are reprocessing as a result of a failure or restart. Adds that
 // have already been acknowledged in the forwarding package will be ignored.
 func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
-	lockedInHtlcs []*lnwallet.PaymentDescriptor) {
+	lockedInHtlcs []*types.PaymentDescriptor) {
 
 	l.log.Tracef("processing %d remote adds for height %d",
 		len(lockedInHtlcs), fwdPkg.Height)
@@ -2477,7 +2478,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 		switch pd.EntryType {
 
 		// TODO(conner): remove type switch?
-		case lnwallet.Add:
+		case types.Add:
 			// Before adding the new htlc to the state machine,
 			// parse the onion object in order to obtain the
 			// routing information with DecodeHopIterator function
@@ -2764,7 +2765,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 
 // processExitHop handles an htlc for which this link is the exit hop. It
 // returns a boolean indicating whether the commitment tx needs an update.
-func (l *channelLink) processExitHop(pd *lnwallet.PaymentDescriptor,
+func (l *channelLink) processExitHop(pd *types.PaymentDescriptor,
 	obfuscator hop.ErrorEncrypter, fwdInfo hop.ForwardingInfo,
 	heightNow uint32, payload invoices.Payload) error {
 

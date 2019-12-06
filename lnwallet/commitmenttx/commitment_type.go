@@ -2,6 +2,8 @@ package commitmenttx
 
 import (
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -148,4 +150,97 @@ func (c CommitmentType) CommitWeight() int64 {
 	}
 
 	return input.CommitWeight
+}
+
+// CreateCommitTx creates a commitment transaction, spending from specified
+// funding output. The commitment transaction contains two outputs: one local
+// output paying to the "owner" of the commitment transaction which can be
+// spent after a relative block delay or revocation event, and a remote output
+// paying the counterparty within the channel, which can be spent immediately
+// or after a delay depending on the commitment type..
+func CreateCommitTx(commitType CommitmentType,
+	fundingOutput wire.TxIn, keyRing *KeyRing,
+	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
+	amountToLocal, amountToRemote, anchorSize btcutil.Amount,
+	hasHtlcs bool) (*wire.MsgTx, error) {
+
+	// First, we create the script for the delayed "pay-to-self" output.
+	// This output has 2 main redemption clauses: either we can redeem the
+	// output after a relative block delay, or the remote node can claim
+	// the funds with the revocation key if we broadcast a revoked
+	// commitment transaction.
+	toLocalRedeemScript, err := input.CommitScriptToSelf(
+		uint32(localChanCfg.CsvDelay), keyRing.LocalKey,
+		keyRing.RevocationKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	toLocalScriptHash, err := input.WitnessScriptHash(
+		toLocalRedeemScript,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Next, we create the script paying to the remote.
+	toRemoteScript, err := commitType.CommitScriptToRemote(
+		uint32(remoteChanCfg.CsvDelay), keyRing.RemoteKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the anchor outputs if any.
+	localAnchor, remoteAnchor, err := commitType.CommitScriptAnchors(
+		localChanCfg, remoteChanCfg,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Now that both output scripts have been created, we can finally create
+	// the transaction itself. We use a transaction version of 2 since CSV
+	// will fail unless the tx version is >= 2.
+	commitTx := wire.NewMsgTx(2)
+	commitTx.AddTxIn(&fundingOutput)
+
+	// Avoid creating dust outputs within the commitment transaction.
+	if amountToLocal >= localChanCfg.DustLimit {
+		commitTx.AddTxOut(&wire.TxOut{
+			PkScript: toLocalScriptHash,
+			Value:    int64(amountToLocal),
+		})
+	}
+
+	if amountToRemote >= localChanCfg.DustLimit {
+		commitTx.AddTxOut(&wire.TxOut{
+			PkScript: toRemoteScript.PkScript,
+			Value:    int64(amountToRemote),
+		})
+	}
+
+	// Add local anchor output only if we have a commitment output
+	// or there are HTLCs.
+	localStake := amountToLocal >= localChanCfg.DustLimit || hasHtlcs
+
+	// Some commitment types don't have anchors, so check if it is non-nil.
+	if localAnchor != nil && localStake {
+		commitTx.AddTxOut(&wire.TxOut{
+			PkScript: localAnchor.PkScript,
+			Value:    int64(anchorSize),
+		})
+	}
+
+	// Add anchor output to remote only if they have a commitment output or
+	// there are HTLCs.
+	remoteStake := amountToRemote >= localChanCfg.DustLimit || hasHtlcs
+	if remoteAnchor != nil && remoteStake {
+		commitTx.AddTxOut(&wire.TxOut{
+			PkScript: remoteAnchor.PkScript,
+			Value:    int64(anchorSize),
+		})
+	}
+
+	return commitTx, nil
 }

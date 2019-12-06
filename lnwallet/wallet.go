@@ -767,7 +767,7 @@ func CreateCommitmentTxns(localBalance, remoteBalance,
 		remoteCommitPoint, false, ourChanCfg, theirChanCfg,
 	)
 
-	ourCommitTx, err := CreateCommitTx(
+	ourCommitTx, err := commitmenttx.CreateCommitTx(
 		commitType, fundingTxIn, localCommitmentKeys, ourChanCfg,
 		theirChanCfg, localBalance, remoteBalance, anchorSize, false,
 	)
@@ -780,7 +780,7 @@ func CreateCommitmentTxns(localBalance, remoteBalance,
 		return nil, nil, err
 	}
 
-	theirCommitTx, err := CreateCommitTx(
+	theirCommitTx, err := commitmenttx.CreateCommitTx(
 		commitType, fundingTxIn, remoteCommitmentKeys, theirChanCfg,
 		ourChanCfg, remoteBalance, localBalance, anchorSize, false,
 	)

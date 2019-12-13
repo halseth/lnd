@@ -137,6 +137,36 @@ func DeriveCommitmentKeys(commitPoint *btcec.PublicKey,
 	return keyRing
 }
 
+// ScriptInfo holds a redeem script and hash.
+type ScriptInfo struct {
+	// PkScript is the outputs' PkScript.
+	PkScript []byte
+
+	// WitnessScript is the full script required to properly redeem the
+	// output with PkSript. This field will only be populated if a PkScript
+	// is p2wsh or p2sh.
+	WitnessScript []byte
+}
+
+// CommitScriptToRemote creates the script that will pay to the non-owner of
+// the commitment transaction, adding a delay to the script based on the
+// channel type.
+func CommitScriptToRemote(_ channeldb.ChannelType, csvTimeout uint32,
+	key *btcec.PublicKey) (*ScriptInfo, error) {
+
+	p2wkh, err := input.CommitScriptUnencumbered(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Since this is a regular P2WKH, the WitnessScipt and PkScript should
+	// be both seth to the script hash.
+	return &ScriptInfo{
+		WitnessScript: p2wkh,
+		PkScript:      p2wkh,
+	}, nil
+}
+
 // CommitmentBuilder is a type that wraps the type of channel we are dealing
 // with, and abstracts the various ways of constructing commitment
 // transactions.
@@ -276,8 +306,8 @@ func (cb *CommitmentBuilder) createCommitmentTx(ourBalance,
 	// Generate a new commitment transaction with all the latest
 	// unsettled/un-timed out HTLCs.
 	commitTx, err := CreateCommitTx(
-		fundingTxIn, keyRing, localCfg, remoteCfg, localBalance,
-		remoteBalance,
+		cb.chanState.ChanType, fundingTxIn, keyRing, localCfg,
+		remoteCfg, localBalance, remoteBalance,
 	)
 	if err != nil {
 		return nil, err
@@ -365,7 +395,8 @@ func (cb *CommitmentBuilder) createCommitmentTx(ourBalance,
 // spent after a relative block delay or revocation event, and a remote output
 // paying the counterparty within the channel, which can be spent immediately
 // or after a delay depending on the commitment type..
-func CreateCommitTx(fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
+func CreateCommitTx(chanType channeldb.ChannelType,
+	fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
 	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
 	amountToLocal, amountToRemote btcutil.Amount) (*wire.MsgTx, error) {
 
@@ -388,10 +419,9 @@ func CreateCommitTx(fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
 		return nil, err
 	}
 
-	// Next, we create the script paying to the remote. This is just a
-	// regular P2WPKH output, without any added CSV delay.
-	toRemoteWitnessKeyHash, err := input.CommitScriptUnencumbered(
-		keyRing.RemoteKey,
+	// Next, we create the script paying to the remote.
+	toRemoteScript, err := CommitScriptToRemote(
+		chanType, uint32(remoteChanCfg.CsvDelay), keyRing.RemoteKey,
 	)
 	if err != nil {
 		return nil, err
@@ -412,7 +442,7 @@ func CreateCommitTx(fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
 	}
 	if amountToRemote >= localChanCfg.DustLimit {
 		commitTx.AddTxOut(&wire.TxOut{
-			PkScript: toRemoteWitnessKeyHash,
+			PkScript: toRemoteScript.PkScript,
 			Value:    int64(amountToRemote),
 		})
 	}

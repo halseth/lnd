@@ -13,7 +13,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
-// anchorSize is the constant anchor ouput size.
+// AnchorSize is the constant anchor ouput size.
 const anchorSize = btcutil.Amount(294)
 
 // CommitmentKeyRing holds all derived keys needed to construct commitment and

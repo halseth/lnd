@@ -229,6 +229,18 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, csvTimeout uint32,
 	}, nil
 }
 
+func InitiatorFee(chanType channeldb.ChannelType, commitWeight int64,
+	feePerKw chainfee.SatPerKWeight) btcutil.Amount {
+
+	fee := feePerKw.FeeForWeight(commitWeight)
+
+	if chanType.HasAnchors() {
+		fee += 2 * anchorSize
+	}
+
+	return fee
+}
+
 // CommitWeight returns the base commitment weight before adding HTLCs.
 func CommitWeight(chanType channeldb.ChannelType) int64 {
 	// If this commitment has anchors, it will be slightly heavier.

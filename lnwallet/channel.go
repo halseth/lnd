@@ -2799,12 +2799,12 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 
 	// Calculate the commitment fee, and subtract it from the initiator's
 	// balance.
-	commitFee := feePerKw.FeeForWeight(commitWeight)
-	commitFeeMsat := lnwire.NewMSatFromSatoshis(commitFee)
+	fee := InitiatorFee(lc.channelState.ChanType, commitWeight, feePerKw)
+	feeMsat := lnwire.NewMSatFromSatoshis(fee)
 	if lc.channelState.IsInitiator {
-		ourBalance -= commitFeeMsat
+		ourBalance -= feeMsat
 	} else {
-		theirBalance -= commitFeeMsat
+		theirBalance -= feeMsat
 	}
 
 	// As a quick sanity check, we'll ensure that if we interpret the
@@ -5633,9 +5633,11 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 
 	// If we are the channel initiator, we must remember to subtract the
 	// commitment fee from our available balance.
-	commitFee := filteredView.feePerKw.FeeForWeight(commitWeight)
+	fee := InitiatorFee(
+		lc.channelState.ChanType, commitWeight, filteredView.feePerKw,
+	)
 	if lc.channelState.IsInitiator {
-		ourBalance -= lnwire.NewMSatFromSatoshis(commitFee)
+		ourBalance -= lnwire.NewMSatFromSatoshis(fee)
 	}
 
 	return ourBalance, commitWeight

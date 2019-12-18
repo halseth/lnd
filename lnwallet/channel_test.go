@@ -591,7 +591,7 @@ func TestForceClose(t *testing.T) {
 	}
 
 	// The rest of the close summary should have been populated properly.
-	aliceDelayPoint := aliceChannel.channelState.LocalChanCfg.DelayBasePoint
+	aliceDelayPoint := aliceChannel.channelState.OurChanCfg.DelayBasePoint
 	if !aliceCommitResolution.SelfOutputSignDesc.KeyDesc.PubKey.IsEqual(
 		aliceDelayPoint.PubKey,
 	) {
@@ -619,7 +619,7 @@ func TestForceClose(t *testing.T) {
 
 		t.Fatalf("alice: incorrect local CSV delay in ForceCloseSummary, "+
 			"expected %v, got %v",
-			aliceChannel.channelState.LocalChanCfg.CsvDelay,
+			aliceChannel.channelState.OurChanCfg.CsvDelay,
 			aliceCommitResolution.MaturityDelay)
 	}
 
@@ -660,7 +660,7 @@ func TestForceClose(t *testing.T) {
 	htlcResolution.SweepSignDesc.InputIndex = 0
 	sweepTx.TxIn[0].Witness, err = input.HtlcSpendSuccess(aliceChannel.Signer,
 		&htlcResolution.SweepSignDesc, sweepTx,
-		uint32(aliceChannel.channelState.LocalChanCfg.CsvDelay))
+		uint32(aliceChannel.channelState.OurChanCfg.CsvDelay))
 	if err != nil {
 		t.Fatalf("unable to gen witness for timeout output: %v", err)
 	}
@@ -724,7 +724,7 @@ func TestForceClose(t *testing.T) {
 	inHtlcResolution.SweepSignDesc.InputIndex = 0
 	sweepTx.TxIn[0].Witness, err = input.HtlcSpendSuccess(aliceChannel.Signer,
 		&inHtlcResolution.SweepSignDesc, sweepTx,
-		uint32(aliceChannel.channelState.LocalChanCfg.CsvDelay))
+		uint32(aliceChannel.channelState.OurChanCfg.CsvDelay))
 	if err != nil {
 		t.Fatalf("unable to gen witness for timeout output: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestForceClose(t *testing.T) {
 	if bobCommitResolution == nil {
 		t.Fatalf("bob fails to include to-self output in ForceCloseSummary")
 	}
-	bobDelayPoint := bobChannel.channelState.LocalChanCfg.DelayBasePoint
+	bobDelayPoint := bobChannel.channelState.OurChanCfg.DelayBasePoint
 	if !bobCommitResolution.SelfOutputSignDesc.KeyDesc.PubKey.IsEqual(bobDelayPoint.PubKey) {
 		t.Fatalf("bob incorrect pubkey in SelfOutputSignDesc")
 	}
@@ -765,11 +765,11 @@ func TestForceClose(t *testing.T) {
 			int64(bobCommitResolution.SelfOutputSignDesc.Output.Value))
 	}
 	if bobCommitResolution.MaturityDelay !=
-		uint32(bobChannel.channelState.LocalChanCfg.CsvDelay) {
+		uint32(bobChannel.channelState.OurChanCfg.CsvDelay) {
 
 		t.Fatalf("bob: incorrect local CSV delay in ForceCloseSummary, "+
 			"expected %v, got %v",
-			bobChannel.channelState.LocalChanCfg.CsvDelay,
+			bobChannel.channelState.OurChanCfg.CsvDelay,
 			bobCommitResolution.MaturityDelay)
 	}
 
@@ -870,7 +870,7 @@ func TestForceCloseDustOutput(t *testing.T) {
 			"ForceCloseSummary")
 	}
 	if !commitResolution.SelfOutputSignDesc.KeyDesc.PubKey.IsEqual(
-		aliceChannel.channelState.LocalChanCfg.DelayBasePoint.PubKey,
+		aliceChannel.channelState.OurChanCfg.DelayBasePoint.PubKey,
 	) {
 		t.Fatalf("alice incorrect pubkey in SelfOutputSignDesc")
 	}
@@ -883,10 +883,10 @@ func TestForceCloseDustOutput(t *testing.T) {
 	}
 
 	if commitResolution.MaturityDelay !=
-		uint32(aliceChannel.channelState.LocalChanCfg.CsvDelay) {
+		uint32(aliceChannel.channelState.OurChanCfg.CsvDelay) {
 		t.Fatalf("alice: incorrect local CSV delay in ForceCloseSummary, "+
 			"expected %v, got %v",
-			aliceChannel.channelState.LocalChanCfg.CsvDelay,
+			aliceChannel.channelState.OurChanCfg.CsvDelay,
 			commitResolution.MaturityDelay)
 	}
 
@@ -1799,10 +1799,10 @@ func TestCooperativeCloseDustAdherence(t *testing.T) {
 	)
 
 	setDustLimit := func(dustVal btcutil.Amount) {
-		aliceChannel.channelState.LocalChanCfg.DustLimit = dustVal
-		aliceChannel.channelState.RemoteChanCfg.DustLimit = dustVal
-		bobChannel.channelState.LocalChanCfg.DustLimit = dustVal
-		bobChannel.channelState.RemoteChanCfg.DustLimit = dustVal
+		aliceChannel.channelState.OurChanCfg.DustLimit = dustVal
+		aliceChannel.channelState.TheirChanCfg.DustLimit = dustVal
+		bobChannel.channelState.OurChanCfg.DustLimit = dustVal
+		bobChannel.channelState.TheirChanCfg.DustLimit = dustVal
 	}
 
 	resetChannelState := func() {
@@ -5770,10 +5770,10 @@ func TestNewBreachRetributionSkipsDustHtlcs(t *testing.T) {
 	// We'll modify the dust settings on both channels to be a predictable
 	// value for the prurpose of the test.
 	dustValue := btcutil.Amount(200)
-	aliceChannel.channelState.LocalChanCfg.DustLimit = dustValue
-	aliceChannel.channelState.RemoteChanCfg.DustLimit = dustValue
-	bobChannel.channelState.LocalChanCfg.DustLimit = dustValue
-	bobChannel.channelState.RemoteChanCfg.DustLimit = dustValue
+	aliceChannel.channelState.OurChanCfg.DustLimit = dustValue
+	aliceChannel.channelState.TheirChanCfg.DustLimit = dustValue
+	bobChannel.channelState.OurChanCfg.DustLimit = dustValue
+	bobChannel.channelState.TheirChanCfg.DustLimit = dustValue
 
 	// We'll now create a series of dust HTLC's, and send then from Alice
 	// to Bob, finally locking both of them in.

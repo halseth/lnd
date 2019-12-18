@@ -270,8 +270,8 @@ func CreateTestChannels(tweaklessCommits bool) (
 	)
 
 	aliceChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            aliceCfg,
-		RemoteChanCfg:           bobCfg,
+		OurChanCfg:              aliceCfg,
+		TheirChanCfg:            bobCfg,
 		IdentityPub:             aliceKeys[0].PubKey(),
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,
@@ -288,8 +288,8 @@ func CreateTestChannels(tweaklessCommits bool) (
 		FundingTxn:              testTx,
 	}
 	bobChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            bobCfg,
-		RemoteChanCfg:           aliceCfg,
+		OurChanCfg:              bobCfg,
+		TheirChanCfg:            aliceCfg,
 		IdentityPub:             bobKeys[0].PubKey(),
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,

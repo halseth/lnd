@@ -519,11 +519,12 @@ type OpenChannel struct {
 	// received within this channel.
 	TotalMSatReceived lnwire.MilliSatoshi
 
-	// LocalChanCfg is the channel configuration for the local node.
-	LocalChanCfg ChannelConfig
+	// OurChanCfg is the channel configuration for our node.
+	OurChanCfg ChannelConfig
 
-	// RemoteChanCfg is the channel configuration for the remote node.
-	RemoteChanCfg ChannelConfig
+	// TheirChanCfg is the channel configuration for our channel peer,
+	// "their" node.
+	TheirChanCfg ChannelConfig
 
 	// LocalCommitment is the current local commitment state for the local
 	// party. This is stored distinct from the state of the remote party
@@ -2456,7 +2457,7 @@ func putChannelCloseSummary(tx *bbolt.Tx, chanID []byte,
 
 	summary.RemoteCurrentRevocation = lastChanState.RemoteCurrentRevocation
 	summary.RemoteNextRevocation = lastChanState.RemoteNextRevocation
-	summary.LocalChanConfig = lastChanState.LocalChanCfg
+	summary.LocalChanConfig = lastChanState.OurChanCfg
 
 	var b bytes.Buffer
 	if err := serializeChannelCloseSummary(&b, summary); err != nil {
@@ -2646,10 +2647,10 @@ func putChanInfo(chanBucket *bbolt.Bucket, channel *OpenChannel) error {
 		}
 	}
 
-	if err := writeChanConfig(&w, &channel.LocalChanCfg); err != nil {
+	if err := writeChanConfig(&w, &channel.OurChanCfg); err != nil {
 		return err
 	}
-	if err := writeChanConfig(&w, &channel.RemoteChanCfg); err != nil {
+	if err := writeChanConfig(&w, &channel.TheirChanCfg); err != nil {
 		return err
 	}
 
@@ -2820,10 +2821,10 @@ func fetchChanInfo(chanBucket *bbolt.Bucket, channel *OpenChannel) error {
 		}
 	}
 
-	if err := readChanConfig(r, &channel.LocalChanCfg); err != nil {
+	if err := readChanConfig(r, &channel.OurChanCfg); err != nil {
 		return err
 	}
-	if err := readChanConfig(r, &channel.RemoteChanCfg); err != nil {
+	if err := readChanConfig(r, &channel.TheirChanCfg); err != nil {
 		return err
 	}
 

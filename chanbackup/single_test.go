@@ -138,7 +138,7 @@ func genRandomOpenChannelShell() (*channeldb.OpenChannel, error) {
 			uint64(rand.Int63()),
 		),
 		IdentityPub: pub,
-		LocalChanCfg: channeldb.ChannelConfig{
+		OurChanCfg: channeldb.ChannelConfig{
 			ChannelConstraints: channeldb.ChannelConstraints{
 				CsvDelay: uint16(rand.Int63()),
 			},
@@ -173,7 +173,7 @@ func genRandomOpenChannelShell() (*channeldb.OpenChannel, error) {
 				},
 			},
 		},
-		RemoteChanCfg: channeldb.ChannelConfig{
+		TheirChanCfg: channeldb.ChannelConfig{
 			ChannelConstraints: channeldb.ChannelConstraints{
 				CsvDelay: uint16(rand.Int63()),
 			},

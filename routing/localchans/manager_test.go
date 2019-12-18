@@ -109,7 +109,7 @@ func TestManager(t *testing.T) {
 		}
 
 		return &channeldb.OpenChannel{
-			LocalChanCfg: channeldb.ChannelConfig{
+			OurChanCfg: channeldb.ChannelConfig{
 				ChannelConstraints: constraints,
 			},
 		}, nil

@@ -195,8 +195,8 @@ func createTestChannelState(cdb *DB) (*OpenChannel, error) {
 		IsPending:         true,
 		IdentityPub:       pubKey,
 		Capacity:          btcutil.Amount(10000),
-		LocalChanCfg:      localCfg,
-		RemoteChanCfg:     remoteCfg,
+		OurChanCfg:        localCfg,
+		TheirChanCfg:      remoteCfg,
 		TotalMSatSent:     8,
 		TotalMSatReceived: 2,
 		LocalCommitment: ChannelCommitment{
@@ -881,7 +881,7 @@ func TestFetchClosedChannels(t *testing.T) {
 		TimeLockedBalance: state.RemoteCommitment.LocalBalance.ToSatoshis() + 10000,
 		CloseType:         RemoteForceClose,
 		IsPending:         true,
-		LocalChanConfig:   state.LocalChanCfg,
+		LocalChanConfig:   state.OurChanCfg,
 	}
 	if err := state.CloseChannel(summary); err != nil {
 		t.Fatalf("unable to close channel: %v", err)

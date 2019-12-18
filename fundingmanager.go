@@ -998,7 +998,7 @@ func (f *fundingManager) advancePendingChannelState(
 			CloseType:               channeldb.FundingCanceled,
 			RemoteCurrentRevocation: ch.RemoteCurrentRevocation,
 			RemoteNextRevocation:    ch.RemoteNextRevocation,
-			LocalChanConfig:         ch.LocalChanCfg,
+			LocalChanConfig:         ch.OurChanCfg,
 		}
 
 		if err := ch.CloseChannel(closeInfo); err != nil {
@@ -1628,7 +1628,7 @@ func (f *fundingManager) handleFundingCreated(fmsg *fundingCreatedMsg) {
 			SettledBalance:          localBalance,
 			RemoteCurrentRevocation: completeChan.RemoteCurrentRevocation,
 			RemoteNextRevocation:    completeChan.RemoteNextRevocation,
-			LocalChanConfig:         completeChan.LocalChanCfg,
+			LocalChanConfig:         completeChan.OurChanCfg,
 		}
 
 		if err := completeChan.CloseChannel(closeInfo); err != nil {
@@ -1900,8 +1900,8 @@ func (f *fundingManager) waitForFundingWithTimeout(
 // makeFundingScript re-creates the funding script for the funding transaction
 // of the target channel.
 func makeFundingScript(channel *channeldb.OpenChannel) ([]byte, error) {
-	localKey := channel.LocalChanCfg.MultiSigKey.PubKey.SerializeCompressed()
-	remoteKey := channel.RemoteChanCfg.MultiSigKey.PubKey.SerializeCompressed()
+	localKey := channel.OurChanCfg.MultiSigKey.PubKey.SerializeCompressed()
+	remoteKey := channel.TheirChanCfg.MultiSigKey.PubKey.SerializeCompressed()
 
 	multiSigScript, err := input.GenMultiSigScript(localKey, remoteKey)
 	if err != nil {
@@ -2207,7 +2207,7 @@ func (f *fundingManager) addToRouterGraph(completeChan *channeldb.OpenChannel,
 	// we'll use this value within our ChannelUpdate. This constraint is
 	// originally set by the remote node, as it will be the one that will
 	// need to determine the smallest HTLC it deems economically relevant.
-	fwdMinHTLC := completeChan.LocalChanCfg.MinHTLC
+	fwdMinHTLC := completeChan.OurChanCfg.MinHTLC
 
 	// We don't necessarily want to go as low as the remote party
 	// allows. Check it against our default forwarding policy.
@@ -2218,7 +2218,7 @@ func (f *fundingManager) addToRouterGraph(completeChan *channeldb.OpenChannel,
 	// We'll obtain the max HTLC value we can forward in our direction, as
 	// we'll use this value within our ChannelUpdate. This value must be <=
 	// channel capacity and <= the maximum in-flight msats set by the peer.
-	fwdMaxHTLC := completeChan.LocalChanCfg.MaxPendingAmount
+	fwdMaxHTLC := completeChan.OurChanCfg.MaxPendingAmount
 	capacityMSat := lnwire.NewMSatFromSatoshis(completeChan.Capacity)
 	if fwdMaxHTLC > capacityMSat {
 		fwdMaxHTLC = capacityMSat
@@ -2226,8 +2226,8 @@ func (f *fundingManager) addToRouterGraph(completeChan *channeldb.OpenChannel,
 
 	ann, err := f.newChanAnnouncement(
 		f.cfg.IDKey, completeChan.IdentityPub,
-		completeChan.LocalChanCfg.MultiSigKey.PubKey,
-		completeChan.RemoteChanCfg.MultiSigKey.PubKey, *shortChanID,
+		completeChan.OurChanCfg.MultiSigKey.PubKey,
+		completeChan.TheirChanCfg.MultiSigKey.PubKey, *shortChanID,
 		chanID, fwdMinHTLC, fwdMaxHTLC,
 	)
 	if err != nil {
@@ -2389,8 +2389,8 @@ func (f *fundingManager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 		// public and usable for other nodes for routing.
 		err = f.announceChannel(
 			f.cfg.IDKey, completeChan.IdentityPub,
-			completeChan.LocalChanCfg.MultiSigKey.PubKey,
-			completeChan.RemoteChanCfg.MultiSigKey.PubKey,
+			completeChan.OurChanCfg.MultiSigKey.PubKey,
+			completeChan.TheirChanCfg.MultiSigKey.PubKey,
 			*shortChanID, chanID,
 		)
 		if err != nil {

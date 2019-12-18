@@ -257,8 +257,8 @@ func createTestPeer(notifier chainntnfs.ChainNotifier, publTx chan *wire.MsgTx,
 	)
 
 	aliceChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            aliceCfg,
-		RemoteChanCfg:           bobCfg,
+		OurChanCfg:              aliceCfg,
+		TheirChanCfg:            bobCfg,
 		IdentityPub:             aliceKeyPub,
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,
@@ -275,8 +275,8 @@ func createTestPeer(notifier chainntnfs.ChainNotifier, publTx chan *wire.MsgTx,
 		FundingTxn:              testTx,
 	}
 	bobChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            bobCfg,
-		RemoteChanCfg:           aliceCfg,
+		OurChanCfg:              bobCfg,
+		TheirChanCfg:            aliceCfg,
 		IdentityPub:             bobKeyPub,
 		FundingOutpoint:         *prevOut,
 		ChanType:                channeldb.SingleFunderTweaklessBit,

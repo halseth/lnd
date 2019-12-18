@@ -326,8 +326,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 	}
 
 	aliceChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            aliceCfg,
-		RemoteChanCfg:           bobCfg,
+		OurChanCfg:              aliceCfg,
+		TheirChanCfg:            bobCfg,
 		IdentityPub:             aliceKeyPub,
 		FundingOutpoint:         *prevOut,
 		ChanType:                channeldb.SingleFunderTweaklessBit,
@@ -345,8 +345,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 	}
 
 	bobChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            bobCfg,
-		RemoteChanCfg:           aliceCfg,
+		OurChanCfg:              bobCfg,
+		TheirChanCfg:            aliceCfg,
 		IdentityPub:             bobKeyPub,
 		FundingOutpoint:         *prevOut,
 		ChanType:                channeldb.SingleFunderTweaklessBit,

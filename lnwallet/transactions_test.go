@@ -377,7 +377,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 		ShortChannelID:  tc.shortChanID,
 		IsInitiator:     true,
 		IdentityPub:     identityKey,
-		LocalChanCfg: channeldb.ChannelConfig{
+		OurChanCfg: channeldb.ChannelConfig{
 			ChannelConstraints: channeldb.ChannelConstraints{
 				DustLimit:        tc.dustLimit,
 				MaxPendingAmount: lnwire.NewMSatFromSatoshis(tc.fundingAmount),
@@ -397,7 +397,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 				PubKey: localDelayBasePoint,
 			},
 		},
-		RemoteChanCfg: channeldb.ChannelConfig{
+		TheirChanCfg: channeldb.ChannelConfig{
 			MultiSigKey: keychain.KeyDescriptor{
 				PubKey: tc.remoteFundingPubKey,
 			},
@@ -423,8 +423,8 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 	channel := LightningChannel{
 		channelState:  &channelState,
 		Signer:        signer,
-		localChanCfg:  &channelState.LocalChanCfg,
-		remoteChanCfg: &channelState.RemoteChanCfg,
+		localChanCfg:  &channelState.OurChanCfg,
+		remoteChanCfg: &channelState.TheirChanCfg,
 	}
 	err = channel.createSignDesc()
 	if err != nil {

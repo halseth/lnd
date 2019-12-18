@@ -1415,7 +1415,7 @@ func testBreachSpends(t *testing.T, test breachTest) {
 		ShortChanID:             state.ShortChanID(),
 		RemoteCurrentRevocation: state.RemoteCurrentRevocation,
 		RemoteNextRevocation:    state.RemoteNextRevocation,
-		LocalChanConfig:         state.LocalChanCfg,
+		LocalChanConfig:         state.OurChanCfg,
 	})
 	if err != nil {
 		t.Fatalf("unable to close channel: %v", err)
@@ -1861,8 +1861,8 @@ func createInitChannels(revocationWindow int) (*lnwallet.LightningChannel, *lnwa
 	)
 
 	aliceChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            aliceCfg,
-		RemoteChanCfg:           bobCfg,
+		OurChanCfg:              aliceCfg,
+		TheirChanCfg:            bobCfg,
 		IdentityPub:             aliceKeyPub,
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,
@@ -1879,8 +1879,8 @@ func createInitChannels(revocationWindow int) (*lnwallet.LightningChannel, *lnwa
 		FundingTxn:              testTx,
 	}
 	bobChannelState := &channeldb.OpenChannel{
-		LocalChanCfg:            bobCfg,
-		RemoteChanCfg:           aliceCfg,
+		OurChanCfg:              bobCfg,
+		TheirChanCfg:            aliceCfg,
 		IdentityPub:             bobKeyPub,
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,

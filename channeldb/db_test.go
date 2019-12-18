@@ -325,7 +325,7 @@ func genRandomChannelShell() (*ChannelShell, error) {
 				uint64(rand.Int63()),
 			),
 			IdentityPub: pub,
-			LocalChanCfg: ChannelConfig{
+			OurChanCfg: ChannelConfig{
 				ChannelConstraints: ChannelConstraints{
 					CsvDelay: uint16(rand.Int63()),
 				},

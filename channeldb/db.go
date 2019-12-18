@@ -1142,7 +1142,7 @@ func (d *DB) AbandonChannel(chanPoint *wire.OutPoint, bestHeight uint32) error {
 		ShortChanID:             dbChan.ShortChanID(),
 		RemoteCurrentRevocation: dbChan.RemoteCurrentRevocation,
 		RemoteNextRevocation:    dbChan.RemoteNextRevocation,
-		LocalChanConfig:         dbChan.OurChanCfg,
+		OurChanConfig:           dbChan.OurChanCfg,
 	}
 
 	// Finally, we'll close the channel in the DB, and return back to the

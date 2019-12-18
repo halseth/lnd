@@ -881,7 +881,7 @@ func TestFetchClosedChannels(t *testing.T) {
 		TimeLockedBalance: state.RemoteCommitment.LocalBalance.ToSatoshis() + 10000,
 		CloseType:         RemoteForceClose,
 		IsPending:         true,
-		LocalChanConfig:   state.OurChanCfg,
+		OurChanConfig:     state.OurChanCfg,
 	}
 	if err := state.CloseChannel(summary); err != nil {
 		t.Fatalf("unable to close channel: %v", err)

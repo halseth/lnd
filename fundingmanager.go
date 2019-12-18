@@ -998,7 +998,7 @@ func (f *fundingManager) advancePendingChannelState(
 			CloseType:               channeldb.FundingCanceled,
 			RemoteCurrentRevocation: ch.RemoteCurrentRevocation,
 			RemoteNextRevocation:    ch.RemoteNextRevocation,
-			LocalChanConfig:         ch.OurChanCfg,
+			OurChanConfig:           ch.OurChanCfg,
 		}
 
 		if err := ch.CloseChannel(closeInfo); err != nil {
@@ -1628,7 +1628,7 @@ func (f *fundingManager) handleFundingCreated(fmsg *fundingCreatedMsg) {
 			SettledBalance:          localBalance,
 			RemoteCurrentRevocation: completeChan.RemoteCurrentRevocation,
 			RemoteNextRevocation:    completeChan.RemoteNextRevocation,
-			LocalChanConfig:         completeChan.OurChanCfg,
+			OurChanConfig:           completeChan.OurChanCfg,
 		}
 
 		if err := completeChan.CloseChannel(closeInfo); err != nil {

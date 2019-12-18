@@ -1415,7 +1415,7 @@ func testBreachSpends(t *testing.T, test breachTest) {
 		ShortChanID:             state.ShortChanID(),
 		RemoteCurrentRevocation: state.RemoteCurrentRevocation,
 		RemoteNextRevocation:    state.RemoteNextRevocation,
-		LocalChanConfig:         state.OurChanCfg,
+		OurChanConfig:           state.OurChanCfg,
 	})
 	if err != nil {
 		t.Fatalf("unable to close channel: %v", err)

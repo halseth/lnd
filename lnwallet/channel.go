@@ -5216,7 +5216,7 @@ func NewUnilateralCloseSummary(chanState *channeldb.OpenChannel, signer input.Si
 		RemoteCurrentRevocation: chanState.RemoteCurrentRevocation,
 		RemoteNextRevocation:    chanState.RemoteNextRevocation,
 		ShortChanID:             chanState.ShortChanID(),
-		LocalChanConfig:         chanState.OurChanCfg,
+		OurChanConfig:           chanState.OurChanCfg,
 	}
 
 	// Attempt to add a channel sync message to the close summary.

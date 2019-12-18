@@ -2251,8 +2251,8 @@ type ChannelCloseSummary struct {
 	// per-commitment-point.
 	RemoteNextRevocation *btcec.PublicKey
 
-	// LocalChanCfg is the channel configuration for the local node.
-	LocalChanConfig ChannelConfig
+	// OurChanConfig is the channel configuration for our node.
+	OurChanConfig ChannelConfig
 
 	// LastChanSyncMsg is the ChannelReestablish message for this channel
 	// for the state at the point where it was closed.
@@ -2457,7 +2457,7 @@ func putChannelCloseSummary(tx *bbolt.Tx, chanID []byte,
 
 	summary.RemoteCurrentRevocation = lastChanState.RemoteCurrentRevocation
 	summary.RemoteNextRevocation = lastChanState.RemoteNextRevocation
-	summary.LocalChanConfig = lastChanState.OurChanCfg
+	summary.OurChanConfig = lastChanState.OurChanCfg
 
 	var b bytes.Buffer
 	if err := serializeChannelCloseSummary(&b, summary); err != nil {
@@ -2492,7 +2492,7 @@ func serializeChannelCloseSummary(w io.Writer, cs *ChannelCloseSummary) error {
 		return err
 	}
 
-	if err := writeChanConfig(w, &cs.LocalChanConfig); err != nil {
+	if err := writeChanConfig(w, &cs.OurChanConfig); err != nil {
 		return err
 	}
 
@@ -2556,7 +2556,7 @@ func deserializeCloseChannelSummary(r io.Reader) (*ChannelCloseSummary, error) {
 		return nil, err
 	}
 
-	if err := readChanConfig(r, &c.LocalChanConfig); err != nil {
+	if err := readChanConfig(r, &c.OurChanConfig); err != nil {
 		return nil, err
 	}
 

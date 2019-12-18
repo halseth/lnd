@@ -421,10 +421,8 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 	// Construct a LightningChannel manually because we don't have nor need all
 	// of the dependencies.
 	channel := LightningChannel{
-		channelState:  &channelState,
-		Signer:        signer,
-		localChanCfg:  &channelState.OurChanCfg,
-		remoteChanCfg: &channelState.TheirChanCfg,
+		channelState: &channelState,
+		Signer:       signer,
 	}
 	err = channel.createSignDesc()
 	if err != nil {
@@ -845,8 +843,8 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 		// commitment tx.
 		htlcResolutions, err := extractHtlcResolutions(
 			chainfee.SatPerKWeight(test.commitment.FeePerKw), true, signer,
-			htlcs, keys, channel.localChanCfg, channel.remoteChanCfg,
-			commitTx.TxHash(),
+			htlcs, keys, &channel.channelState.OurChanCfg,
+			&channel.channelState.TheirChanCfg, commitTx.TxHash(),
 		)
 		if err != nil {
 			t.Errorf("Case %d: Failed to extract HTLC resolutions: %v", i, err)

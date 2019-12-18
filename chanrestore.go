@@ -66,32 +66,32 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 	// Each of the keys in our local channel config only have their
 	// locators populate, so we'll re-derive the raw key now as we'll need
 	// it in order to carry out the DLP protocol.
-	backup.LocalChanCfg.MultiSigKey, err = c.secretKeys.DeriveKey(
-		backup.LocalChanCfg.MultiSigKey.KeyLocator,
+	backup.OurChanCfg.MultiSigKey, err = c.secretKeys.DeriveKey(
+		backup.OurChanCfg.MultiSigKey.KeyLocator,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to derive multi sig key: %v", err)
 	}
-	backup.LocalChanCfg.RevocationBasePoint, err = c.secretKeys.DeriveKey(
-		backup.LocalChanCfg.RevocationBasePoint.KeyLocator,
+	backup.OurChanCfg.RevocationBasePoint, err = c.secretKeys.DeriveKey(
+		backup.OurChanCfg.RevocationBasePoint.KeyLocator,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to derive revocation key: %v", err)
 	}
-	backup.LocalChanCfg.PaymentBasePoint, err = c.secretKeys.DeriveKey(
-		backup.LocalChanCfg.PaymentBasePoint.KeyLocator,
+	backup.OurChanCfg.PaymentBasePoint, err = c.secretKeys.DeriveKey(
+		backup.OurChanCfg.PaymentBasePoint.KeyLocator,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to derive payment key: %v", err)
 	}
-	backup.LocalChanCfg.DelayBasePoint, err = c.secretKeys.DeriveKey(
-		backup.LocalChanCfg.DelayBasePoint.KeyLocator,
+	backup.OurChanCfg.DelayBasePoint, err = c.secretKeys.DeriveKey(
+		backup.OurChanCfg.DelayBasePoint.KeyLocator,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to derive delay key: %v", err)
 	}
-	backup.LocalChanCfg.HtlcBasePoint, err = c.secretKeys.DeriveKey(
-		backup.LocalChanCfg.HtlcBasePoint.KeyLocator,
+	backup.OurChanCfg.HtlcBasePoint, err = c.secretKeys.DeriveKey(
+		backup.OurChanCfg.HtlcBasePoint.KeyLocator,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to derive htlc key: %v", err)
@@ -121,8 +121,8 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 			ShortChannelID:          backup.ShortChannelID,
 			IdentityPub:             backup.RemoteNodePub,
 			IsPending:               false,
-			OurChanCfg:              backup.LocalChanCfg,
-			TheirChanCfg:            backup.RemoteChanCfg,
+			OurChanCfg:              backup.OurChanCfg,
+			TheirChanCfg:            backup.TheirChanCfg,
 			RemoteCurrentRevocation: backup.RemoteNodePub,
 			RevocationStore:         shachain.NewRevocationStore(),
 			RevocationProducer:      shaChainProducer,

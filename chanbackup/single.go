@@ -83,7 +83,7 @@ type Single struct {
 	// Capacity is the size of the original channel.
 	Capacity btcutil.Amount
 
-	// LocalChanCfg is our local channel configuration. It contains all the
+	// OurChanCfg is our local channel configuration. It contains all the
 	// information we need to re-derive the keys we used within the
 	// channel. Most importantly, it allows to derive the base public
 	// that's used to deriving the key used within the non-delayed
@@ -93,16 +93,16 @@ type Single struct {
 	//
 	// NOTE: Of the items in the ChannelConstraints, we only write the CSV
 	// delay.
-	LocalChanCfg channeldb.ChannelConfig
+	OurChanCfg channeldb.ChannelConfig
 
-	// RemoteChanCfg is the remote channel confirmation. We store this as
+	// TheirChanCfg is the remote channel confirmation. We store this as
 	// well since we'll need some of their keys to re-derive things like
 	// the state hint obfuscator which will allow us to recognize the state
 	// their broadcast on chain.
 	//
 	// NOTE: Of the items in the ChannelConstraints, we only write the CSV
 	// delay.
-	RemoteChanCfg channeldb.ChannelConfig
+	TheirChanCfg channeldb.ChannelConfig
 
 	// ShaChainRootDesc describes how to derive the private key that was
 	// used as the shachain root for this channel.
@@ -147,8 +147,8 @@ func NewSingle(channel *channeldb.OpenChannel,
 		RemoteNodePub:   channel.IdentityPub,
 		Addresses:       nodeAddrs,
 		Capacity:        channel.Capacity,
-		LocalChanCfg:    channel.OurChanCfg,
-		RemoteChanCfg:   channel.TheirChanCfg,
+		OurChanCfg:      channel.OurChanCfg,
+		TheirChanCfg:    channel.TheirChanCfg,
 		ShaChainRootDesc: keychain.KeyDescriptor{
 			PubKey: shaChainPoint,
 			KeyLocator: keychain.KeyLocator{
@@ -204,30 +204,30 @@ func (s *Single) Serialize(w io.Writer) error {
 		s.Addresses,
 		s.Capacity,
 
-		s.LocalChanCfg.CsvDelay,
+		s.OurChanCfg.CsvDelay,
 
 		// We only need to write out the KeyLocator portion of the
 		// local channel config.
-		uint32(s.LocalChanCfg.MultiSigKey.Family),
-		s.LocalChanCfg.MultiSigKey.Index,
-		uint32(s.LocalChanCfg.RevocationBasePoint.Family),
-		s.LocalChanCfg.RevocationBasePoint.Index,
-		uint32(s.LocalChanCfg.PaymentBasePoint.Family),
-		s.LocalChanCfg.PaymentBasePoint.Index,
-		uint32(s.LocalChanCfg.DelayBasePoint.Family),
-		s.LocalChanCfg.DelayBasePoint.Index,
-		uint32(s.LocalChanCfg.HtlcBasePoint.Family),
-		s.LocalChanCfg.HtlcBasePoint.Index,
+		uint32(s.OurChanCfg.MultiSigKey.Family),
+		s.OurChanCfg.MultiSigKey.Index,
+		uint32(s.OurChanCfg.RevocationBasePoint.Family),
+		s.OurChanCfg.RevocationBasePoint.Index,
+		uint32(s.OurChanCfg.PaymentBasePoint.Family),
+		s.OurChanCfg.PaymentBasePoint.Index,
+		uint32(s.OurChanCfg.DelayBasePoint.Family),
+		s.OurChanCfg.DelayBasePoint.Index,
+		uint32(s.OurChanCfg.HtlcBasePoint.Family),
+		s.OurChanCfg.HtlcBasePoint.Index,
 
-		s.RemoteChanCfg.CsvDelay,
+		s.TheirChanCfg.CsvDelay,
 
 		// We only need to write out the raw pubkey for the remote
 		// channel config.
-		s.RemoteChanCfg.MultiSigKey.PubKey,
-		s.RemoteChanCfg.RevocationBasePoint.PubKey,
-		s.RemoteChanCfg.PaymentBasePoint.PubKey,
-		s.RemoteChanCfg.DelayBasePoint.PubKey,
-		s.RemoteChanCfg.HtlcBasePoint.PubKey,
+		s.TheirChanCfg.MultiSigKey.PubKey,
+		s.TheirChanCfg.RevocationBasePoint.PubKey,
+		s.TheirChanCfg.PaymentBasePoint.PubKey,
+		s.TheirChanCfg.DelayBasePoint.PubKey,
+		s.TheirChanCfg.HtlcBasePoint.PubKey,
 
 		shaChainPub[:],
 		uint32(s.ShaChainRootDesc.KeyLocator.Family),
@@ -350,52 +350,52 @@ func (s *Single) Deserialize(r io.Reader) error {
 		return err
 	}
 
-	err = lnwire.ReadElements(r, &s.LocalChanCfg.CsvDelay)
+	err = lnwire.ReadElements(r, &s.OurChanCfg.CsvDelay)
 	if err != nil {
 		return err
 	}
-	s.LocalChanCfg.MultiSigKey, err = readLocalKeyDesc(r)
+	s.OurChanCfg.MultiSigKey, err = readLocalKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.LocalChanCfg.RevocationBasePoint, err = readLocalKeyDesc(r)
+	s.OurChanCfg.RevocationBasePoint, err = readLocalKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.LocalChanCfg.PaymentBasePoint, err = readLocalKeyDesc(r)
+	s.OurChanCfg.PaymentBasePoint, err = readLocalKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.LocalChanCfg.DelayBasePoint, err = readLocalKeyDesc(r)
+	s.OurChanCfg.DelayBasePoint, err = readLocalKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.LocalChanCfg.HtlcBasePoint, err = readLocalKeyDesc(r)
+	s.OurChanCfg.HtlcBasePoint, err = readLocalKeyDesc(r)
 	if err != nil {
 		return err
 	}
 
-	err = lnwire.ReadElements(r, &s.RemoteChanCfg.CsvDelay)
+	err = lnwire.ReadElements(r, &s.TheirChanCfg.CsvDelay)
 	if err != nil {
 		return err
 	}
-	s.RemoteChanCfg.MultiSigKey, err = readRemoteKeyDesc(r)
+	s.TheirChanCfg.MultiSigKey, err = readRemoteKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.RemoteChanCfg.RevocationBasePoint, err = readRemoteKeyDesc(r)
+	s.TheirChanCfg.RevocationBasePoint, err = readRemoteKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.RemoteChanCfg.PaymentBasePoint, err = readRemoteKeyDesc(r)
+	s.TheirChanCfg.PaymentBasePoint, err = readRemoteKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.RemoteChanCfg.DelayBasePoint, err = readRemoteKeyDesc(r)
+	s.TheirChanCfg.DelayBasePoint, err = readRemoteKeyDesc(r)
 	if err != nil {
 		return err
 	}
-	s.RemoteChanCfg.HtlcBasePoint, err = readRemoteKeyDesc(r)
+	s.TheirChanCfg.HtlcBasePoint, err = readRemoteKeyDesc(r)
 	if err != nil {
 		return err
 	}

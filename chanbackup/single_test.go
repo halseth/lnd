@@ -67,15 +67,15 @@ func assertSingleEqual(t *testing.T, a, b Single) {
 			a.RemoteNodePub.SerializeCompressed(),
 			b.RemoteNodePub.SerializeCompressed())
 	}
-	if !reflect.DeepEqual(a.LocalChanCfg, b.LocalChanCfg) {
+	if !reflect.DeepEqual(a.OurChanCfg, b.OurChanCfg) {
 		t.Fatalf("local chan config doesn't match: %v vs %v",
-			spew.Sdump(a.LocalChanCfg),
-			spew.Sdump(b.LocalChanCfg))
+			spew.Sdump(a.OurChanCfg),
+			spew.Sdump(b.OurChanCfg))
 	}
-	if !reflect.DeepEqual(a.RemoteChanCfg, b.RemoteChanCfg) {
+	if !reflect.DeepEqual(a.TheirChanCfg, b.TheirChanCfg) {
 		t.Fatalf("remote chan config doesn't match: %v vs %v",
-			spew.Sdump(a.RemoteChanCfg),
-			spew.Sdump(b.RemoteChanCfg))
+			spew.Sdump(a.TheirChanCfg),
+			spew.Sdump(b.TheirChanCfg))
 	}
 	if !reflect.DeepEqual(a.ShaChainRootDesc, b.ShaChainRootDesc) {
 		t.Fatalf("sha chain point doesn't match: %v vs %v",

@@ -329,7 +329,7 @@ func (c *chainWatcher) SubscribeChannelEvents() *ChainEventSubscription {
 // funding transaction using our commitment transaction (a local force close).
 // In order to do this in a state agnostic manner, we'll make our decisions
 // based off of only the set of outputs included.
-func isOurCommitment(localChanCfg, remoteChanCfg channeldb.ChannelConfig,
+func isOurCommitment(ourChanCfg, theirChanCfg channeldb.ChannelConfig,
 	commitSpend *chainntnfs.SpendDetail, broadcastStateNum uint64,
 	revocationProducer shachain.Producer,
 	chanType channeldb.ChannelType) (bool, error) {
@@ -346,12 +346,12 @@ func isOurCommitment(localChanCfg, remoteChanCfg channeldb.ChannelConfig,
 	// and remote keys for this state. We use our point as only we can
 	// revoke our own commitment.
 	commitKeyRing := lnwallet.DeriveCommitmentKeys(
-		commitPoint, true, chanType, &localChanCfg, &remoteChanCfg,
+		commitPoint, true, chanType, &ourChanCfg, &theirChanCfg,
 	)
 
 	// With the keys derived, we'll construct the remote script that'll be
 	// present if they have a non-dust balance on the commitment.
-	remoteDelay := uint32(remoteChanCfg.CsvDelay)
+	remoteDelay := uint32(theirChanCfg.CsvDelay)
 	remoteScript, err := lnwallet.CommitScriptToRemote(
 		chanType, remoteDelay, commitKeyRing.RemoteKey,
 	)
@@ -363,7 +363,7 @@ func isOurCommitment(localChanCfg, remoteChanCfg channeldb.ChannelConfig,
 	// the remote party allowing them to claim this output before the CSV
 	// delay if we breach.
 	localScript, err := input.CommitScriptToSelf(
-		uint32(localChanCfg.CsvDelay), commitKeyRing.LocalKey,
+		uint32(ourChanCfg.CsvDelay), commitKeyRing.LocalKey,
 		commitKeyRing.RevocationKey,
 	)
 	if err != nil {

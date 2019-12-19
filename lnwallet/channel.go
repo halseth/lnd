@@ -1866,24 +1866,25 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 
 	// Next, reconstruct the scripts as they were present at this state
 	// number so we can have the proper witness script to sign and include
-	// within the final witness.
-	remoteDelay := uint32(chanState.TheirChanCfg.CsvDelay)
-	remotePkScript, err := input.CommitScriptToSelf(
-		remoteDelay, keyRing.LocalKey, keyRing.RevocationKey,
+	// within the final witness. Since this commitment was created by them,
+	// the self script will be theirs.
+	theirDelay := uint32(chanState.TheirChanCfg.CsvDelay)
+	theirPkScript, err := input.CommitScriptToSelf(
+		theirDelay, keyRing.LocalKey, keyRing.RevocationKey,
 	)
 	if err != nil {
 		return nil, err
 	}
-	remoteWitnessHash, err := input.WitnessScriptHash(remotePkScript)
+	theirWitnessHash, err := input.WitnessScriptHash(theirPkScript)
 	if err != nil {
 		return nil, err
 	}
 
 	// Since it is the remote breach we are reconstructing, the output going
 	// to us will be a to-remote script with our local params.
-	localDelay := uint32(chanState.OurChanCfg.CsvDelay)
-	localScript, err := CommitScriptToRemote(
-		chanState.ChanType, localDelay, keyRing.RemoteKey,
+	ourDelay := uint32(chanState.OurChanCfg.CsvDelay)
+	ourScript, err := CommitScriptToRemote(
+		chanState.ChanType, ourDelay, keyRing.RemoteKey,
 	)
 	if err != nil {
 		return nil, err
@@ -1891,58 +1892,58 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 
 	// In order to fully populate the breach retribution struct, we'll need
 	// to find the exact index of the local+remote commitment outputs.
-	localOutpoint := wire.OutPoint{
+	ourOutpoint := wire.OutPoint{
 		Hash: commitHash,
 	}
-	remoteOutpoint := wire.OutPoint{
+	theirOutpoint := wire.OutPoint{
 		Hash: commitHash,
 	}
 	for i, txOut := range revokedSnapshot.CommitTx.TxOut {
 		switch {
-		case bytes.Equal(txOut.PkScript, localScript.PkScript):
-			localOutpoint.Index = uint32(i)
-		case bytes.Equal(txOut.PkScript, remoteWitnessHash):
-			remoteOutpoint.Index = uint32(i)
+		case bytes.Equal(txOut.PkScript, ourScript.PkScript):
+			ourOutpoint.Index = uint32(i)
+		case bytes.Equal(txOut.PkScript, theirWitnessHash):
+			theirOutpoint.Index = uint32(i)
 		}
 	}
 
 	// Conditionally instantiate a sign descriptor for each of the
-	// commitment outputs. If either is considered dust using the remote
-	// party's dust limit, the respective sign descriptor will be nil.
+	// commitment outputs. If either is considered dust using their dust
+	// limit, the respective sign descriptor will be nil.
 	var (
-		localSignDesc  *input.SignDescriptor
-		remoteSignDesc *input.SignDescriptor
+		ourSignDesc   *input.SignDescriptor
+		theirSignDesc *input.SignDescriptor
 	)
 
-	// Compute the local and remote balances in satoshis.
-	localAmt := revokedSnapshot.LocalBalance.ToSatoshis()
-	remoteAmt := revokedSnapshot.RemoteBalance.ToSatoshis()
+	// Compute our and their balances in satoshis.
+	ourAmt := revokedSnapshot.LocalBalance.ToSatoshis()
+	theirAmt := revokedSnapshot.RemoteBalance.ToSatoshis()
 
-	// If the local balance exceeds the remote party's dust limit,
-	// instantiate the local sign descriptor.
-	if localAmt >= chanState.TheirChanCfg.DustLimit {
-		localSignDesc = &input.SignDescriptor{
+	// If our balance exceeds the their  dust limit, instantiate the sign
+	// descriptor.
+	if ourAmt >= chanState.TheirChanCfg.DustLimit {
+		ourSignDesc = &input.SignDescriptor{
 			SingleTweak:   keyRing.LocalCommitKeyTweak,
 			KeyDesc:       chanState.OurChanCfg.PaymentBasePoint,
-			WitnessScript: localScript.WitnessScript,
+			WitnessScript: ourScript.WitnessScript,
 			Output: &wire.TxOut{
-				PkScript: localScript.PkScript,
-				Value:    int64(localAmt),
+				PkScript: ourScript.PkScript,
+				Value:    int64(ourAmt),
 			},
 			HashType: txscript.SigHashAll,
 		}
 	}
 
-	// Similarly, if the remote balance exceeds the remote party's dust
-	// limit, assemble the remote sign descriptor.
-	if remoteAmt >= chanState.TheirChanCfg.DustLimit {
-		remoteSignDesc = &input.SignDescriptor{
+	// Similarly, if their balance exceeds their dust limit, assemble their
+	// sign descriptor.
+	if theirAmt >= chanState.TheirChanCfg.DustLimit {
+		theirSignDesc = &input.SignDescriptor{
 			KeyDesc:       chanState.OurChanCfg.RevocationBasePoint,
 			DoubleTweak:   commitmentSecret,
-			WitnessScript: remotePkScript,
+			WitnessScript: theirPkScript,
 			Output: &wire.TxOut{
-				PkScript: remoteWitnessHash,
-				Value:    int64(remoteAmt),
+				PkScript: theirWitnessHash,
+				Value:    int64(theirAmt),
 			},
 			HashType: txscript.SigHashAll,
 		}
@@ -1973,7 +1974,7 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 		// remote commitment transaction, and *they* go to the second
 		// level.
 		secondLevelWitnessScript, err := input.SecondLevelHtlcScript(
-			keyRing.RevocationKey, keyRing.LocalKey, remoteDelay,
+			keyRing.RevocationKey, keyRing.LocalKey, theirDelay,
 		)
 		if err != nil {
 			return nil, err
@@ -2039,13 +2040,13 @@ func NewBreachRetribution(chanState *channeldb.OpenChannel, stateNum uint64,
 		BreachHeight:         breachHeight,
 		RevokedStateNum:      stateNum,
 		PendingHTLCs:         revokedSnapshot.Htlcs,
-		LocalOutpoint:        localOutpoint,
-		LocalOutputSignDesc:  localSignDesc,
-		RemoteOutpoint:       remoteOutpoint,
-		RemoteOutputSignDesc: remoteSignDesc,
+		LocalOutpoint:        ourOutpoint,
+		LocalOutputSignDesc:  ourSignDesc,
+		RemoteOutpoint:       theirOutpoint,
+		RemoteOutputSignDesc: theirSignDesc,
 		HtlcRetributions:     htlcRetributions,
 		KeyRing:              keyRing,
-		RemoteDelay:          remoteDelay,
+		RemoteDelay:          theirDelay,
 	}, nil
 }
 

@@ -58,11 +58,15 @@ type paymentSessionBuilder struct {
 
 	addRouteSignal chan struct{}
 
+	wg sync.WaitGroup
 	sync.Mutex
 }
 
 func (p *paymentSessionBuilder) Start() {
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
+
 		for {
 			select {
 			case <-time.After(p.timeout):
@@ -72,6 +76,8 @@ func (p *paymentSessionBuilder) Start() {
 				}
 				return
 			case <-p.addRouteSignal:
+			case <-p.quit:
+				return
 			}
 		}
 	}()
@@ -79,6 +85,7 @@ func (p *paymentSessionBuilder) Start() {
 
 func (p *paymentSessionBuilder) Stop() {
 	close(p.quit)
+	p.wg.Wait()
 }
 
 // AddRoute can be used to manually add routes to the PaymentSession.
@@ -132,12 +139,14 @@ type paymentSession struct {
 	sessionSource *SessionSource
 
 	pathFinder pathFinder
+	wg         sync.WaitGroup
 }
 
 func (p *paymentSession) Start() {
 }
 
 func (p *paymentSession) Stop() {
+	p.wg.Wait()
 }
 
 func (p *paymentSession) AddRoute(r *route.Route) (lntypes.Preimage, error) {
@@ -160,6 +169,7 @@ func (p *paymentSession) RequestRoute(amt lnwire.MilliSatoshi,
 	respChan := make(chan *PaymentShard, 1)
 	errChan := make(chan error, 1)
 
+	p.wg.Add(1)
 	go p.requestRoute(amt, payment, height, finalCltvDelta, respChan, errChan)
 
 	return respChan, errChan
@@ -168,6 +178,8 @@ func (p *paymentSession) RequestRoute(amt lnwire.MilliSatoshi,
 func (p *paymentSession) requestRoute(amt lnwire.MilliSatoshi,
 	payment *LightningPayment,
 	height uint32, finalCltvDelta uint16, respChan chan *PaymentShard, errChan chan error) {
+
+	defer p.wg.Done()
 
 	// Add BlockPadding to the finalCltvDelta so that the receiving node
 	// does not reject the HTLC if some blocks are mined while it's in-flight.

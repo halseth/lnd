@@ -1745,7 +1745,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 
 		// TODO: config tiemout
 		paySession = r.cfg.SessionSource.NewPaymentSessionBuilder(
-			5 * time.Second,
+			10 * time.Second,
 		)
 		r.activeSessions[hash] = paySession
 
@@ -1757,6 +1757,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 		// PayAttemptTime doesn't need to be set, as there is only a
 		// single attempt.
 		payment := &LightningPayment{
+			Amount:      amt,
 			PaymentHash: hash,
 		}
 
@@ -1838,6 +1839,7 @@ func (r *ChannelRouter) sendPayment(
 	for _, a := range existingAttempts {
 		s := &paymentShard{
 			a,
+			make(chan *ShardResult, 1), // ignored
 		}
 		existingShards.addShard(s)
 	}

@@ -80,6 +80,7 @@ func (m *SessionSource) NewPaymentSession(routeHints [][]zpay32.HopHint,
 // used for failure reporting to missioncontrol.
 func (m *SessionSource) NewPaymentSessionBuilder(timeout time.Duration) PaymentSession {
 	return &paymentSessionBuilder{
+		timeout:        timeout,
 		routes:         make(chan *PaymentShard),
 		addRouteSignal: make(chan struct{}, 1),
 		errChan:        make(chan error, 1),

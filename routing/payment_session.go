@@ -2,8 +2,12 @@ package routing
 
 import (
 	"errors"
+	"fmt"
+	"sync"
+	"time"
 
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -13,19 +17,103 @@ import (
 const BlockPadding uint16 = 3
 
 var (
-	// errPrebuiltRouteTried is returned when the single pre-built route
+	// errpreBuiltRouteTried is returned when the single pre-built route
 	// failed and there is nothing more we can do.
 	errPrebuiltRouteTried = errors.New("pre-built route already tried")
+
+	errShutdown = errors.New("payment session shutting down")
 )
+
+type ShardResult struct {
+	Preimage lntypes.Preimage
+	Err      error
+}
+
+type PaymentShard struct {
+	Route      *route.Route
+	ResultChan chan *ShardResult
+}
 
 // PaymentSession is used during SendPayment attempts to provide routes to
 // attempt. It also defines methods to give the PaymentSession additional
 // information learned during the previous attempts.
 type PaymentSession interface {
-	// RequestRoute returns the next route to attempt for routing the
-	// specified HTLC payment to the target node.
-	RequestRoute(payment *LightningPayment,
-		height uint32, finalCltvDelta uint16) (*route.Route, error)
+	// RequestRoutes intructs the PaymentSession to find more routes that
+	// in total send up to amt.
+	RequestRoute(amt lnwire.MilliSatoshi, payment *LightningPayment,
+		height uint32, finalCltvDelta uint16) (chan *PaymentShard, chan error)
+
+	AddRoute(*route.Route) (lntypes.Preimage, error)
+
+	Start()
+	Stop()
+}
+
+type paymentSessionBuilder struct {
+	routes  chan *PaymentShard
+	timeout time.Duration
+
+	errChan chan error
+	quit    chan struct{}
+
+	addRouteSignal chan struct{}
+
+	sync.Mutex
+}
+
+func (p *paymentSessionBuilder) Start() {
+	go func() {
+		for {
+			select {
+			case <-time.After(p.timeout):
+				select {
+				case p.errChan <- fmt.Errorf("pays session timeout"):
+				default:
+				}
+				return
+			case <-p.addRouteSignal:
+			}
+		}
+	}()
+}
+
+func (p *paymentSessionBuilder) Stop() {
+	close(p.quit)
+}
+
+// AddRoute can be used to manually add routes to the PaymentSession.
+func (p *paymentSessionBuilder) AddRoute(r *route.Route) (lntypes.Preimage, error) {
+
+	select {
+	case p.addRouteSignal <- struct{}{}:
+	default:
+	}
+
+	result := make(chan *ShardResult, 1)
+	shard := &PaymentShard{
+		Route:      r,
+		ResultChan: result,
+	}
+
+	select {
+	case p.routes <- shard:
+	case <-p.quit:
+		return lntypes.Preimage{}, errShutdown
+	}
+
+	select {
+	case res := <-result:
+		return res.Preimage, res.Err
+	case <-p.quit:
+		return lntypes.Preimage{}, errShutdown
+	}
+}
+
+func (p *paymentSessionBuilder) RequestRoute(amt lnwire.MilliSatoshi,
+	payment *LightningPayment, height uint32, finalCltvDelta uint16) (
+	chan *PaymentShard, chan error) {
+
+	return p.routes, p.errChan
 }
 
 // paymentSession is used during an HTLC routings session to prune the local
@@ -43,10 +131,17 @@ type paymentSession struct {
 
 	sessionSource *SessionSource
 
-	preBuiltRoute      *route.Route
-	preBuiltRouteTried bool
-
 	pathFinder pathFinder
+}
+
+func (p *paymentSession) Start() {
+}
+
+func (p *paymentSession) Stop() {
+}
+
+func (p *paymentSession) AddRoute(r *route.Route) (lntypes.Preimage, error) {
+	return lntypes.Preimage{}, fmt.Errorf("unimplemented")
 }
 
 // RequestRoute returns a route which is likely to be capable for successfully
@@ -58,22 +153,21 @@ type paymentSession struct {
 //
 // NOTE: This function is safe for concurrent access.
 // NOTE: Part of the PaymentSession interface.
-func (p *paymentSession) RequestRoute(payment *LightningPayment,
-	height uint32, finalCltvDelta uint16) (*route.Route, error) {
+func (p *paymentSession) RequestRoute(amt lnwire.MilliSatoshi,
+	payment *LightningPayment,
+	height uint32, finalCltvDelta uint16) (chan *PaymentShard, chan error) {
 
-	switch {
+	respChan := make(chan *PaymentShard, 1)
+	errChan := make(chan error, 1)
 
-	// If we have a pre-built route, use that directly.
-	case p.preBuiltRoute != nil && !p.preBuiltRouteTried:
-		p.preBuiltRouteTried = true
+	go p.requestRoute(amt, payment, height, finalCltvDelta, respChan, errChan)
 
-		return p.preBuiltRoute, nil
+	return respChan, errChan
+}
 
-	// If the pre-built route has been tried already, the payment session is
-	// over.
-	case p.preBuiltRoute != nil:
-		return nil, errPrebuiltRouteTried
-	}
+func (p *paymentSession) requestRoute(amt lnwire.MilliSatoshi,
+	payment *LightningPayment,
+	height uint32, finalCltvDelta uint16, respChan chan *PaymentShard, errChan chan error) {
 
 	// Add BlockPadding to the finalCltvDelta so that the receiving node
 	// does not reject the HTLC if some blocks are mined while it's in-flight.
@@ -110,7 +204,8 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	// balances.
 	bandwidthHints, err := p.getBandwidthHints()
 	if err != nil {
-		return nil, err
+		errChan <- err
+		return
 	}
 
 	finalHtlcExpiry := int32(height) + int32(finalCltvDelta)
@@ -123,19 +218,21 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 		},
 		restrictions, &ss.PathFindingConfig,
 		ss.SelfNode.PubKeyBytes, payment.Target,
-		payment.Amount, finalHtlcExpiry,
+		amt, finalHtlcExpiry,
 	)
 	if err != nil {
-		return nil, err
+		errChan <- err
+		return
+
 	}
 
 	// With the next candidate path found, we'll attempt to turn this into
 	// a route by applying the time-lock and fee requirements.
 	sourceVertex := route.Vertex(ss.SelfNode.PubKeyBytes)
-	route, err := newRoute(
+	rt, err := newRoute(
 		sourceVertex, path, height,
 		finalHopParams{
-			amt:         payment.Amount,
+			amt:         amt,
 			cltvDelta:   finalCltvDelta,
 			records:     payment.DestCustomRecords,
 			paymentAddr: payment.PaymentAddr,
@@ -144,8 +241,15 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	if err != nil {
 		// TODO(roasbeef): return which edge/vertex didn't work
 		// out
-		return nil, err
+		errChan <- err
+		return
+
 	}
 
-	return route, err
+	s := &PaymentShard{
+		Route:      rt,
+		ResultChan: make(chan *ShardResult, 1), // ignored
+	}
+
+	respChan <- s
 }

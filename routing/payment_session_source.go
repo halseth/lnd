@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -76,21 +78,12 @@ func (m *SessionSource) NewPaymentSession(routeHints [][]zpay32.HopHint,
 
 // NewPaymentSessionForRoute creates a new paymentSession instance that is just
 // used for failure reporting to missioncontrol.
-func (m *SessionSource) NewPaymentSessionForRoute(preBuiltRoute *route.Route) PaymentSession {
-	return &paymentSession{
-		sessionSource: m,
-		preBuiltRoute: preBuiltRoute,
-	}
-}
-
-// NewPaymentSessionEmpty creates a new paymentSession instance that is empty,
-// and will be exhausted immediately. Used for failure reporting to
-// missioncontrol for resumed payment we don't want to make more attempts for.
-func (m *SessionSource) NewPaymentSessionEmpty() PaymentSession {
-	return &paymentSession{
-		sessionSource:      m,
-		preBuiltRoute:      &route.Route{},
-		preBuiltRouteTried: true,
+func (m *SessionSource) NewPaymentSessionBuilder(timeout time.Duration) PaymentSession {
+	return &paymentSessionBuilder{
+		routes:         make(chan *PaymentShard),
+		addRouteSignal: make(chan struct{}, 1),
+		errChan:        make(chan error, 1),
+		quit:           make(chan struct{}),
 	}
 }
 

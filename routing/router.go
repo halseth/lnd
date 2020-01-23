@@ -538,7 +538,7 @@ func (r *ChannelRouter) Start() error {
 				PaymentHash: payment.Info.PaymentHash,
 			}
 
-			_, _, err := r.sendPayment(payment.Attempt, lPayment, paySession)
+			_, _, err := r.sendPayment(payment.Attempts, lPayment, paySession)
 			if err != nil {
 				log.Errorf("Resuming payment with hash %v "+
 					"failed: %v.", payment.Info.PaymentHash, err)
@@ -1769,7 +1769,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
 func (r *ChannelRouter) sendPayment(
-	existingAttempt *channeldb.PaymentAttemptInfo,
+	existingAttempts []*channeldb.PaymentAttemptInfo,
 	payment *LightningPayment, paySession PaymentSession) (
 	[32]byte, *route.Route, error) {
 
@@ -1801,9 +1801,9 @@ func (r *ChannelRouter) sendPayment(
 	}
 
 	existingShards := &paymentShards{}
-	if existingAttempt != nil {
+	for _, a := range existingAttempts {
 		s := &paymentShard{
-			existingAttempt,
+			a,
 		}
 		existingShards.addShard(s)
 	}

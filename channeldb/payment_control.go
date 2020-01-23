@@ -176,8 +176,23 @@ func (p *PaymentControl) RegisterAttempt(paymentHash lntypes.Hash,
 			return nil
 		}
 
+		attempts, err := bucket.CreateBucketIfNotExists(paymentAttemptsBucket)
+		if err != nil {
+			updateErr = err
+			return nil
+		}
+
+		var paymentIDBytes [8]byte
+		binary.BigEndian.PutUint64(paymentIDBytes[:], attempt.PaymentID)
+
+		attemptBucket, err := attempts.CreateBucketIfNotExists(paymentIDBytes[:])
+		if err != nil {
+			updateErr = err
+			return nil
+		}
+
 		// Add the payment attempt to the payments bucket.
-		return bucket.Put(paymentAttemptInfoKey, attemptBytes)
+		return attemptBucket.Put(paymentAttemptInfoKey, attemptBytes)
 	})
 	if err != nil {
 		return err
@@ -186,12 +201,8 @@ func (p *PaymentControl) RegisterAttempt(paymentHash lntypes.Hash,
 	return updateErr
 }
 
-// Success transitions a payment into the Succeeded state. After invoking this
-// method, InitPayment should always return an error to prevent us from making
-// duplicate payments to the same payment hash. The provided preimage is
-// atomically saved to the DB for record keeping.
-func (p *PaymentControl) Success(paymentHash lntypes.Hash,
-	preimage lntypes.Preimage) (*MPPayment, error) {
+func (p *PaymentControl) SettleAttempt(paymentHash lntypes.Hash,
+	attempt *PaymentAttemptInfo, preimage lntypes.Preimage) (*MPPayment, error) {
 
 	var (
 		updateErr error
@@ -211,7 +222,7 @@ func (p *PaymentControl) Success(paymentHash lntypes.Hash,
 			return err
 		}
 
-		// We can only mark in-flight payments as succeeded.
+		// TODO: remove check?
 		if err := ensureInFlight(bucket); err != nil {
 			updateErr = err
 			return nil
@@ -220,6 +231,28 @@ func (p *PaymentControl) Success(paymentHash lntypes.Hash,
 		// Record the successful payment info atomically to the
 		// payments record.
 		err = bucket.Put(paymentSettleInfoKey, preimage[:])
+		if err != nil {
+			return err
+		}
+
+		attempts := bucket.Bucket(paymentAttemptsBucket)
+		if attempts == nil {
+			updateErr = fmt.Errorf("attempts bucket not found")
+			return nil
+		}
+
+		var paymentIDBytes [8]byte
+		binary.BigEndian.PutUint64(paymentIDBytes[:], attempt.PaymentID)
+
+		attemptBucket := attempts.Bucket(paymentIDBytes[:])
+		if err != nil {
+			updateErr = fmt.Errorf("bucket for paymentID %v not "+
+				"found", attempt.PaymentID)
+			return nil
+		}
+
+		// Add the payment attempt to the payments bucket.
+		err = attemptBucket.Put(paymentSettleInfoKey, preimage[:])
 		if err != nil {
 			return err
 		}
@@ -233,6 +266,124 @@ func (p *PaymentControl) Success(paymentHash lntypes.Hash,
 	}
 
 	return payment, updateErr
+}
+
+type AttemptFailure byte
+
+const (
+	AttemptFailureUnknown AttemptFailure = iota
+)
+
+func (p *PaymentControl) FailAttempt(paymentHash lntypes.Hash,
+	attempt *PaymentAttemptInfo, reason AttemptFailure) error {
+
+	var updateErr error
+	err := p.db.Batch(func(tx *bbolt.Tx) error {
+		// Reset the update error, to avoid carrying over an error
+		// from a previous execution of the batched db transaction.
+		updateErr = nil
+
+		bucket, err := fetchPaymentBucket(tx, paymentHash)
+		if err == ErrPaymentNotInitiated {
+			updateErr = ErrPaymentNotInitiated
+			return nil
+		} else if err != nil {
+			return err
+		}
+
+		// TODO: remove check?
+		if err := ensureInFlight(bucket); err != nil {
+			updateErr = err
+			return nil
+		}
+
+		attempts := bucket.Bucket(paymentAttemptsBucket)
+		if attempts == nil {
+			updateErr = fmt.Errorf("attempts bucket not found")
+			return nil
+		}
+
+		var paymentIDBytes [8]byte
+		binary.BigEndian.PutUint64(paymentIDBytes[:], attempt.PaymentID)
+
+		attemptBucket := attempts.Bucket(paymentIDBytes[:])
+		if err != nil {
+			updateErr = fmt.Errorf("bucket for paymentID %v not "+
+				"found", attempt.PaymentID)
+			return nil
+		}
+
+		v := []byte{byte(reason)}
+		return attemptBucket.Put(paymentFailInfoKey, v)
+	})
+	if err != nil {
+		return err
+	}
+
+	return updateErr
+}
+
+type PaymentAttemptStatus struct {
+	*PaymentAttemptInfo
+
+	Preimage *lntypes.Preimage
+	Failure  *FailureReason
+}
+
+func (p *PaymentControl) GetAttempts(paymentHash lntypes.Hash,
+) ([]*PaymentAttemptStatus, error) {
+
+	var as []*PaymentAttemptStatus
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		bucket, err := fetchPaymentBucket(tx, paymentHash)
+		if err != nil {
+			return err
+		}
+
+		attempts := bucket.Bucket(paymentAttemptsBucket)
+		if attempts == nil {
+			return nil
+		}
+
+		return attempts.ForEach(func(k, v []byte) error {
+			attemptBucket := attempts.Bucket(k)
+
+			// filter out failed attemots?
+
+			a := &PaymentAttemptStatus{}
+
+			attemptInfoBytes := attemptBucket.Get(paymentAttemptInfoKey)
+			r := bytes.NewReader(attemptInfoBytes)
+			attemptInfo, err := deserializePaymentAttemptInfo(r)
+			if err != nil {
+				return err
+			}
+
+			a.PaymentAttemptInfo = attemptInfo
+
+			preimgBytes := attemptBucket.Get(paymentSettleInfoKey)
+			if preimgBytes != nil {
+				var preimage lntypes.Preimage
+				copy(preimage[:], preimgBytes)
+
+				a.Preimage = &preimage
+			}
+
+			b := attemptBucket.Get(paymentFailInfoKey)
+			if b != nil {
+				reason := FailureReason(b[0])
+				a.Failure = &reason
+			}
+
+			as = append(as, a)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return as, nil
 }
 
 // Fail transitions a payment into the Failed state, and records the reason the
@@ -265,6 +416,8 @@ func (p *PaymentControl) Fail(paymentHash lntypes.Hash,
 			updateErr = err
 			return nil
 		}
+
+		// TODO: only fail if no in-flight attempts.
 
 		// Put the failure reason in the bucket for record keeping.
 		v := []byte{byte(reason)}
@@ -405,14 +558,34 @@ func ensureInFlight(bucket *bbolt.Bucket) error {
 }
 
 // fetchPaymentAttempt fetches the payment attempt from the bucket.
-func fetchPaymentAttempt(bucket *bbolt.Bucket) (*PaymentAttemptInfo, error) {
-	attemptData := bucket.Get(paymentAttemptInfoKey)
-	if attemptData == nil {
-		return nil, errNoAttemptInfo
+func fetchPaymentAttempts(bucket *bbolt.Bucket) ([]*PaymentAttemptInfo, error) {
+
+	var infos []*PaymentAttemptInfo
+
+	attempts := bucket.Bucket(paymentAttemptsBucket)
+
+	err := attempts.ForEach(func(k, v []byte) error {
+
+		attemptData := bucket.Get(paymentAttemptInfoKey)
+		if attemptData == nil {
+			return errNoAttemptInfo
+		}
+
+		r := bytes.NewReader(attemptData)
+		info, err := deserializePaymentAttemptInfo(r)
+		if err != nil {
+			return err
+		}
+
+		infos = append(infos, info)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	r := bytes.NewReader(attemptData)
-	return deserializePaymentAttemptInfo(r)
+	return infos, nil
 }
 
 // InFlightPayment is a wrapper around a payment that has status InFlight.
@@ -424,7 +597,7 @@ type InFlightPayment struct {
 	// made to this payment hash.
 	//
 	// NOTE: Might be nil.
-	Attempt *PaymentAttemptInfo
+	Attempts []*PaymentAttemptInfo
 }
 
 // FetchInFlightPayments returns all payments with status InFlight.
@@ -468,7 +641,7 @@ func (p *PaymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
 
 			// Now get the attempt info. It could be that there is
 			// no attempt info yet.
-			inFlight.Attempt, err = fetchPaymentAttempt(bucket)
+			inFlight.Attempts, err = fetchPaymentAttempts(bucket)
 			if err != nil && err != errNoAttemptInfo {
 				return err
 			}

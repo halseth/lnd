@@ -22,12 +22,21 @@ type ControlTower interface {
 	// RegisterAttempt atomically records the provided PaymentAttemptInfo.
 	RegisterAttempt(lntypes.Hash, *channeldb.PaymentAttemptInfo) error
 
-	// Success transitions a payment into the Succeeded state. After
-	// invoking this method, InitPayment should always return an error to
-	// prevent us from making duplicate payments to the same payment hash.
-	// The provided preimage is atomically saved to the DB for record
-	// keeping.
-	Success(lntypes.Hash, lntypes.Preimage) error
+	// SettleAttempt marks the given attempt settled with the preimage. If
+	// this is a multi shard payment, this might implicitly mean the the
+	// full payment succeeded.
+	SettleAttempt(paymentHash lntypes.Hash,
+		attempt *channeldb.PaymentAttemptInfo,
+		preimage lntypes.Preimage) error
+
+	// FailAttempt marks the given attempt failed.
+	FailAttempt(lntypes.Hash, *channeldb.PaymentAttemptInfo,
+		channeldb.AttemptFailure) error
+
+	// GetAttemots returns all registered attempts for this payment, and
+	// their status.
+	GetAttempts(paymentHash lntypes.Hash) (
+		[]*channeldb.PaymentAttemptStatus, error)
 
 	// Fail transitions a payment into the Failed state, and records the
 	// reason the payment failed. After invoking this method, InitPayment
@@ -99,14 +108,16 @@ func (p *controlTower) RegisterAttempt(paymentHash lntypes.Hash,
 	return p.db.RegisterAttempt(paymentHash, attempt)
 }
 
-// Success transitions a payment into the Succeeded state. After invoking this
-// method, InitPayment should always return an error to prevent us from making
-// duplicate payments to the same payment hash. The provided preimage is
-// atomically saved to the DB for record keeping.
-func (p *controlTower) Success(paymentHash lntypes.Hash,
-	preimage lntypes.Preimage) error {
+func (p *controlTower) FailAttempt(paymentHash lntypes.Hash,
+	attempt *channeldb.PaymentAttemptInfo, f channeldb.AttemptFailure) error {
 
-	payment, err := p.db.Success(paymentHash, preimage)
+	return p.db.FailAttempt(paymentHash, attempt, f)
+}
+
+func (p *controlTower) SettleAttempt(paymentHash lntypes.Hash,
+	attempt *channeldb.PaymentAttemptInfo, preimg lntypes.Preimage) error {
+
+	payment, err := p.db.SettleAttempt(paymentHash, attempt, preimg)
 	if err != nil {
 		return err
 	}
@@ -117,6 +128,11 @@ func (p *controlTower) Success(paymentHash lntypes.Hash,
 	)
 
 	return nil
+}
+
+func (p *controlTower) GetAttempts(paymentHash lntypes.Hash) ([]*channeldb.PaymentAttemptStatus, error) {
+
+	return p.db.GetAttempts(paymentHash)
 }
 
 // createSuccessResult creates a success result to send to subscribers.

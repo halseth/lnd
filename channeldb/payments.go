@@ -32,9 +32,20 @@ var (
 	//      |-- <paymenthash>
 	//      |        |--sequence-key: <sequence number>
 	//      |        |--creation-info-key: <creation info>
-	//      |        |--attempt-info-key: <attempt info>
 	//      |        |--settle-info-key: <settle info>
 	//      |        |--fail-info-key: <fail info>
+	//      |        |
+	//      |        |--attempt-bucket (shard-bucket)
+	//      |        |        |
+	//      |        |        |-- <payment attempt ID>
+	//      |        |        |       |--attempt-info-key: <attempt info>
+	//      |        |        |       |--settle-info-key: <settle info>
+	//      |        |        |       |--fail-info-key: <fail info>
+	//      |        |        |
+	//      |        |        |-- <payment attempt ID>
+	//      |        |        |       |
+	//      |        |       ...     ...
+	//      |        |
 	//      |        |
 	//      |        |--duplicate-bucket (only for old, completed payments)
 	//      |                 |
@@ -55,6 +66,8 @@ var (
 	//     ...
 	//
 	paymentsRootBucket = []byte("payments-root-bucket")
+
+	paymentAttemptsBucket = []byte("payments-attempt-bucket")
 
 	// paymentDublicateBucket is the name of a optional sub-bucket within
 	// the payment hash bucket, that is used to hold duplicate payments to
@@ -415,13 +428,65 @@ func fetchPayment(bucket *bbolt.Bucket) (*MPPayment, error) {
 	}
 
 	// Get the PaymentAttemptInfo. This can be unset.
-	b = bucket.Get(paymentAttemptInfoKey)
-	if b != nil {
-		r = bytes.NewReader(b)
-		p.Attempt, err = deserializePaymentAttemptInfo(r)
+	var htlcs []HTLCAttempt
+	var reason *FailureReason
+
+	attempts := bucket.Bucket(paymentAttemptsBucket)
+	if attempts != nil {
+		err := attempts.ForEach(func(pid, _ []byte) error {
+			attemptBucket := attempts.Bucket(pid)
+			if attemptBucket == nil {
+				return fmt.Errorf("attempt bucket non-existing")
+			}
+
+			b = attemptBucket.Get(paymentAttemptInfoKey)
+			if b == nil {
+				return fmt.Errorf("payment attemt info not set")
+			}
+
+			r := bytes.NewReader(b)
+			attempt, err := deserializePaymentAttemptInfo(r)
+			if err != nil {
+				return err
+			}
+
+			var settle *HTLCSettleInfo
+			b = attemptBucket.Get(paymentSettleInfoKey)
+			if b != nil {
+				var preimage lntypes.Preimage
+				copy(preimage[:], b)
+				settle = &HTLCSettleInfo{
+					Preimage: preimage,
+				}
+
+			}
+
+			var failure *HTLCFailInfo
+			b = attemptBucket.Get(paymentFailInfoKey)
+			if b != nil {
+				v := FailureReason(b[0])
+				reason = &v
+				// TODO: reason not used,
+				// set and fetch fail time
+				failure = &HTLCFailInfo{}
+
+			}
+
+			htlc := HTLCAttempt{
+				PaymentID:  attempt.PaymentID,
+				SessionKey: attempt.SessionKey,
+				Route:      attempt.Route,
+				Settle:     settle,
+				Failure:    failure,
+			}
+
+			htlcs = append(htlcs, htlc)
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
+
 	}
 
 	// Get the payment preimage. This is only found for
@@ -440,7 +505,18 @@ func fetchPayment(bucket *bbolt.Bucket) (*MPPayment, error) {
 		p.Failure = &reason
 	}
 
-	return p.ToMPPayment(), nil
+	return &MPPayment{
+		sequenceNum: p.sequenceNum,
+		Info: &MPPaymentCreationInfo{
+			PaymentHash:    p.Info.PaymentHash,
+			Value:          p.Info.Value,
+			CreationTime:   p.Info.CreationDate,
+			PaymentRequest: p.Info.PaymentRequest,
+		},
+		HTLCs:         htlcs,
+		FailureReason: p.Failure,
+		Status:        p.Status,
+	}, nil
 }
 
 // DeletePayments deletes all completed and failed payments from the DB.

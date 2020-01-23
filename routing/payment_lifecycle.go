@@ -237,8 +237,9 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					//
 					// TODO(halseth): make payment codes for the actual reason we don't
 					// continue path finding.
-					err := p.router.cfg.Control.Fail(
-						p.payment.PaymentHash, *reason,
+					err := p.router.cfg.Control.FailAttempt(
+						p.payment.PaymentHash,
+						s.PaymentAttemptInfo, 0, // TODO:*reason,
 					)
 					if err != nil {
 						return [32]byte{}, nil, err
@@ -303,8 +304,9 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					//
 					// TODO(halseth): make payment codes for the actual reason we don't
 					// continue path finding.
-					err := p.router.cfg.Control.Fail(
-						p.payment.PaymentHash, *reason,
+					err := p.router.cfg.Control.FailAttempt(
+						p.payment.PaymentHash,
+						s.PaymentAttemptInfo, 0, // TODO:*reason,
 					)
 					if err != nil {
 						return [32]byte{}, nil, err
@@ -338,7 +340,10 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 			// In case of success we atomically store the db payment and
 			// move the payment to the success state.
-			err = p.router.cfg.Control.Success(p.payment.PaymentHash, result.Preimage)
+			err = p.router.cfg.Control.SettleAttempt(
+				p.payment.PaymentHash, s.PaymentAttemptInfo,
+				result.Preimage,
+			)
 			if err != nil {
 				log.Errorf("Unable to succeed payment "+
 					"attempt: %v", err)

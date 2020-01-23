@@ -1810,16 +1810,24 @@ func (r *ChannelRouter) sendPayment(
 		return [32]byte{}, nil, err
 	}
 
+	existingShards := &paymentShards{}
+	if existingAttempt != nil {
+		s := &paymentShard{
+			existingAttempt,
+		}
+		existingShards.addShard(s)
+	}
+
 	// Now set up a paymentLifecycle struct with these params, such that we
 	// can resume the payment from the current state.
 	p := &paymentLifecycle{
-		router:        r,
-		totalAmount:   totalAmt,
-		paymentHash:   paymentHash,
-		paySession:    paySession,
-		currentHeight: currentHeight,
-		attempt:       existingAttempt,
-		lastError:     nil,
+		router:         r,
+		totalAmount:    totalAmt,
+		paymentHash:    paymentHash,
+		paySession:     paySession,
+		currentHeight:  currentHeight,
+		existingShards: existingShards,
+		lastError:      nil,
 	}
 
 	// If a timeout is specified, create a timeout channel. If no timeout is

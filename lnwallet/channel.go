@@ -2690,12 +2690,14 @@ func processFeeUpdate(feeUpdate *PaymentDescriptor, nextHeight uint64,
 // signature can be submitted to the sigPool to generate all the signatures
 // asynchronously and in parallel.
 func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
+	chanType channeldb.ChannelType,
 	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
 	remoteCommitView *commitment) ([]SignJob, chan struct{}, error) {
 
 	txHash := remoteCommitView.txn.TxHash()
 	dustLimit := remoteChanCfg.DustLimit
 	feePerKw := remoteCommitView.feePerKw
+	sigHashType := HtlcSigHashType(chanType)
 
 	// With the keys generated, we'll make a slice with enough capacity to
 	// hold potentially all the HTLCs. The actual slice may be a bit
@@ -2755,7 +2757,7 @@ func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
 			Output: &wire.TxOut{
 				Value: int64(htlc.Amount.ToSatoshis()),
 			},
-			HashType:   txscript.SigHashAll,
+			HashType:   sigHashType,
 			SigHashes:  txscript.NewTxSigHashes(sigJob.Tx),
 			InputIndex: 0,
 		}
@@ -2806,7 +2808,7 @@ func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
 			Output: &wire.TxOut{
 				Value: int64(htlc.Amount.ToSatoshis()),
 			},
-			HashType:   txscript.SigHashAll,
+			HashType:   sigHashType,
 			SigHashes:  txscript.NewTxSigHashes(sigJob.Tx),
 			InputIndex: 0,
 		}
@@ -3289,7 +3291,8 @@ func (lc *LightningChannel) SignNextCommitment() (lnwire.Sig, []lnwire.Sig, []ch
 	// need to generate signatures of each of them for the remote party's
 	// commitment state. We do so in two phases: first we generate and
 	// submit the set of signature jobs to the worker pool.
-	sigBatch, cancelChan, err := genRemoteHtlcSigJobs(keyRing,
+	sigBatch, cancelChan, err := genRemoteHtlcSigJobs(
+		keyRing, lc.channelState.ChanType,
 		&lc.channelState.LocalChanCfg, &lc.channelState.RemoteChanCfg,
 		newCommitView,
 	)
@@ -3745,10 +3748,12 @@ func (lc *LightningChannel) computeView(view *htlcView, remoteChain bool,
 // directly into the pool of workers.
 func genHtlcSigValidationJobs(localCommitmentView *commitment,
 	keyRing *CommitmentKeyRing, htlcSigs []lnwire.Sig,
+	chanType channeldb.ChannelType,
 	localChanCfg, remoteChanCfg *channeldb.ChannelConfig) ([]VerifyJob, error) {
 
 	txHash := localCommitmentView.txn.TxHash()
 	feePerKw := localCommitmentView.feePerKw
+	sigHashType := HtlcSigHashType(chanType)
 
 	// With the required state generated, we'll create a slice with large
 	// enough capacity to hold verification jobs for all HTLC's in this
@@ -3801,7 +3806,7 @@ func genHtlcSigValidationJobs(localCommitmentView *commitment,
 				hashCache := txscript.NewTxSigHashes(successTx)
 				sigHash, err := txscript.CalcWitnessSigHash(
 					htlc.ourWitnessScript, hashCache,
-					txscript.SigHashAll, successTx, 0,
+					sigHashType, successTx, 0,
 					int64(htlc.Amount.ToSatoshis()),
 				)
 				if err != nil {
@@ -3855,7 +3860,7 @@ func genHtlcSigValidationJobs(localCommitmentView *commitment,
 				hashCache := txscript.NewTxSigHashes(timeoutTx)
 				sigHash, err := txscript.CalcWitnessSigHash(
 					htlc.ourWitnessScript, hashCache,
-					txscript.SigHashAll, timeoutTx, 0,
+					sigHashType, timeoutTx, 0,
 					int64(htlc.Amount.ToSatoshis()),
 				)
 				if err != nil {
@@ -4061,7 +4066,8 @@ func (lc *LightningChannel) ReceiveNewCommitment(commitSig lnwire.Sig,
 	// generated, we'll submit these jobs to the worker pool.
 	verifyJobs, err := genHtlcSigValidationJobs(
 		localCommitmentView, keyRing, htlcSigs,
-		&lc.channelState.LocalChanCfg, &lc.channelState.RemoteChanCfg,
+		lc.channelState.ChanType, &lc.channelState.LocalChanCfg,
+		&lc.channelState.RemoteChanCfg,
 	)
 	if err != nil {
 		return err
@@ -5305,8 +5311,9 @@ func newOutgoingHtlcResolution(signer input.Signer,
 
 	// With the sign desc created, we can now construct the full witness
 	// for the timeout transaction, and populate it as well.
+	sigHashType := HtlcSigHashType(chanType)
 	timeoutWitness, err := input.SenderHtlcSpendTimeout(
-		htlc.Signature, signer, &timeoutSignDesc, timeoutTx,
+		htlc.Signature, sigHashType, signer, &timeoutSignDesc, timeoutTx,
 	)
 	if err != nil {
 		return nil, err
@@ -5404,6 +5411,7 @@ func newIncomingHtlcResolution(signer input.Signer,
 
 	// First, we'll reconstruct the original HTLC success transaction,
 	// taking into account the fee rate used.
+
 	htlcFee := htlcSuccessFee(feePerKw)
 	secondLevelOutputAmt := htlc.Amt.ToSatoshis() - htlcFee
 	successTx, err := createHtlcSuccessTx(
@@ -5432,8 +5440,10 @@ func newIncomingHtlcResolution(signer input.Signer,
 	// the success transaction. Don't specify the preimage yet. The preimage
 	// will be supplied by the contract resolver, either directly or when it
 	// becomes known.
+	sigHashType := HtlcSigHashType(chanType)
 	successWitness, err := input.ReceiverHtlcSpendRedeem(
-		htlc.Signature, nil, signer, &successSignDesc, successTx,
+		htlc.Signature, sigHashType, nil, signer, &successSignDesc,
+		successTx,
 	)
 	if err != nil {
 		return nil, err

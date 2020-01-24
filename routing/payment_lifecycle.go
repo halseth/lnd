@@ -314,6 +314,8 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 						p.payment.PaymentHash, *reason, sendErr)
 
 					// Terminal state, return the error we encountered.
+
+					// set terminal error?
 					return [32]byte{}, nil, sendErr
 				}
 				// Save the forwarding error so it can be returned if
@@ -371,6 +373,10 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					// Terminal state, return the error we encountered.
 					return [32]byte{}, nil, sendErr
 				}
+
+				// MSUT FAIL ATTEMPT HERE ALSO!
+
+				// egt rid of last err?
 				// Save the forwarding error so it can be returned if
 				// this turns out to be the last attempt.
 				p.lastError = sendErr

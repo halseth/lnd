@@ -32,6 +32,8 @@ func (e errNoRoute) Error() string {
 // larger payment.
 type paymentShard struct {
 	*channeldb.HTLCAttemptInfo
+
+	ResultChan chan *RouteResult
 }
 
 // paymentShards holds a set of active payment shards.
@@ -115,78 +117,132 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 		go p.collectShard(s, shardResults, criticalErr)
 	}
 
+	type paymentFailure struct {
+		failureCode channeldb.FailureReason
+		err         error
+	}
+
+	var (
+		success         = false
+		terminalFailure *paymentFailure
+		routeFailure    *paymentFailure
+	)
+
 	// We'll continue until either our payment succeeds, or we encounter a
 	// critical error during path finding.
 	for {
 
-		// If this payment had no existing payment attempt, we create
-		// and send one now.
-		var rt *RouteIntent
-		if len(shards.shards) == 0 {
-			// Before we attempt this next payment, we'll check to see if either
-			// we've gone past the payment attempt timeout, or the router is
-			// exiting. In either case, we'll stop this payment attempt short. If a
-			// timeout is not applicable, timeoutChan will be nil.
-			select {
-			case <-p.timeoutChan:
-				// Mark the payment as failed because of the
-				// timeout.
-				err := p.router.cfg.Control.Fail(
-					p.paymentHash, channeldb.FailureReasonTimeout,
-				)
-				if err != nil {
-					return [32]byte{}, nil, err
-				}
+		var failure *paymentFailure
+		if terminalFailure != nil {
+			failure = terminalFailure
+		} else if routeFailure != nil {
+			failure = routeFailure
+		}
 
-				errStr := fmt.Sprintf("payment attempt not completed " +
-					"before timeout")
-
-				return [32]byte{}, nil, newErr(ErrPaymentAttemptTimeout, errStr)
-
-			case <-p.router.quit:
-				// The payment will be resumed from the current state
-				// after restart.
-				return [32]byte{}, nil, ErrRouterShuttingDown
-
-			default:
-				// Fall through if we haven't hit our time limit, or
-				// are expiring.
+		if len(shards.shards) == 0 && (success || failure != nil) {
+			log.Debugf("Payment done")
+			// We are done! Get the final attempt results from the
+			// database.
+			attempts, err := p.router.cfg.Control.GetAttempts(
+				p.paymentHash,
+			)
+			if err != nil {
+				log.Errorf("Unable to succeed payment "+
+					"attempt: %v", err)
+				return [32]byte{}, nil, err
 			}
 
-			// Create a new payment attempt from the given payment session.
-			newRoute, routeErr := p.paySession.RequestRoute(
-				p.totalAmount, uint32(p.currentHeight),
-			)
-			select {
-			case err := <-routeErr:
-				log.Warnf("Failed to find route for payment %x: %v",
-					p.paymentHash, err)
+			// Find the first successful shard and return the
+			// preimage and route.
+			for _, a := range attempts {
+				if a.Settle != nil {
+					return a.Settle.Preimage, &a.Route, nil
+				}
 
-				// Convert error to payment-level failure.
-				failure := errorToPaymentFailure(err)
+			}
 
+			if failure != nil {
 				// If we're unable to successfully make a payment using
 				// any of the routes we've found, then mark the payment
 				// as permanently failed.
 				saveErr := p.router.cfg.Control.Fail(
-					p.paymentHash, failure,
+					p.paymentHash, failure.failureCode,
 				)
 				if saveErr != nil {
 					return [32]byte{}, nil, saveErr
 				}
 
-				// If there was an error already recorded for this
-				// payment, we'll return that.
-				if p.lastError != nil {
-					return [32]byte{}, nil, errNoRoute{lastError: p.lastError}
-				}
-
 				// Terminal state, return.
-				return [32]byte{}, nil, err
-
-			case rt = <-newRoute:
+				return [32]byte{}, nil, failure.err
 			}
 
+			// TODO: payment level failure must stay.
+			return [32]byte{}, nil, fmt.Errorf("No successful "+
+				"attempts: %v", attempts[0].Failure)
+
+		}
+
+		var (
+			newRoute chan *RouteIntent
+			routeErr chan error
+		)
+
+		// If we are not done and there is still value to be sent,
+		// request more routes to send shards along.
+		remValue := p.totalAmount - shards.totalValue
+		if !success && routeFailure == nil && remValue > 0 {
+			log.Debugf("Payment not done, requesting route")
+			// When the facts change, I change my mind.
+			newRoute, routeErr = p.paySession.RequestRoute(
+				remValue, uint32(p.currentHeight),
+			)
+		}
+
+		// Wait for an exit condition to be reached, or a shard result
+		// to be available.
+		select {
+
+		// One of the shard goroutines reported a critical error. Exit
+		// immediately.
+		case err := <-criticalErr:
+			return [32]byte{}, nil, err
+
+		// The router is exiting.
+		case <-p.router.quit:
+			// The payment will be resumed from the current state
+			// after restart.
+			return [32]byte{}, nil, ErrRouterShuttingDown
+
+		// Before we attempt this next payment, we'll check to see if either
+		// we've gone past the payment attempt timeout, or the router is
+		// exiting. In either case, we'll stop this payment attempt short. If a
+		// timeout is not applicable, timeoutChan will be nil.
+		case <-p.timeoutChan:
+			errStr := fmt.Sprintf("payment attempt not completed " +
+				"before timeout")
+
+			terminalFailure = &paymentFailure{
+				failureCode: channeldb.FailureReasonTimeout,
+				err:         newErr(ErrPaymentAttemptTimeout, errStr),
+			}
+
+		case err := <-routeErr:
+			log.Warnf("Failed to find route for payment %x: %v",
+				p.paymentHash, err)
+
+			// Convert error to payment-level failure.
+			routeFailure = &paymentFailure{
+				failureCode: errorToPaymentFailure(err),
+				err:         err,
+			}
+
+			// If there was an error already recorded for this
+			// payment, we'll return that.
+			if p.lastError != nil {
+				routeFailure.err = errNoRoute{lastError: p.lastError}
+			}
+
+		case rt := <-newRoute:
 			// Using the route received from the payment session,
 			// create a new shard to send.
 			firstHop, htlcAdd, attempt, err := p.createNewPaymentAttempt(
@@ -200,12 +256,11 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				log.Debugf("Invalid route provided for payment %x: %v",
 					p.paymentHash, err)
 
-				controlErr := p.router.cfg.Control.Fail(
-					p.paymentHash, channeldb.FailureReasonError,
-				)
-				if controlErr != nil {
-					return [32]byte{}, nil, controlErr
+				terminalFailure = &paymentFailure{
+					failureCode: channeldb.FailureReasonError,
+					err:         err,
 				}
+				break
 			}
 
 			// In any case, don't continue if there is an error.
@@ -229,6 +284,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			// shards.
 			s := &paymentShard{
 				attempt,
+				rt.ResultChan,
 			}
 			shards.addShard(s)
 
@@ -262,6 +318,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					log.Debugf("Payment %x failed: final_outcome=%v, raw_err=%v",
 						p.paymentHash, *reason, sendErr)
 
+					// TODO: must wait for shards before failing.
 					// Mark the payment failed with no route.
 					//
 					// TODO(halseth): make payment codes for the actual reason we don't
@@ -292,23 +349,11 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			// when available.
 			p.wgCollectShard.Add(1)
 			go p.collectShard(s, shardResults, criticalErr)
-		}
-
-		// Wait for an exit condition to be reached, or a shard result
-		// to be available.
-		select {
-
-		// One of the shard goroutines reported a critical error. Exit
-		// immediately.
-		case err := <-criticalErr:
-			return [32]byte{}, nil, err
-
-		// The router is exiting.
-		case <-p.router.quit:
-			return [32]byte{}, nil, ErrRouterShuttingDown
 
 		// A result for one of the shards is available.
 		case s := <-shardResults:
+			log.Debugf("got shard resutl")
+			routeFailure = nil
 			result := s.PaymentResult
 
 			// In case of a payment failure, we use the error to decide
@@ -326,7 +371,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					return [32]byte{}, nil, err
 				}
 
-				rt.ResultChan <- &RouteResult{
+				s.ResultChan <- &RouteResult{
 					Err: result.Error,
 				}
 
@@ -341,6 +386,8 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				if reason != nil {
 					log.Debugf("Payment %x failed: final_outcome=%v, raw_err=%v",
 						p.paymentHash, *reason, sendErr)
+
+					// TODO: wait for attempts
 
 					// Mark the payment failed with no route.
 					//
@@ -391,15 +438,17 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					"attempt: %v", err)
 				return [32]byte{}, nil, err
 			}
+			shards.removeShard(s.paymentShard)
 
 			// TOOD: unify with settle/fail attempt
-			rt.ResultChan <- &RouteResult{
+			s.ResultChan <- &RouteResult{
 				Preimage: result.Preimage,
 			}
 
-			// Terminal state, return the preimage and the route
-			// taken.
-			return result.Preimage, &s.Route, nil
+			// Since the assumption is that the whole payment is
+			// successful when one shard finishes, mark us done to
+			// wait for any outstanding shards.
+			success = true
 		}
 	}
 }

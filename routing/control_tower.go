@@ -36,6 +36,10 @@ type ControlTower interface {
 	// FailAttempt marks the given payment attempt failed.
 	FailAttempt(lntypes.Hash, uint64, error) error
 
+	// GetAttempts returns all registered attempts for this payment, and
+	// their status.
+	GetAttempts(paymentHash lntypes.Hash) ([]channeldb.HTLCAttempt, error)
+
 	// Fail transitions a payment into the Failed state, and records the
 	// ultimate reason the payment failed. Note that this should only be
 	// called when all active active attempts are already failed. After
@@ -139,6 +143,14 @@ func (p *controlTower) FailAttempt(paymentHash lntypes.Hash,
 	failInfo := marshallError(reason, time.Now())
 
 	return p.db.FailAttempt(paymentHash, attemptID, failInfo)
+}
+
+// GetAttempts returns all registered attempts for this payment, and
+// their status.
+func (p *controlTower) GetAttempts(paymentHash lntypes.Hash) (
+	[]channeldb.HTLCAttempt, error) {
+
+	return p.db.GetAttempts(paymentHash)
 }
 
 // createSuccessResult creates a success result to send to subscribers.

@@ -1833,6 +1833,7 @@ func (r *ChannelRouter) sendPayment(
 	for _, a := range existingAttempts {
 		s := &paymentShard{
 			&a,
+			make(chan *RouteResult, 1), // ignored
 		}
 		existingShards.addShard(s)
 	}

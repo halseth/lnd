@@ -1,7 +1,9 @@
 package routing
 
 import (
+	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -64,6 +66,7 @@ func newIntegratedRoutingContext(t *testing.T) *integratedRoutingContext {
 
 		pathFindingCfg: PathFindingConfig{
 			PaymentAttemptPenalty: 1000,
+			MinProbability:        0.01,
 		},
 
 		source: source,
@@ -77,6 +80,10 @@ func newIntegratedRoutingContext(t *testing.T) *integratedRoutingContext {
 type htlcAttempt struct {
 	route   *route.Route
 	success bool
+}
+
+func (h htlcAttempt) String() string {
+	return fmt.Sprintf("success=%v, route=%v", h.success, h.route)
 }
 
 // testPayment launches a test payment and asserts that it is completed after
@@ -119,10 +126,21 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 		return bandwidthHints, nil
 	}
 
+	destFeatures := lnwire.NewRawFeatureVector(
+		lnwire.TLVOnionPayloadOptional,
+		lnwire.PaymentAddrOptional,
+		lnwire.MPPOptional,
+	)
+
+	var paymentAddr [32]byte
 	payment := LightningPayment{
 		FinalCLTVDelta: uint16(c.finalExpiry),
 		FeeLimit:       lnwire.MaxMilliSatoshi,
 		Target:         c.target.pubkey,
+		PaymentAddr:    &paymentAddr,
+		DestFeatures:   lnwire.NewFeatureVector(destFeatures, nil),
+		Amount:         c.amt,
+		CltvLimit:      math.MaxUint32,
 	}
 
 	session := &paymentSession{
@@ -134,10 +152,12 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 		},
 		pathFindingConfig: c.pathFindingCfg,
 		missionControl:    mc,
+		minShardMaxAmt:    lnwire.NewMSatFromSatoshis(5000),
 	}
 
 	// Now the payment control loop starts. It will keep trying routes until
 	// the payment succeeds.
+	var amtRemaining = payment.Amount
 	for {
 		// Create bandwidth hints based on local channel balances.
 		bandwidthHints := map[uint64]lnwire.MilliSatoshi{}
@@ -147,10 +167,10 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 
 		// Find a route.
 		route, err := session.RequestRoute(
-			c.amt, lnwire.MaxMilliSatoshi, 0,
+			amtRemaining, lnwire.MaxMilliSatoshi, 0,
 		)
 		if err != nil {
-			return nil, err
+			return attempts, err
 		}
 
 		// Send out the htlc on the mock graph.
@@ -167,6 +187,8 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 			success: success,
 		})
 
+		fmt.Printf("Attempt %v: %v\n", success, route)
+
 		// Process the result.
 		if success {
 			err := mc.ReportPaymentSuccess(pid, route)
@@ -174,9 +196,16 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 				c.t.Fatal(err)
 			}
 
-			// If the payment is successful, the control loop can be
-			// broken out of.
-			break
+			amtRemaining -= route.ReceiverAmt()
+
+			// If the full amount has been paid, the payment is
+			// successful and the control loop can be terminated.
+			if amtRemaining == 0 {
+				break
+			}
+
+			// Otherwise try to send the remaining amount.
+			continue
 		}
 
 		// Failure, update mission control and retry.

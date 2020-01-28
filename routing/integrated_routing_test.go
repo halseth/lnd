@@ -2,6 +2,9 @@ package routing
 
 import (
 	"testing"
+
+	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 // TestProbabilityExtrapolation tests that probabilities for tried channels are
@@ -68,5 +71,186 @@ func TestProbabilityExtrapolation(t *testing.T) {
 	}
 	if len(attempts) != 11 {
 		t.Fatalf("expected 11 attempts, but needed %v", len(attempts))
+	}
+}
+
+type mppSendTestCase struct {
+	name              string
+	amt               btcutil.Amount
+	expectedAttempts  int
+	expectedSuccesses []expectedHtlcSuccess
+	graph             func(g *mockGraph)
+	expectedFailure   bool
+}
+
+func onePathGraph(g *mockGraph) {
+	// Create the following network of nodes:
+	// source -> intermediate1 -> target
+
+	const im1NodeID = 3
+	intermediate1 := newMockNode(im1NodeID)
+	g.addNode(intermediate1)
+
+	g.addChannel(13, sourceNodeID, im1NodeID, 200000)
+	g.addChannel(32, targetNodeID, im1NodeID, 100000)
+}
+
+func twoPathGraph(g *mockGraph) {
+	// Create the following network of nodes:
+	// source -> intermediate1 -> target
+	// source -> intermediate2 -> target
+
+	const im1NodeID = 3
+	intermediate1 := newMockNode(im1NodeID)
+	g.addNode(intermediate1)
+
+	const im2NodeID = 4
+	intermediate2 := newMockNode(im2NodeID)
+	g.addNode(intermediate2)
+
+	g.addChannel(13, sourceNodeID, im1NodeID, 200000)
+	g.addChannel(14, sourceNodeID, im2NodeID, 200000)
+	g.addChannel(32, targetNodeID, im1NodeID, 100000)
+	g.addChannel(42, targetNodeID, im2NodeID, 100000)
+}
+
+var mppTestCases = []mppSendTestCase{
+	// Test a two-path graph with sufficient liquidity. It is expected that
+	// pathfinding will try first try to send the full amount via the two
+	// available routes. When that fails, it will half the amount to 35k sat
+	// and retry. That attempt reaches the target successfully. Then the
+	// same route is tried again. Because the channel only had 50k sat, it
+	// will fail. Finally the second route is tried for 35k and it succeeds
+	// too. Mpp payment complete.
+	{
+
+		name:             "sufficient inbound",
+		graph:            twoPathGraph,
+		amt:              70000,
+		expectedAttempts: 5,
+		expectedSuccesses: []expectedHtlcSuccess{
+			{
+				amt:   35000,
+				chans: []uint64{13, 32},
+			},
+			{
+				amt:   35000,
+				chans: []uint64{14, 42},
+			},
+		},
+	},
+
+	// Test that a payment is split in multiple parts that all use the same
+	// route if the full amount cannot be sent in a single htlc.
+	{
+
+		name:             "one path split",
+		graph:            onePathGraph,
+		amt:              70000,
+		expectedAttempts: 7,
+		expectedSuccesses: []expectedHtlcSuccess{
+			{
+				amt:   35000,
+				chans: []uint64{13, 32},
+			},
+			{
+				amt:   8750,
+				chans: []uint64{13, 32},
+			},
+		},
+		expectedFailure: true,
+	},
+}
+
+// TestMppSend tests that a payment can be completed using multiple shards.
+func TestMppSend(t *testing.T) {
+	for _, testCase := range mppTestCases {
+		testCase := testCase
+
+		t.Run(testCase.name, func(t *testing.T) {
+			testMppSend(t, &testCase)
+		})
+	}
+}
+
+func testMppSend(t *testing.T, testCase *mppSendTestCase) {
+	ctx := newIntegratedRoutingContext(t)
+
+	g := ctx.graph
+	testCase.graph(g)
+
+	ctx.amt = lnwire.NewMSatFromSatoshis(testCase.amt)
+
+	attempts, err := ctx.testPayment()
+	switch {
+	case err == nil && testCase.expectedFailure:
+		t.Fatal("expected payment to fail")
+	case err != nil && !testCase.expectedFailure:
+		t.Fatal("expected payment to succeed")
+	}
+
+	if len(attempts) != testCase.expectedAttempts {
+		t.Fatalf("expected %v attempts, but needed %v",
+			testCase.expectedAttempts, len(attempts),
+		)
+	}
+
+	assertSuccessAttempts(t, attempts, testCase.expectedSuccesses)
+}
+
+// expectedHtlcSuccess describes an expected successful htlc attempt.
+type expectedHtlcSuccess struct {
+	amt   btcutil.Amount
+	chans []uint64
+}
+
+// equals matches the expectation with an actual attempt.
+func (e *expectedHtlcSuccess) equals(a *htlcAttempt) bool {
+	if a.route.TotalAmount !=
+		lnwire.NewMSatFromSatoshis(e.amt) {
+
+		return false
+	}
+
+	if len(a.route.Hops) != len(e.chans) {
+		return false
+	}
+
+	for i, h := range a.route.Hops {
+		if h.ChannelID != e.chans[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// assertSuccessAttempts asserts that the set of successful htlc attempts
+// matches the given expectation.
+func assertSuccessAttempts(t *testing.T, attempts []htlcAttempt,
+	expected []expectedHtlcSuccess) {
+
+	successCount := 0
+loop:
+	for _, a := range attempts {
+		if !a.success {
+			continue
+		}
+
+		successCount++
+
+		for _, exp := range expected {
+			// nolint: scopelint
+			if exp.equals(&a) {
+				continue loop
+			}
+		}
+
+		t.Fatalf("htlc success %v not found", a)
+	}
+
+	if successCount != len(expected) {
+		t.Fatalf("expected %v successful htlcs, but got %v",
+			expected, successCount)
 	}
 }

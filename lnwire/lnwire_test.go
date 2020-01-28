@@ -570,8 +570,9 @@ func TestLightningWireProtocol(t *testing.T) {
 		MsgChannelAnnouncement: func(v []reflect.Value, r *rand.Rand) {
 			var err error
 			req := ChannelAnnouncement{
-				ShortChannelID: NewShortChanIDFromInt(uint64(r.Int63())),
-				Features:       randRawFeatureVector(r),
+				ShortChannelID:  NewShortChanIDFromInt(uint64(r.Int63())),
+				Features:        randRawFeatureVector(r),
+				ExtraOpaqueData: make([]byte, 0),
 			}
 			req.NodeSig1, err = NewSigFromSignature(testSig)
 			if err != nil {
@@ -643,6 +644,7 @@ func TestLightningWireProtocol(t *testing.T) {
 					G: uint8(r.Int31()),
 					B: uint8(r.Int31()),
 				},
+				ExtraOpaqueData: make([]byte, 0),
 			}
 			req.Signature, err = NewSigFromSignature(testSig)
 			if err != nil {
@@ -698,6 +700,7 @@ func TestLightningWireProtocol(t *testing.T) {
 				HtlcMaximumMsat: maxHtlc,
 				BaseFee:         uint32(r.Int31()),
 				FeeRate:         uint32(r.Int31()),
+				ExtraOpaqueData: make([]byte, 0),
 			}
 			req.Signature, err = NewSigFromSignature(testSig)
 			if err != nil {
@@ -726,7 +729,8 @@ func TestLightningWireProtocol(t *testing.T) {
 		MsgAnnounceSignatures: func(v []reflect.Value, r *rand.Rand) {
 			var err error
 			req := AnnounceSignatures{
-				ShortChannelID: NewShortChanIDFromInt(uint64(r.Int63())),
+				ShortChannelID:  NewShortChanIDFromInt(uint64(r.Int63())),
+				ExtraOpaqueData: make([]byte, 0),
 			}
 
 			req.NodeSignature, err = NewSigFromSignature(testSig)

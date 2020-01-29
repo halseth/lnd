@@ -3034,6 +3034,10 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 	localBalance := localCommit.LocalBalance
 	remoteBalance := localCommit.RemoteBalance
 
+	//	if dbChannel.IsInitiator && dbChannel.ChanType.HasAnchors() {
+	//		localBalance += lnwire.NewMSatFromSatoshis(2 * 330)
+	//	}
+
 	// As an artifact of our usage of mSAT internally, either party
 	// may end up in a state where they're holding a fractional
 	// amount of satoshis which can't be expressed within the

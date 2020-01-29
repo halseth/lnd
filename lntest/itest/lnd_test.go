@@ -1101,8 +1101,8 @@ func testBasicChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	// Run through the test with combinations of all the different
 	// commitment types.
 	allTypes := []commitType{
-		commitTypeLegacy,
-		commitTypeTweakless,
+		//	commitTypeLegacy,
+		//	commitTypeTweakless,
 		commitTypeAnchors,
 	}
 

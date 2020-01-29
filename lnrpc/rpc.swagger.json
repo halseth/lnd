@@ -1885,6 +1885,11 @@
           "format": "boolean",
           "description": "*\nIf true, then this channel uses the modern commitment format where the key\nin the output of the remote party does not change each state. This makes\nback up and recovery easier as when the channel is closed, the funds go\ndirectly to that key."
         },
+        "anchor_output_size": {
+          "type": "string",
+          "format": "int64",
+          "description": "*\nIf non-zero, then this channel uses a commitment format that has anchor\noutputs on the commitments, allowing fee bumping after a force close\ntransaction has been broadcast."
+        },
         "lifetime": {
           "type": "string",
           "format": "int64",

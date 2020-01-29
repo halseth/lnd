@@ -3069,6 +3069,7 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 		LocalChanReserveSat:   int64(dbChannel.LocalChanCfg.ChanReserve),
 		RemoteChanReserveSat:  int64(dbChannel.RemoteChanCfg.ChanReserve),
 		StaticRemoteKey:       dbChannel.ChanType.IsTweakless(),
+		AnchorOutputSize:      int64(dbChannel.AnchorSize()),
 	}
 
 	for i, htlc := range localCommit.Htlcs {

@@ -4883,6 +4883,203 @@ func testSingleHopSendToRouteCase(net *lntest.NetworkHarness, t *harnessTest,
 	closeChannelAndAssert(ctxt, t, net, carol, chanPointCarol, false)
 }
 
+func testSendToRouteMultiShard(net *lntest.NetworkHarness, t *harnessTest) {
+	ctxb := context.Background()
+
+	const chanAmt = btcutil.Amount(100000)
+	var networkChans []*lnrpc.ChannelPoint
+
+	nodes := []*lntest.HarnessNode{net.Alice, net.Bob}
+	// Alice -> Carol -> Bob
+	//      \-> Dave ___/^
+	nodeNames := []string{"carol", "dave"}
+	for _, name := range nodeNames {
+		node, err := net.NewNode(name, nil)
+		if err != nil {
+			t.Fatalf("unable to create new nodes: %v", err)
+		}
+		defer shutdownAndAssert(net, t, node)
+
+		nodes = append(nodes, node)
+
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+		if err := net.ConnectNodes(ctxt, node, net.Bob); err != nil {
+			t.Fatalf("unable to connect carol to alice: %v", err)
+		}
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		err = net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, node)
+		if err != nil {
+			t.Fatalf("unable to send coins to bob: %v", err)
+		}
+		ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+		chanPointBob := openChannelAndAssert(
+			ctxt, t, net, node, net.Bob,
+			lntest.OpenChannelParams{
+				Amt: chanAmt,
+			},
+		)
+
+		//		ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
+		//		defer closeChannelAndAssert(ctxt, t, net, node, chanPointBob, false)
+
+		networkChans = append(networkChans, chanPointBob)
+
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		if err := net.ConnectNodes(ctxt, net.Alice, node); err != nil {
+			t.Fatalf("unable to connect carol to alice: %v", err)
+		}
+		ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+		chanPointAlice := openChannelAndAssert(
+			ctxt, t, net, net.Alice, node,
+			lntest.OpenChannelParams{
+				Amt: chanAmt,
+			},
+		)
+
+		//kj		ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
+		//kj		defer closeChannelAndAssert(ctxt, t, net, net.Alice, chanPointAlice, false)
+
+		networkChans = append(networkChans, chanPointAlice)
+	}
+
+	// Wait for all nodes to have seen all channels.
+	for _, chanPoint := range networkChans {
+		for _, node := range nodes {
+			txid, err := lnd.GetChanPointFundingTxid(chanPoint)
+			if err != nil {
+				t.Fatalf("unable to get txid: %v", err)
+			}
+			point := wire.OutPoint{
+				Hash:  *txid,
+				Index: chanPoint.OutputIndex,
+			}
+
+			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			if err != nil {
+				t.Fatalf("(%d): timeout waiting for "+
+					"channel(%s) open: %v",
+					node.NodeID, point, err)
+			}
+		}
+	}
+
+	// Query for routes to pay from Alice to Bob.
+	// We set FinalCltvDelta to 40 since by default QueryRoutes returns
+	// the last hop with a final cltv delta of 9 where as the default in
+	// htlcswitch is 40.
+	const paymentAmt = 1000
+	routesReq := &lnrpc.QueryRoutesRequest{
+		PubKey:         net.Bob.PubKeyStr,
+		Amt:            paymentAmt / 2,
+		FinalCltvDelta: lnd.DefaultBitcoinTimeLockDelta,
+	}
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+	routes, err := net.Alice.QueryRoutes(ctxt, routesReq)
+	if err != nil {
+		t.Fatalf("unable to get route: %v", err)
+	}
+
+	// Create 1 invoice for Bob, which expect a payment from Alice for 1k
+	// satoshis with a different preimage each time.
+	const numPayments = 1
+	payReqs, rHashes, _, err := createPayReqs(
+		net.Bob, paymentAmt, numPayments,
+	)
+	if err != nil {
+		t.Fatalf("unable to create pay reqs: %v", err)
+	}
+
+	var payAddrs [][]byte
+	for _, payReq := range payReqs {
+		ctx, _ := context.WithTimeout(
+			context.Background(), defaultTimeout,
+		)
+		resp, err := net.Alice.DecodePayReq(
+			ctx,
+			&lnrpc.PayReqString{PayReq: payReq},
+		)
+		if err != nil {
+			t.Fatalf("decode pay req: %v", err)
+		}
+		payAddrs = append(payAddrs, resp.PaymentAddr)
+	}
+
+	time.Sleep(time.Millisecond * 500)
+
+	// Using Alice as the source, pay to the 5 invoices from Carol created
+	// above.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	alicePayStream, err := net.Alice.SendToRoute(ctxt)
+	if err != nil {
+		t.Fatalf("unable to create payment stream for alice: %v", err)
+	}
+
+	r := routes.Routes[0]
+
+	//setMPPFields := func(i int) {
+	hop := r.Hops[len(r.Hops)-1]
+	hop.TlvPayload = true
+	hop.MppRecord = &lnrpc.MPPRecord{
+		PaymentAddr:  payAddrs[0],
+		TotalAmtMsat: paymentAmt * 1000,
+	}
+	//	}
+
+	for _, rHash := range rHashes {
+
+		for i := 0; i < 2; i++ {
+
+			sendReq := &lnrpc.SendToRouteRequest{
+				PaymentHash: rHash,
+				Route:       r,
+			}
+			err := alicePayStream.Send(sendReq)
+			if err != nil {
+				t.Fatalf("unable to send payment: %v", err)
+			}
+		}
+	}
+
+	for range rHashes {
+		for i := 0; i < 2; i++ {
+			resp, err := alicePayStream.Recv()
+			if err != nil {
+				t.Fatalf("unable to send payment: %v", err)
+			}
+			if resp.PaymentError != "" {
+				t.Fatalf("received payment error: %v", resp.PaymentError)
+			}
+		}
+	}
+
+	// When asserting the amount of satoshis moved, we'll factor in the
+	// default base fee, as we didn't modify the fee structure when
+	// creating the seed nodes in the network.
+	const baseFee = 1
+
+	// At this point all the channels within our proto network should be
+	// shifted by 5k satoshis in the direction of Carol, the sink within the
+	// payment flow generated above. The order of asserts corresponds to
+	// increasing of time is needed to embed the HTLC in commitment
+	// transaction, in channel Alice->Bob->Carol, order is Carol, Bob,
+	// Alice.
+	//	const amountPaid = int64(5000)
+	//	assertAmountPaid(t, "Bob(local) => Carol(remote)", carol,
+	//		bobFundPoint, int64(0), amountPaid)
+	//	assertAmountPaid(t, "Bob(local) => Carol(remote)", net.Bob,
+	//		bobFundPoint, amountPaid, int64(0))
+	//	assertAmountPaid(t, "Alice(local) => Bob(remote)", net.Bob,
+	//		aliceFundPoint, int64(0), amountPaid+(baseFee*numPayments))
+	//	assertAmountPaid(t, "Alice(local) => Bob(remote)", net.Alice,
+	//		aliceFundPoint, amountPaid+(baseFee*numPayments), int64(0))
+
+	//	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
+	//	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPointAlice, false)
+	//	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
+	//	closeChannelAndAssert(ctxt, t, net, carol, chanPointBob, false)
+}
+
 // testMultiHopSendToRoute tests that payments are properly processed
 // through a provided route. We'll create the following network topology:
 //      Alice --100k--> Bob --100k--> Carol
@@ -15064,6 +15261,7 @@ var testsCases = []*testCase{
 		name: "multi-hop send to route",
 		test: testMultiHopSendToRoute,
 	},
+
 	{
 		name: "send to route error propagation",
 		test: testSendToRouteErrorPropagation,
@@ -15248,6 +15446,10 @@ var testsCases = []*testCase{
 	{
 		name: "external channel funding",
 		test: testExternalFundingChanPoint,
+	},
+	{
+		name: "send to route mpp",
+		test: testSendToRouteMultiShard,
 	},
 }
 

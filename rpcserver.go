@@ -2557,6 +2557,14 @@ func (r *rpcServer) ChannelBalance(ctx context.Context,
 	var balance btcutil.Amount
 	for _, channel := range openChannels {
 		balance += channel.LocalCommitment.LocalBalance.ToSatoshis()
+
+		// To be consistent with balance shown across channels
+		// regardless of channel type, add any anchor fees we are
+		// paying for the two anchors back to our balance if we are the
+		// initiator.
+		if channel.IsInitiator {
+			balance += 2 * channel.AnchorSize()
+		}
 	}
 
 	pendingChannels, err := r.server.chanDB.FetchPendingChannels()

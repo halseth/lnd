@@ -1356,6 +1356,14 @@ message Channel {
     */
     bool static_remote_key = 22 [json_name = "static_remote_key"];
 
+
+    /**
+    If non-zero, then this channel uses a commitment format that has anchor
+    outputs on the commitments, allowing fee bumping after a force close
+    transaction has been broadcast.
+    */
+    int64 anchor_output_size = 26 [json_name = "anchor_output_size"];
+
     /**
     The number of seconds that the channel has been monitored by the channel
     scoring system. Scores are currently not persisted, so this value may be

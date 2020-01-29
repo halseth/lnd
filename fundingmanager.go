@@ -1231,6 +1231,20 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 		lnwire.StaticRemoteKeyOptional,
 	)
 	tweaklessCommitment := localTweakless && remoteTweakless
+
+	// If both peers are signalling support for anchor commitments, this
+	// implicitly mean we'll create the channel of this type. Note that
+	// this also enables tweakless commitments, as anchor commitments are
+	// always tweakless.
+	localAnchors := fmsg.peer.LocalFeatures().HasFeature(
+		lnwire.AnchorsOptional,
+	)
+	remoteAnchors := fmsg.peer.RemoteFeatures().HasFeature(
+		lnwire.AnchorsOptional,
+	)
+	anchorCommitment := localAnchors && remoteAnchors
+	tweaklessCommitment = tweaklessCommitment || anchorCommitment
+
 	chainHash := chainhash.Hash(msg.ChainHash)
 	req := &lnwallet.InitFundingReserveMsg{
 		ChainHash:        &chainHash,
@@ -1245,7 +1259,7 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 		Flags:            msg.ChannelFlags,
 		MinConfs:         1,
 		Tweakless:        tweaklessCommitment,
-		AnchorOutputs:    false,
+		AnchorOutputs:    anchorCommitment,
 	}
 
 	reservation, err := f.cfg.Wallet.InitChannelReservation(req)
@@ -2904,6 +2918,20 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		lnwire.StaticRemoteKeyOptional,
 	)
 	tweaklessCommitment := localTweakless && remoteTweakless
+
+	// If both peers are signalling support for anchor commitments, this
+	// implicitly mean we'll create the channel of this type. Note that
+	// this also enables tweakless commitments, as anchor commitments are
+	// always tweakless.
+	localAnchors := msg.peer.LocalFeatures().HasFeature(
+		lnwire.AnchorsOptional,
+	)
+	remoteAnchors := msg.peer.RemoteFeatures().HasFeature(
+		lnwire.AnchorsOptional,
+	)
+	anchorCommitment := localAnchors && remoteAnchors
+	tweaklessCommitment = tweaklessCommitment || anchorCommitment
+
 	req := &lnwallet.InitFundingReserveMsg{
 		ChainHash:        &msg.chainHash,
 		PendingChanID:    chanID,
@@ -2919,7 +2947,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		MinConfs:         msg.minConfs,
 		Tweakless:        tweaklessCommitment,
 		ChanFunder:       msg.chanFunder,
-		AnchorOutputs:    false,
+		AnchorOutputs:    anchorCommitment,
 	}
 
 	reservation, err := f.cfg.Wallet.InitChannelReservation(req)

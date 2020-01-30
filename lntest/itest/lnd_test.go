@@ -1101,8 +1101,8 @@ func testBasicChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	// Run through the test with combinations of all the different
 	// commitment types.
 	allTypes := []commitType{
-		//	commitTypeLegacy,
-		//	commitTypeTweakless,
+		commitTypeLegacy,
+		commitTypeTweakless,
 		commitTypeAnchors,
 	}
 
@@ -3020,18 +3020,34 @@ func testChannelForceClosure(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// We'll test the scenario for all commitment types, to ensure outputs
 	// can be swept.
-	allTypes := []commitType{
-		commitTypeLegacy,
-		commitTypeTweakless,
+	type testCase struct {
+		commitType    commitType
+		toRemoteDelay uint32
 	}
 
-	for _, channelType := range allTypes {
+	testCases := []testCase{
+		{
+			commitType:    commitTypeLegacy,
+			toRemoteDelay: 0,
+		},
+		{
+			commitType:    commitTypeTweakless,
+			toRemoteDelay: 0,
+		},
+		{
+			commitType:    commitTypeAnchors,
+			toRemoteDelay: defaultCSV,
+		},
+	}
 
-		testName := fmt.Sprintf("committype=%v", channelType)
+	for _, test := range testCases {
 
-		ht := t
+		testName := fmt.Sprintf("committype=%v", test.commitType)
+
 		success := t.t.Run(testName, func(t *testing.T) {
-			args := channelType.Args()
+			ht := newHarnessTest(t, net)
+
+			args := test.commitType.Args()
 			alice, err := net.NewNode("Alice", args)
 			if err != nil {
 				t.Fatalf("unable to create new node: %v", err)
@@ -3056,7 +3072,9 @@ func testChannelForceClosure(net *lntest.NetworkHarness, t *harnessTest) {
 				t.Fatalf("unable to send coins to Alice: %v", err)
 			}
 
-			channelForceClosureTest(net, ht, alice, carol)
+			channelForceClosureTest(
+				net, ht, alice, carol, test.toRemoteDelay,
+			)
 		})
 		if !success {
 			return
@@ -3065,7 +3083,7 @@ func testChannelForceClosure(net *lntest.NetworkHarness, t *harnessTest) {
 }
 
 func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
-	alice, carol *lntest.HarnessNode) {
+	alice, carol *lntest.HarnessNode, toRemoteCsv uint32) {
 
 	ctxb := context.Background()
 
@@ -3312,12 +3330,15 @@ func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
 		t.Fatalf("Node restart failed: %v", err)
 	}
 
-	// Carol's sweep tx should be in the mempool already, as her output is
-	// not timelocked.
-	_, err = waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
-	if err != nil {
-		t.Fatalf("failed to find Carol's sweep in miner mempool: %v",
-			err)
+	// Depending on the to remote CSV delay for the commitment type used in
+	// this test, Carol's sweep tx could be in the mempool already, if her
+	// output is not timelocked.
+	if toRemoteCsv == 0 {
+		_, err = waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+		if err != nil {
+			t.Fatalf("failed to find Carol's sweep in miner mempool: %v",
+				err)
+		}
 	}
 
 	// Currently within the codebase, the default CSV is 4 relative blocks.
@@ -3393,25 +3414,44 @@ func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
 		t.Fatalf("unable to mine blocks: %v", err)
 	}
 
-	// At this point, the CSV will expire in the next block, meaning that
-	// the sweeping transaction should now be broadcast. So we fetch the
-	// node's mempool to ensure it has been properly broadcast.
-	sweepingTXID, err := waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
-	if err != nil {
-		t.Fatalf("failed to get sweep tx from mempool: %v", err)
+	// Depending on whether both nodes had their output timelocked, there
+	// should be either one or two sweep transactions in the mempool at
+	// this point.
+	var sweepingTXIDs []*chainhash.Hash
+	if toRemoteCsv == defaultCSV {
+		// We expect both nodes to sweep their commitment output.
+		sweepingTXIDs, err = waitForNTxsInMempool(
+			net.Miner.Node, 2, minerMempoolTimeout,
+		)
+		if err != nil {
+			t.Fatalf("unable to find sweep txns in mempool: %v", err)
+		}
+	} else {
+		// At this point, Alice's CSV will expire in the next block,
+		// meaning that the sweeping transaction should now be
+		// broadcast. So we fetch the node's mempool to ensure it has
+		// been properly broadcast.
+		txid, err := waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+		if err != nil {
+			t.Fatalf("failed to get sweep tx from mempool: %v", err)
+		}
+
+		sweepingTXIDs = []*chainhash.Hash{txid}
 	}
 
 	// Fetch the sweep transaction, all input it's spending should be from
 	// the commitment transaction which was broadcast on-chain.
-	sweepTx, err := net.Miner.Node.GetRawTransaction(sweepingTXID)
-	if err != nil {
-		t.Fatalf("unable to fetch sweep tx: %v", err)
-	}
-	for _, txIn := range sweepTx.MsgTx().TxIn {
-		if !closingTxID.IsEqual(&txIn.PreviousOutPoint.Hash) {
-			t.Fatalf("sweep transaction not spending from commit "+
-				"tx %v, instead spending %v",
-				closingTxID, txIn.PreviousOutPoint)
+	for _, sweepingTXID := range sweepingTXIDs {
+		sweepTx, err := net.Miner.Node.GetRawTransaction(sweepingTXID)
+		if err != nil {
+			t.Fatalf("unable to fetch sweep tx: %v", err)
+		}
+		for _, txIn := range sweepTx.MsgTx().TxIn {
+			if !closingTxID.IsEqual(&txIn.PreviousOutPoint.Hash) {
+				t.Fatalf("sweep transaction not spending from commit "+
+					"tx %v, instead spending %v",
+					closingTxID, txIn.PreviousOutPoint)
+			}
 		}
 	}
 
@@ -3433,7 +3473,9 @@ func channelForceClosureTest(net *lntest.NetworkHarness, t *harnessTest,
 		t.Fatalf("unable to get block: %v", err)
 	}
 
-	assertTxInBlock(t, block, sweepTx.Hash())
+	for _, sweepTXID := range sweepingTXIDs {
+		assertTxInBlock(t, block, sweepTXID)
+	}
 
 	// Update current height
 	_, curHeight, err = net.Miner.Node.GetBestBlock()

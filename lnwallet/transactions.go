@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 )
 
@@ -44,7 +45,7 @@ var (
 // In order to spend the HTLC output, the witness for the passed transaction
 // should be:
 //   * <0> <sender sig> <recvr sig> <preimage>
-func createHtlcSuccessTx(htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
+func createHtlcSuccessTx(chanType channeldb.ChannelType, htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
 	csvDelay uint32,
 	revocationKey, delayKey *btcec.PublicKey) (*wire.MsgTx, error) {
 
@@ -52,11 +53,17 @@ func createHtlcSuccessTx(htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
 	// spends an output with a CSV timeout).
 	successTx := wire.NewMsgTx(2)
 
+	txin := &wire.TxIn{
+		PreviousOutPoint: htlcOutput,
+	}
+
+	if chanType.HasAnchors() {
+		txin.Sequence = 1
+	}
+
 	// The input to the transaction is the outpoint that creates the
 	// original HTLC on the sender's commitment transaction.
-	successTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: htlcOutput,
-	})
+	successTx.AddTxIn(txin)
 
 	// Next, we'll generate the script used as the output for all second
 	// level HTLC which forces a covenant w.r.t what can be done with all
@@ -97,7 +104,8 @@ func createHtlcSuccessTx(htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
 // NOTE: The passed amount for the HTLC should take into account the required
 // fee rate at the time the HTLC was created. The fee should be able to
 // entirely pay for this (tiny: 1-in 1-out) transaction.
-func createHtlcTimeoutTx(htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
+func createHtlcTimeoutTx(chanType channeldb.ChannelType,
+	htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
 	cltvExpiry, csvDelay uint32,
 	revocationKey, delayKey *btcec.PublicKey) (*wire.MsgTx, error) {
 
@@ -109,9 +117,15 @@ func createHtlcTimeoutTx(htlcOutput wire.OutPoint, htlcAmt btcutil.Amount,
 
 	// The input to the transaction is the outpoint that creates the
 	// original HTLC on the sender's commitment transaction.
-	timeoutTx.AddTxIn(&wire.TxIn{
+	txin := &wire.TxIn{
 		PreviousOutPoint: htlcOutput,
-	})
+	}
+
+	if chanType.HasAnchors() {
+		txin.Sequence = 1
+	}
+
+	timeoutTx.AddTxIn(txin)
 
 	// Next, we'll generate the script used as the output for all second
 	// level HTLC which forces a covenant w.r.t what can be done with all

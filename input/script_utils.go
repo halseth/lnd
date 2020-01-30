@@ -355,9 +355,12 @@ func SenderHtlcSpendTimeout(receiverSig []byte, signer Signer,
 	// order to force Script execution to the HTLC timeout clause. The
 	// second zero is required to consume the extra pop due to a bug in the
 	// original OP_CHECKMULTISIG.
+	//	sh := txscript.SigHashSingle | txscript.SigHashAnyOneCanPay
+
+	// Should we make sweep sig sighashall? Only necessary to have remote tx up front.
 	witnessStack := wire.TxWitness(make([][]byte, 5))
 	witnessStack[0] = nil
-	witnessStack[1] = append(receiverSig, byte(txscript.SigHashAll))
+	witnessStack[1] = append(receiverSig, byte(signDesc.HashType))
 	witnessStack[2] = append(sweepSig, byte(signDesc.HashType))
 	witnessStack[3] = nil
 	witnessStack[4] = signDesc.WitnessScript
@@ -522,9 +525,10 @@ func ReceiverHtlcSpendRedeem(senderSig, paymentPreimage []byte,
 	// payment pre-image, and also execute the multi-sig clause after the
 	// pre-images matches. We add a nil item at the bottom of the stack in
 	// order to consume the extra pop within OP_CHECKMULTISIG.
+	//sh := txscript.SigHashSingle | txscript.SigHashAnyOneCanPay
 	witnessStack := wire.TxWitness(make([][]byte, 5))
 	witnessStack[0] = nil
-	witnessStack[1] = append(senderSig, byte(txscript.SigHashAll))
+	witnessStack[1] = append(senderSig, byte(signDesc.HashType))
 	witnessStack[2] = append(sweepSig, byte(signDesc.HashType))
 	witnessStack[3] = paymentPreimage
 	witnessStack[4] = signDesc.WitnessScript

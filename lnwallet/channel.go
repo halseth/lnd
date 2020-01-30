@@ -2740,6 +2740,7 @@ func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
 			Index: uint32(htlc.remoteOutputIndex),
 		}
 		sigJob.Tx, err = createHtlcTimeoutTx(
+			chanType,
 			op, outputAmt, htlc.Timeout,
 			uint32(remoteChanCfg.CsvDelay),
 			keyRing.RevocationKey, keyRing.ToLocalKey,
@@ -2792,6 +2793,7 @@ func genRemoteHtlcSigJobs(keyRing *CommitmentKeyRing,
 			Index: uint32(htlc.remoteOutputIndex),
 		}
 		sigJob.Tx, err = createHtlcSuccessTx(
+			chanType,
 			op, outputAmt, uint32(remoteChanCfg.CsvDelay),
 			keyRing.RevocationKey, keyRing.ToLocalKey,
 		)
@@ -3797,7 +3799,8 @@ func genHtlcSigValidationJobs(localCommitmentView *commitment,
 				htlcFee := htlcSuccessFee(feePerKw)
 				outputAmt := htlc.Amount.ToSatoshis() - htlcFee
 
-				successTx, err := createHtlcSuccessTx(op,
+				successTx, err := createHtlcSuccessTx(
+					chanType, op,
 					outputAmt, uint32(localChanCfg.CsvDelay),
 					keyRing.RevocationKey, keyRing.ToLocalKey)
 				if err != nil {
@@ -3849,7 +3852,8 @@ func genHtlcSigValidationJobs(localCommitmentView *commitment,
 				htlcFee := htlcTimeoutFee(feePerKw)
 				outputAmt := htlc.Amount.ToSatoshis() - htlcFee
 
-				timeoutTx, err := createHtlcTimeoutTx(op,
+				timeoutTx, err := createHtlcTimeoutTx(
+					chanType, op,
 					outputAmt, htlc.Timeout,
 					uint32(localChanCfg.CsvDelay),
 					keyRing.RevocationKey, keyRing.ToLocalKey,
@@ -5289,6 +5293,7 @@ func newOutgoingHtlcResolution(signer input.Signer,
 	// With the fee calculated, re-construct the second level timeout
 	// transaction.
 	timeoutTx, err := createHtlcTimeoutTx(
+		chanType,
 		op, secondLevelOutputAmt, htlc.RefundTimeout, csvDelay,
 		keyRing.RevocationKey, keyRing.ToLocalKey,
 	)
@@ -5416,6 +5421,7 @@ func newIncomingHtlcResolution(signer input.Signer,
 	htlcFee := htlcSuccessFee(feePerKw)
 	secondLevelOutputAmt := htlc.Amt.ToSatoshis() - htlcFee
 	successTx, err := createHtlcSuccessTx(
+		chanType,
 		op, secondLevelOutputAmt, csvDelay,
 		keyRing.RevocationKey, keyRing.ToLocalKey,
 	)

@@ -1060,7 +1060,7 @@ test:
 			// We do the same for Dave shortly below.
 			var carolArgs []string
 			if !carolTweakless {
-				carolArgs = []string{"--legacyprotocol.committweak"}
+				carolArgs = []string{"--protocol.committweak"}
 			}
 			carol, err := net.NewNode("Carol", carolArgs)
 			if err != nil {
@@ -1077,7 +1077,7 @@ test:
 
 			var daveArgs []string
 			if !daveTweakless {
-				daveArgs = []string{"--legacyprotocol.committweak"}
+				daveArgs = []string{"--protocol.committweak"}
 			}
 			dave, err := net.NewNode("Dave", daveArgs)
 			if err != nil {
@@ -4205,7 +4205,7 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 	//
 	// First, we'll create Dave and establish a channel to Alice. Dave will
 	// be running an older node that requires the legacy onion payload.
-	daveArgs := []string{"--legacyprotocol.onion"}
+	daveArgs := []string{"--protocol.onion"}
 	dave, err := net.NewNode("Dave", daveArgs)
 	if err != nil {
 		t.Fatalf("unable to create new nodes: %v", err)

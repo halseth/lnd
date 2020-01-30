@@ -340,7 +340,7 @@ type config struct {
 
 	Watchtower *lncfg.Watchtower `group:"watchtower" namespace:"watchtower"`
 
-	LegacyProtocol *lncfg.LegacyProtocol `group:"legacyprotocol" namespace:"legacyprotocol"`
+	ProtocolOptions *lncfg.ProtocolOptions `group:"protocol" namespace:"protocol"`
 }
 
 // loadConfig initializes and parses the config using a config file and command

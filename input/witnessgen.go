@@ -48,8 +48,9 @@ type StandardWitnessType uint16
 var _ WitnessType = (StandardWitnessType)(0)
 
 const (
-	// CommitmentTimeLock is a witness that allows us to spend the output of
-	// a commitment transaction after a relative lock-time lockout.
+	// CommitmentTimeLock is a witness that allows us to spend our output
+	// on our local commitment transaction after a relative lock-time
+	// lockout.
 	CommitmentTimeLock StandardWitnessType = 0
 
 	// CommitmentNoDelay is a witness that allows us to spend a settled
@@ -119,6 +120,11 @@ const (
 	// type, but it omits the tweak that randomizes the key we need to
 	// spend with a channel peer supplied set of randomness.
 	CommitSpendNoDelayTweakless StandardWitnessType = 12
+
+	// CommitmentToRemoteDelayed is a witness that allows us to spend our
+	// output on the counterparty's commitment transaction after a relative
+	// lock-time lockout.
+	CommitmentToRemoteDelayed StandardWitnessType = 13
 )
 
 // String returns a human readable version of the target WitnessType.
@@ -128,6 +134,9 @@ func (wt StandardWitnessType) String() string {
 	switch wt {
 	case CommitmentTimeLock:
 		return "CommitmentTimeLock"
+
+	case CommitmentToRemoteDelayed:
+		return "CommitmentToRemoteDelayed"
 
 	case CommitmentNoDelay:
 		return "CommitmentNoDelay"
@@ -189,6 +198,18 @@ func (wt StandardWitnessType) WitnessGenerator(signer Signer,
 		switch wt {
 		case CommitmentTimeLock:
 			witness, err := CommitSpendTimeout(signer, desc, tx)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case CommitmentToRemoteDelayed:
+			witness, err := CommitSpendToRemoteDelayed(
+				signer, desc, tx,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -322,6 +343,10 @@ func (wt StandardWitnessType) SizeUpperBound() (int, bool, error) {
 	// to us.
 	case CommitmentTimeLock:
 		return ToLocalTimeoutWitnessSize, false, nil
+
+	// Timelocked output to us on remote commitment.
+	case CommitmentToRemoteDelayed:
+		return ToRemoteDelayedWitnessSize, false, nil
 
 	// Outgoing second layer HTLC's that have confirmed within the
 	// chain, and the output they produced is now mature enough to

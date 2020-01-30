@@ -213,6 +213,22 @@ const (
 	//      - witness_script (to_local_script)
 	ToLocalPenaltyWitnessSize = 1 + 1 + 73 + 1 + 1 + ToLocalScriptSize
 
+	// ToRemoteDelayedScriptSize 40 bytes
+	//      - OP_DATA: 1 byte
+	//      - to_remote_key: 33 bytes
+	//      - OP_CHECKSIGVERIFY: 1 byte
+	//      - csv_delay: 4 bytes
+	//      - OP_CHECKSEQUENCEVERIFY: 1 byte
+	ToRemoteDelayedScriptSize = 1 + 33 + 1 + 4 + 1
+
+	// ToRemoteDelayedWitnessSize 156 bytes
+	//      - number_of_witness_elements: 1 byte
+	//      - sig_length: 1 byte
+	//      - sig: 73 bytes
+	//      - witness_script_length: 1 byte
+	//      - witness_script (to_remote_delayed_script)
+	ToRemoteDelayedWitnessSize = 1 + 1 + 73 + 1 + ToRemoteDelayedScriptSize
+
 	// AcceptedHtlcScriptSize 142 bytes
 	//      - OP_DUP: 1 byte
 	//      - OP_HASH160: 1 byte

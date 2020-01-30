@@ -352,7 +352,7 @@ func isOurCommitment(localChanCfg, remoteChanCfg channeldb.ChannelConfig,
 	// With the keys derived, we'll construct the remote script that'll be
 	// present if they have a non-dust balance on the commitment.
 	remoteDelay := uint32(remoteChanCfg.CsvDelay)
-	remoteScript, err := lnwallet.CommitScriptToRemote(
+	remoteScript, _, err := lnwallet.CommitScriptToRemote(
 		chanType, remoteDelay, commitKeyRing.ToRemoteKey,
 	)
 	if err != nil {

@@ -188,7 +188,7 @@ type ScriptInfo struct {
 // the commitment transaction, adding a delay to the script based on the
 // channel type.
 func CommitScriptToRemote(chanType channeldb.ChannelType, csvTimeout uint32,
-	key *btcec.PublicKey) (*ScriptInfo, error) {
+	key *btcec.PublicKey) (*ScriptInfo, uint32, error) {
 
 	// If this channel type has anchors, we derive the delayed to_remote
 	// script.
@@ -197,24 +197,24 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, csvTimeout uint32,
 			csvTimeout, key,
 		)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 
 		p2wsh, err := input.WitnessScriptHash(script)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 
 		return &ScriptInfo{
 			PkScript:      p2wsh,
 			WitnessScript: script,
-		}, nil
+		}, csvTimeout, nil
 	}
 
 	// Otherwise the to_remote will be a simple p2wkh.
 	p2wkh, err := input.CommitScriptUnencumbered(key)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Since this is a regular P2WKH, the WitnessScipt and PkScript should
@@ -222,7 +222,7 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, csvTimeout uint32,
 	return &ScriptInfo{
 		WitnessScript: p2wkh,
 		PkScript:      p2wkh,
-	}, nil
+	}, 0, nil
 }
 
 // CommitScriptAnchors return the scripts to use for the local and remote
@@ -528,7 +528,7 @@ func CreateCommitTx(chanType channeldb.ChannelType,
 	}
 
 	// Next, we create the script paying to the remote.
-	toRemoteScript, err := CommitScriptToRemote(
+	toRemoteScript, _, err := CommitScriptToRemote(
 		chanType, uint32(remoteChanCfg.CsvDelay), keyRing.ToRemoteKey,
 	)
 	if err != nil {

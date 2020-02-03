@@ -4585,6 +4585,13 @@ func TestChanAvailableBandwidth(t *testing.T) {
 	}
 	defer cleanUp()
 
+	feeRate := chainfee.SatPerKWeight(
+		aliceChannel.channelState.LocalCommitment.FeePerKw,
+	)
+	htlcFee := lnwire.NewMSatFromSatoshis(
+		feeRate.FeeForWeight(input.HTLCWeight),
+	)
+
 	assertBandwidthEstimateCorrect := func(aliceInitiate bool) {
 		// With the HTLC's added, we'll now query the AvailableBalance
 		// method for the current available channel bandwidth from
@@ -4611,7 +4618,11 @@ func TestChanAvailableBandwidth(t *testing.T) {
 		// Now, we'll obtain the current available bandwidth in Alice's
 		// latest commitment and compare that to the prior estimate.
 		aliceBalance := aliceChannel.channelState.LocalCommitment.LocalBalance
-		if aliceBalance != aliceAvailableBalance {
+
+		// The balance we have available for new HTLCs should be the
+		// current local commitment balance, minus the fee for adding a
+		// HTLC.
+		if aliceBalance-htlcFee != aliceAvailableBalance {
 			_, _, line, _ := runtime.Caller(1)
 			t.Fatalf("line: %v, incorrect balance: expected %v, "+
 				"got %v", line, aliceBalance,
@@ -4691,6 +4702,55 @@ func TestChanAvailableBandwidth(t *testing.T) {
 	assertBandwidthEstimateCorrect(false)
 
 	// TODO(roasbeef): additional tests from diff starting conditions
+}
+
+// TestChanAvailableBalanceNearHtlcFee checks that we get the expected reported
+// balance when it is close to the htlc fee.
+func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
+	t.Parallel()
+
+	// Create a test channel which will be used for the duration of this
+	// unittest. The channel will be funded evenly with Alice having 5 BTC,
+	// and Bob having 5 BTC.
+	aliceChannel, bobChannel, cleanUp, err := CreateTestChannels(true)
+	if err != nil {
+		t.Fatalf("unable to create test channels: %v", err)
+	}
+	defer cleanUp()
+
+	// Set the channel reserves to 0, so they won't be affecting our state
+	// updates.
+	aliceChannel.channelState.LocalChanCfg.ChanReserve = 0
+	bobChannel.channelState.RemoteChanCfg.ChanReserve = 0
+
+	// Alice starts with half the channel capacity.
+	aliceBalance := lnwire.NewMSatFromSatoshis(5 * btcutil.SatoshiPerBitcoin)
+
+	feeRate := chainfee.SatPerKWeight(
+		aliceChannel.channelState.LocalCommitment.FeePerKw,
+	)
+	htlcFee := lnwire.NewMSatFromSatoshis(
+		feeRate.FeeForWeight(input.HTLCWeight),
+	)
+	commitFee := lnwire.NewMSatFromSatoshis(
+		aliceChannel.channelState.LocalCommitment.CommitFee,
+	)
+
+	// Helper method to check the current reported balance.
+	checkBalance := func(t *testing.T, expBalance lnwire.MilliSatoshi) {
+		t.Helper()
+		balance := aliceChannel.AvailableBalance()
+		if balance != expBalance {
+			t.Fatalf("Expected balance %v, got %v", expBalance, balance)
+		}
+	}
+
+	// Balance should start out equal to half the channel capacity minus the
+	// commitment fee Alice must pay. In addition the HTLC fee will be
+	// subtracted fromt the balance to reflect that this value must be
+	// reserved for any payment above the dust limit.
+	expBalance := aliceBalance - commitFee - htlcFee
+	checkBalance(t, expBalance)
 }
 
 // TestSignCommitmentFailNotLockedIn tests that a channel will not attempt to

@@ -5996,16 +5996,49 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 	)
 	feePerKw := filteredView.feePerKw
 
+	// Set the dustlimit based on who's commitment we are looking at.
+	dustlimit := lnwire.NewMSatFromSatoshis(
+		lc.channelState.LocalChanCfg.DustLimit,
+	)
+
 	// Given the commitment weight, find the commitment fee in case of no
 	// added HTLC ouput.
 	baseCommitFee := lnwire.NewMSatFromSatoshis(
 		feePerKw.FeeForWeight(commitWeight),
 	)
 
+	// Also calculate the commitment fee in the case where we would add
+	// another HTLC large enough to create a new output on the commitment.
+	htlcCommitFee := lnwire.NewMSatFromSatoshis(
+		feePerKw.FeeForWeight(commitWeight + input.HTLCWeight),
+	)
+
+	// For an extra HTLC fee to be paid on our commitment, the HTLC must be
+	// large enough to make a non-dust HTLC timeout transaction.
+	htlcFee := lnwire.NewMSatFromSatoshis(
+		htlcTimeoutFee(feePerKw),
+	)
+
+	// The HTLC output will be manifested on the commitment if it
+	// is non-dust after paying the HTLC fee.
+	nonDustHtlcAmt := dustlimit + htlcFee
+
 	// If we are the channel initiator, we must to subtract the commitment
 	// fee from our available balance.
 	if lc.channelState.IsInitiator {
-		ourBalance -= baseCommitFee
+		switch {
+		// If our balance is high enough to pay for a non-dust HTLC and
+		// the resulting commitment fee, subtract this commitment fee
+		// to reflect what we have left for such payments.
+		case ourBalance >= htlcCommitFee+nonDustHtlcAmt:
+			ourBalance -= htlcCommitFee
+
+		// Otherwise, what's left after subtracting the base commitment
+		// fee will be less than the non-dust HTLC amount, and that's
+		// what we have available as a balance.
+		default:
+			ourBalance -= baseCommitFee
+		}
 	}
 
 	return ourBalance, commitWeight
@@ -6216,13 +6249,14 @@ func (lc *LightningChannel) MaxFeeRate(maxAllocation float64) chainfee.SatPerKWe
 
 	// The maximum fee depends of the available balance that can be
 	// committed towards fees.
-	balance, weight := lc.availableBalance()
+	commit := lc.channelState.LocalCommitment
 	feeBalance := float64(
-		balance.ToSatoshis() + lc.channelState.LocalCommitment.CommitFee,
+		commit.LocalBalance.ToSatoshis() + commit.CommitFee,
 	)
 	maxFee := feeBalance * maxAllocation
 
 	// Ensure the fee rate doesn't dip below the fee floor.
+	_, weight := lc.availableBalance()
 	maxFeeRate := maxFee / (float64(weight) / 1000)
 	return chainfee.SatPerKWeight(
 		math.Max(maxFeeRate, float64(chainfee.FeePerKwFloor)),

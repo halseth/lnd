@@ -5161,7 +5161,8 @@ type IncomingHtlcResolution struct {
 	// pass after the SignedSuccessTx is confirmed in the chain before the
 	// output can be swept.
 	//
-	// NOTE: If SignedSuccessTx is nil, then this field isn't needed.
+	// NOTE: If SignedTimeoutTx is nil, then this field denotes the CSV
+	// delay needed to spend from the commitment transaction.
 	CsvDelay uint32
 
 	// ClaimOutpoint is the final outpoint that needs to be spent in order
@@ -5201,7 +5202,8 @@ type OutgoingHtlcResolution struct {
 	// pass after the SignedTimeoutTx is confirmed in the chain before the
 	// output can be swept.
 	//
-	// NOTE: If SignedTimeoutTx is nil, then this field isn't needed.
+	// NOTE: If SignedTimeoutTx is nil, then this field denotes the CSV
+	// delay needed to spend from the commitment transaction.
 	CsvDelay uint32
 
 	// ClaimOutpoint is the final outpoint that needs to be spent in order
@@ -5274,6 +5276,7 @@ func newOutgoingHtlcResolution(signer input.Signer,
 				},
 				HashType: txscript.SigHashAll,
 			},
+			CsvDelay: HtlcSecondLevelInputSequence(chanType),
 		}, nil
 	}
 
@@ -5395,7 +5398,6 @@ func newIncomingHtlcResolution(signer input.Signer,
 		// SignDescriptor needed to sweep the output.
 		return &IncomingHtlcResolution{
 			ClaimOutpoint: op,
-			CsvDelay:      csvDelay,
 			SweepSignDesc: input.SignDescriptor{
 				KeyDesc:       localChanCfg.HtlcBasePoint,
 				SingleTweak:   keyRing.LocalHtlcKeyTweak,
@@ -5406,6 +5408,7 @@ func newIncomingHtlcResolution(signer input.Signer,
 				},
 				HashType: txscript.SigHashAll,
 			},
+			CsvDelay: HtlcSecondLevelInputSequence(chanType),
 		}, nil
 	}
 

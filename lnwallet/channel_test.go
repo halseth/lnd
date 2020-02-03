@@ -4723,8 +4723,9 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	aliceChannel.channelState.LocalChanCfg.ChanReserve = 0
 	bobChannel.channelState.RemoteChanCfg.ChanReserve = 0
 
-	// Alice starts with half the channel capacity.
+	// Alice and Bob start with half the channel capacity.
 	aliceBalance := lnwire.NewMSatFromSatoshis(5 * btcutil.SatoshiPerBitcoin)
+	bobBalance := lnwire.NewMSatFromSatoshis(5 * btcutil.SatoshiPerBitcoin)
 
 	dustlimit := lnwire.NewMSatFromSatoshis(
 		aliceChannel.channelState.LocalChanCfg.DustLimit,
@@ -4741,16 +4742,28 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	htlcTimeoutFee := lnwire.NewMSatFromSatoshis(
 		htlcTimeoutFee(feeRate),
 	)
+	htlcSuccessFee := lnwire.NewMSatFromSatoshis(
+		htlcSuccessFee(feeRate),
+	)
 
 	// Find the minumim size of a non-dust HTLC.
 	nonDustHtlc := dustlimit + htlcTimeoutFee
 
 	// Helper method to check the current reported balance.
-	checkBalance := func(t *testing.T, expBalance lnwire.MilliSatoshi) {
+	checkBalance := func(t *testing.T, expBalanceAlice,
+		expBalanceBob lnwire.MilliSatoshi) {
+
 		t.Helper()
-		balance := aliceChannel.AvailableBalance()
-		if balance != expBalance {
-			t.Fatalf("Expected balance %v, got %v", expBalance, balance)
+		aliceBalance := aliceChannel.AvailableBalance()
+		if aliceBalance != expBalanceAlice {
+			t.Fatalf("Expected alice balance %v, got %v",
+				expBalanceAlice, aliceBalance)
+		}
+
+		bobBalance := bobChannel.AvailableBalance()
+		if bobBalance != expBalanceBob {
+			t.Fatalf("Expected bob balance %v, got %v",
+				expBalanceBob, bobBalance)
 		}
 	}
 
@@ -4789,26 +4802,30 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 
 		htlcIndex++
 		aliceBalance -= htlcAmt
+		bobBalance += htlcAmt
 	}
 
 	// Balance should start out equal to half the channel capacity minus the
 	// commitment fee Alice must pay. In addition the HTLC fee will be
 	// subtracted fromt the balance to reflect that this value must be
 	// reserved for any payment above the dust limit.
-	expBalance := aliceBalance - commitFee - htlcFee
-	checkBalance(t, expBalance)
+	expAliceBalance := aliceBalance - commitFee - htlcFee
 
-	// Send a HTLC leaving the remaining balance just enough to have
+	// Bob is not the initiator, so he will have all his balance available,
+	// since Alice pays for fees.
+	checkBalance(t, expAliceBalance, bobBalance)
+
+	// Send a HTLC leaving Alice's remaining balance just enough to have
 	// nonDustHtlc left after paying the commit fee and htlc fee.
 	htlcAmt := aliceBalance - (commitFee + htlcFee + nonDustHtlc)
 	sendHtlc(htlcAmt)
 
-	// Now the real balance left will be nonDustHtlc+commitfee+htlcfee. But
-	// since any htlc larger than the dustlimit will have to reserve
+	// Now Alice's real balance left will be nonDustHtlc+commitfee+htlcfee.
+	// But since any htlc larger than the dustlimit will have to reserve
 	// htlcfee to be added (and the commitfee must always be reserved), the
 	// available balance will just be nonDustHtlc.
-	expBalance = nonDustHtlc
-	checkBalance(t, expBalance)
+	expAliceBalance = nonDustHtlc
+	checkBalance(t, expAliceBalance, bobBalance)
 
 	// Send 2 msat.
 	htlcAmt = 2
@@ -4817,8 +4834,12 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	// Even though we sent 2 msat, the reported balance should only
 	// decrease by 1. The reason being that any HTLC below the dustlimit
 	// will not need to reserve the HTLC fee.
-	expBalance = nonDustHtlc - 1
-	checkBalance(t, expBalance)
+	expAliceBalance = nonDustHtlc - 1
+
+	// Bob should still have all his balance available, since even though
+	// Alice cannot afford to add a non-dust HTLC, she can afford to add a
+	// non-dust HTLC from Bob.
+	checkBalance(t, expAliceBalance, bobBalance)
 
 	// Sendng nonDusHtlc should be rejected.
 	htlcAmt = nonDustHtlc
@@ -4831,10 +4852,20 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	htlcAmt = nonDustHtlc - 1
 	sendHtlc(htlcAmt)
 
-	// Since alice still has some balance left below the dustlimit, it
+	// Since Alice still has some balance left below the dustlimit, it
 	// should be all avilable
-	expBalance = aliceBalance - commitFee
-	checkBalance(t, expBalance)
+	expAliceBalance = aliceBalance - commitFee
+
+	// Now Alice balance is so low that she cannot even afford to add a new
+	// HTLC from Bob to the commitment transaction. Bob's balance should
+	// reflect this, by only reporting dust amount being available.
+	bobNonDustHtlc := dustlimit + htlcSuccessFee
+	expBobBalance := bobNonDustHtlc - 1
+
+	// Bob should still have all his balance available, since even though
+	// Alice cannot afford to add a non-dust HTLC, she can afford to add a
+	// non-dust HTLC from Bob.
+	checkBalance(t, expAliceBalance, expBobBalance)
 }
 
 // TestSignCommitmentFailNotLockedIn tests that a channel will not attempt to

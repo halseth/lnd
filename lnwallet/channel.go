@@ -6001,7 +6001,7 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
 	// Compute the current balances for this commitment. This will take
 	// into account HTLCs to determine the commit weight, which the
 	// initiator must pay the fee for.
-	ourBalance, _, commitWeight, filteredView := lc.computeView(
+	ourBalance, theirBalance, commitWeight, filteredView := lc.computeView(
 		view, remoteChain, false,
 	)
 	feePerKw := filteredView.feePerKw
@@ -6067,6 +6067,15 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
 		// what we have available as a balance.
 		default:
 			ourBalance -= baseCommitFee
+		}
+	} else {
+		// If we're not the initiator, we must check whether the remote
+		// has enough balance to pay for the fee of our HTLC. If the
+		// they cannot pay the fee if we add another non-dust HTLC, set
+		// our available balance just below the non-dust amount, to
+		// avoid attempting such large HTLCs.
+		if theirBalance < htlcCommitFee && ourBalance >= nonDustHtlcAmt {
+			ourBalance = nonDustHtlcAmt - 1
 		}
 	}
 

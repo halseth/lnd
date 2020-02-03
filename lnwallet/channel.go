@@ -5974,8 +5974,18 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 	// add updates concurrently, causing our balance to go down if we're
 	// the initiator, but this is a problem on the protocol level.
 	ourLocalCommitBalance, commitWeight := lc.availableCommitmentBalance(
-		htlcView,
+		htlcView, false,
 	)
+
+	// Do the same caluclation from the remote commitment point of view.
+	ourRemoteCommitBalance, _ := lc.availableCommitmentBalance(
+		htlcView, true,
+	)
+
+	// Return which ever balance is lowest.
+	if ourRemoteCommitBalance < ourLocalCommitBalance {
+		return ourRemoteCommitBalance, commitWeight
+	}
 
 	return ourLocalCommitBalance, commitWeight
 }
@@ -5985,14 +5995,14 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 // account for sending HTLCs of different sizes, it will take into account
 // whether the HTLCs will be manifested on the commitment, increasing the
 // commitment fee we must pay as an initiator, eating into our balance.
-func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
-	lnwire.MilliSatoshi, int64) {
+func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
+	remoteChain bool) (lnwire.MilliSatoshi, int64) {
 
 	// Compute the current balances for this commitment. This will take
 	// into account HTLCs to determine the commit weight, which the
 	// initiator must pay the fee for.
 	ourBalance, _, commitWeight, filteredView := lc.computeView(
-		view, false, false,
+		view, remoteChain, false,
 	)
 	feePerKw := filteredView.feePerKw
 
@@ -6000,6 +6010,11 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 	dustlimit := lnwire.NewMSatFromSatoshis(
 		lc.channelState.LocalChanCfg.DustLimit,
 	)
+	if remoteChain {
+		dustlimit = lnwire.NewMSatFromSatoshis(
+			lc.channelState.RemoteChanCfg.DustLimit,
+		)
+	}
 
 	// Given the commitment weight, find the commitment fee in case of no
 	// added HTLC ouput.
@@ -6018,6 +6033,13 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 	htlcFee := lnwire.NewMSatFromSatoshis(
 		htlcTimeoutFee(feePerKw),
 	)
+
+	// On the remote commitment, the HTLC success transaction will be used.
+	if remoteChain {
+		htlcFee = lnwire.NewMSatFromSatoshis(
+			htlcSuccessFee(feePerKw),
+		)
+	}
 
 	// The HTLC output will be manifested on the commitment if it
 	// is non-dust after paying the HTLC fee.

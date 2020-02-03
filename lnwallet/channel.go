@@ -5969,15 +5969,43 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 	htlcView := lc.fetchHTLCView(remoteACKedIndex,
 		lc.localUpdateLog.logIndex)
 
-	// Then compute our current balance for that view.
-	ourBalance, _, commitWeight, filteredView :=
-		lc.computeView(htlcView, false, false)
+	// Calculate our available balance from our local commitment.
+	// NOTE: this is not always accurate, since the remote node can always
+	// add updates concurrently, causing our balance to go down if we're
+	// the initiator, but this is a problem on the protocol level.
+	ourLocalCommitBalance, commitWeight := lc.availableCommitmentBalance(
+		htlcView,
+	)
 
-	// If we are the channel initiator, we must remember to subtract the
-	// commitment fee from our available balance.
-	commitFee := filteredView.feePerKw.FeeForWeight(commitWeight)
+	return ourLocalCommitBalance, commitWeight
+}
+
+// availableCommitmentBalance attempts to calculate the balance we have
+// available for HTLCs on the local/remote commitment given the htlcView. To
+// account for sending HTLCs of different sizes, it will take into account
+// whether the HTLCs will be manifested on the commitment, increasing the
+// commitment fee we must pay as an initiator, eating into our balance.
+func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
+	lnwire.MilliSatoshi, int64) {
+
+	// Compute the current balances for this commitment. This will take
+	// into account HTLCs to determine the commit weight, which the
+	// initiator must pay the fee for.
+	ourBalance, _, commitWeight, filteredView := lc.computeView(
+		view, false, false,
+	)
+	feePerKw := filteredView.feePerKw
+
+	// Given the commitment weight, find the commitment fee in case of no
+	// added HTLC ouput.
+	baseCommitFee := lnwire.NewMSatFromSatoshis(
+		feePerKw.FeeForWeight(commitWeight),
+	)
+
+	// If we are the channel initiator, we must to subtract the commitment
+	// fee from our available balance.
 	if lc.channelState.IsInitiator {
-		ourBalance -= lnwire.NewMSatFromSatoshis(commitFee)
+		ourBalance -= baseCommitFee
 	}
 
 	return ourBalance, commitWeight

@@ -6033,6 +6033,13 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 		case ourBalance >= htlcCommitFee+nonDustHtlcAmt:
 			ourBalance -= htlcCommitFee
 
+		// We have enough to pay the non-dust HTLC, but not enough to
+		// cover the resulting fee. Therefore we set our available
+		// balance slightly below the non-dust amount to allow HTLCs up
+		// to that size.
+		case ourBalance >= baseCommitFee+nonDustHtlcAmt:
+			ourBalance = nonDustHtlcAmt - 1
+
 		// Otherwise, what's left after subtracting the base commitment
 		// fee will be less than the non-dust HTLC amount, and that's
 		// what we have available as a balance.

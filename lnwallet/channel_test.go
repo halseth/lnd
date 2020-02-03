@@ -4726,6 +4726,9 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	// Alice starts with half the channel capacity.
 	aliceBalance := lnwire.NewMSatFromSatoshis(5 * btcutil.SatoshiPerBitcoin)
 
+	dustlimit := lnwire.NewMSatFromSatoshis(
+		aliceChannel.channelState.LocalChanCfg.DustLimit,
+	)
 	feeRate := chainfee.SatPerKWeight(
 		aliceChannel.channelState.LocalCommitment.FeePerKw,
 	)
@@ -4735,6 +4738,12 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	commitFee := lnwire.NewMSatFromSatoshis(
 		aliceChannel.channelState.LocalCommitment.CommitFee,
 	)
+	htlcTimeoutFee := lnwire.NewMSatFromSatoshis(
+		htlcTimeoutFee(feeRate),
+	)
+
+	// Find the minumim size of a non-dust HTLC.
+	nonDustHtlc := dustlimit + htlcTimeoutFee
 
 	// Helper method to check the current reported balance.
 	checkBalance := func(t *testing.T, expBalance lnwire.MilliSatoshi) {
@@ -4745,11 +4754,86 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 		}
 	}
 
+	// Helper method to send an HTLC from Alice to Bob, decreasing Alice's
+	// balance.
+	htlcIndex := uint64(0)
+	sendHtlc := func(htlcAmt lnwire.MilliSatoshi) {
+		t.Helper()
+
+		htlc, preImage := createHTLC(int(htlcIndex), htlcAmt)
+		if _, err := aliceChannel.AddHTLC(htlc, nil); err != nil {
+			t.Fatalf("unable to add htlc: %v", err)
+		}
+		if _, err := bobChannel.ReceiveHTLC(htlc); err != nil {
+			t.Fatalf("unable to recv htlc: %v", err)
+		}
+
+		if err := ForceStateTransition(aliceChannel, bobChannel); err != nil {
+			t.Fatalf("unable to complete alice's state "+
+				"transition: %v", err)
+		}
+
+		err = bobChannel.SettleHTLC(preImage, htlcIndex, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unable to settle htlc: %v", err)
+		}
+		err = aliceChannel.ReceiveHTLCSettle(preImage, htlcIndex)
+		if err != nil {
+			t.Fatalf("unable to settle htlc: %v", err)
+		}
+
+		if err := ForceStateTransition(aliceChannel, bobChannel); err != nil {
+			t.Fatalf("unable to complete alice's state "+
+				"transition: %v", err)
+		}
+
+		htlcIndex++
+		aliceBalance -= htlcAmt
+	}
+
 	// Balance should start out equal to half the channel capacity minus the
 	// commitment fee Alice must pay. In addition the HTLC fee will be
 	// subtracted fromt the balance to reflect that this value must be
 	// reserved for any payment above the dust limit.
 	expBalance := aliceBalance - commitFee - htlcFee
+	checkBalance(t, expBalance)
+
+	// Send a HTLC leaving the remaining balance just enough to have
+	// nonDustHtlc left after paying the commit fee and htlc fee.
+	htlcAmt := aliceBalance - (commitFee + htlcFee + nonDustHtlc)
+	sendHtlc(htlcAmt)
+
+	// Now the real balance left will be nonDustHtlc+commitfee+htlcfee. But
+	// since any htlc larger than the dustlimit will have to reserve
+	// htlcfee to be added (and the commitfee must always be reserved), the
+	// available balance will just be nonDustHtlc.
+	expBalance = nonDustHtlc
+	checkBalance(t, expBalance)
+
+	// Send 2 msat.
+	htlcAmt = 2
+	sendHtlc(htlcAmt)
+
+	// Even though we sent 2 msat, the reported balance should only
+	// decrease by 1. The reason being that any HTLC below the dustlimit
+	// will not need to reserve the HTLC fee.
+	expBalance = nonDustHtlc - 1
+	checkBalance(t, expBalance)
+
+	// Sendng nonDusHtlc should be rejected.
+	htlcAmt = nonDustHtlc
+	htlc, _ := createHTLC(int(htlcIndex), htlcAmt)
+	if _, err := aliceChannel.AddHTLC(htlc, nil); err == nil {
+		t.Fatalf("expected htlc add to fail")
+	}
+
+	// Sending a dust HTLC should still work.
+	htlcAmt = nonDustHtlc - 1
+	sendHtlc(htlcAmt)
+
+	// Since alice still has some balance left below the dustlimit, it
+	// should be all avilable
+	expBalance = aliceBalance - commitFee
 	checkBalance(t, expBalance)
 }
 

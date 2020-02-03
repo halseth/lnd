@@ -5851,6 +5851,41 @@ func TestChanReserveRemoteInitiator(t *testing.T) {
 		t.Fatalf("expected ErrBelowChanReserve, instead received: %v", err)
 	}
 
+	// Now we'll test the case where Alice is adding an HTLC which Bob
+	// considers dust, but not Alice.
+	aliceChannel, bobChannel, cleanUp, err = CreateTestChannels(
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanUp()
+
+	// The amount of the HTLC should be above Alice's dust limit and below
+	// Bob's dust limit.
+	htlcSat := (btcutil.Amount(500) + htlcTimeoutFee(
+		chainfee.SatPerKWeight(
+			aliceChannel.channelState.LocalCommitment.FeePerKw,
+		),
+	))
+
+	// Set Alice's channel reserve to be low enough to carry the value of
+	// the HTLC, but not low enough to allow the extra fee from adding the
+	// HTLC to the commitment.
+	aliceMinReserve = 5*btcutil.SatoshiPerBitcoin - commitFee - htlcSat
+
+	aliceChannel.channelState.LocalChanCfg.ChanReserve = aliceMinReserve
+	bobChannel.channelState.RemoteChanCfg.ChanReserve = aliceMinReserve
+
+	htlcDustAmt := lnwire.NewMSatFromSatoshis(htlcSat)
+	htlc, _ = createHTLC(0, htlcDustAmt)
+
+	// Alice should realize that the fee she must pay to add this HTLC to
+	// the local commitment would take here below the channel reserve.
+	_, err = aliceChannel.AddHTLC(htlc, nil)
+	if err != ErrBelowChanReserve {
+		t.Fatalf("expected ErrBelowChanReserve, instead received: %v", err)
+	}
 }
 
 // TestMinHTLC tests that the ErrBelowMinHTLC error is thrown if an HTLC is added

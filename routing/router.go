@@ -534,17 +534,10 @@ func (r *ChannelRouter) Start() error {
 			// result for the in-flight attempt is received.
 			paySession := r.cfg.SessionSource.NewPaymentSessionEmpty()
 
-			// TODO(joostjager): For mpp, possibly relaunch multiple
-			// in-flight htlcs here.
-			var attempt *channeldb.HTLCAttemptInfo
-			if len(payment.Attempts) > 0 {
-				attempt = &payment.Attempts[0]
-			}
-
 			// Timeout doesn't need to be set, as there is
 			// only a single attempt.
 			_, _, err := r.sendPayment(
-				attempt, payment.Info.Value,
+				payment.Attempts, payment.Info.Value,
 				payment.Info.PaymentHash, 0, paySession,
 			)
 			if err != nil {
@@ -1798,7 +1791,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
 func (r *ChannelRouter) sendPayment(
-	existingAttempt *channeldb.HTLCAttemptInfo,
+	existingAttempts []channeldb.HTLCAttemptInfo,
 	totalAmt lnwire.MilliSatoshi, paymentHash lntypes.Hash,
 	timeout time.Duration,
 	paySession PaymentSession) ([32]byte, *route.Route, error) {
@@ -1811,9 +1804,9 @@ func (r *ChannelRouter) sendPayment(
 	}
 
 	existingShards := &paymentShards{}
-	if existingAttempt != nil {
+	for _, a := range existingAttempts {
 		s := &paymentShard{
-			existingAttempt,
+			&a,
 		}
 		existingShards.addShard(s)
 	}

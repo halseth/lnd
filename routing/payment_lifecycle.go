@@ -303,6 +303,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				log.Errorf("Attempt to send payment %x failed: %v",
 					p.paymentHash, result.Error)
 
+				// Mark the attempt failed.
 				err := p.router.cfg.Control.FailAttempt(
 					p.paymentHash, s.AttemptID,
 					result.Error,

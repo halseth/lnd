@@ -3022,6 +3022,7 @@ func testChannelForceClosure(net *lntest.NetworkHarness, t *harnessTest) {
 	allTypes := []commitType{
 		commitTypeLegacy,
 		commitTypeTweakless,
+		commitTypeAnchors,
 	}
 
 	for _, channelType := range allTypes {

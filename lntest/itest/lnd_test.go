@@ -608,7 +608,7 @@ func shutdownAndAssert(net *lntest.NetworkHarness, t *harnessTest,
 // TODO(conner) remove code duplication
 func calcStaticFee(numHTLCs int) btcutil.Amount {
 	const (
-		commitWeight = btcutil.Amount(724)
+		commitWeight = btcutil.Amount(1116)
 		htlcWeight   = 172
 		feePerKw     = btcutil.Amount(50 * 1000 / 4)
 	)

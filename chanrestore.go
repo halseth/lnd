@@ -110,6 +110,8 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 		return nil, fmt.Errorf("unknown Single version: %v", err)
 	}
 
+	chanType = chanType | channeldb.AnchorOutputsBit
+
 	chanShell := channeldb.ChannelShell{
 		NodeAddrs: backup.Addresses,
 		Chan: &channeldb.OpenChannel{

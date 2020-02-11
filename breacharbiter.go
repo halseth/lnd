@@ -951,6 +951,7 @@ func newRetributionInfo(chanPoint *wire.OutPoint,
 		if breachInfo.LocalOutputSignDesc.SingleTweak == nil {
 			witnessType = input.CommitSpendNoDelayTweakless
 		}
+		witnessType = input.CommitmentToRemoteConfirmed
 
 		localOutput := makeBreachedOutput(
 			&breachInfo.LocalOutpoint,
@@ -1117,6 +1118,7 @@ func (b *breachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 	for _, input := range inputs {
 		txn.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: *input.OutPoint(),
+			Sequence:         1,
 		})
 	}
 

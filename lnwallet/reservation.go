@@ -147,7 +147,9 @@ func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
 		initiator    bool
 	)
 
-	commitFee := commitFeePerKw.FeeForWeight(input.CommitWeight)
+	commitFee := commitFeePerKw.FeeForWeight(
+		input.AnchorCommitWeight,
+	)
 	localFundingMSat := lnwire.NewMSatFromSatoshis(localFundingAmt)
 	// TODO(halseth): make method take remote funding amount directly
 	// instead of inferring it from capacity and local amt.

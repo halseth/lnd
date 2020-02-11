@@ -89,6 +89,7 @@ func newBackupTask(chanID *lnwire.ChannelID,
 		if isTweakless {
 			witnessType = input.CommitSpendNoDelayTweakless
 		}
+		witnessType = input.CommitmentToRemoteConfirmed
 
 		toRemoteInput = input.NewBaseInput(
 			&breachInfo.LocalOutpoint,
@@ -214,6 +215,7 @@ func (t *backupTask) craftSessionPayload(
 	for prevOutPoint := range inputs {
 		justiceTxn.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: prevOutPoint,
+			Sequence:         1,
 		})
 	}
 
@@ -280,6 +282,8 @@ func (t *backupTask) craftSessionPayload(
 		case input.CommitSpendNoDelayTweakless:
 			fallthrough
 		case input.CommitmentNoDelay:
+			fallthrough
+		case input.CommitmentToRemoteConfirmed:
 			copy(justiceKit.CommitToRemoteSig[:], signature[:])
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -104,18 +103,7 @@ func (p *JusticeDescriptor) commitToRemoteInput() (*breachedInput, error) {
 		return nil, err
 	}
 
-	// Since the to-remote witness script should just be a regular p2wkh
-	// output, we'll parse it to retrieve the public key.
-	toRemotePubKey, err := btcec.ParsePubKey(toRemoteScript, btcec.S256())
-	if err != nil {
-		return nil, err
-	}
-
-	// Compute the witness script hash from the to-remote pubkey, which will
-	// be used to locate the input on the breach commitment transaction.
-	toRemoteScriptHash, err := input.CommitScriptUnencumbered(
-		toRemotePubKey,
-	)
+	toRemoteScriptHash, err := input.WitnessScriptHash(toRemoteScript)
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +152,7 @@ func (p *JusticeDescriptor) assembleJusticeTxn(txWeight int64,
 		totalAmt += btcutil.Amount(input.txOut.Value)
 		justiceTxn.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: input.outPoint,
+			Sequence:         1,
 		})
 	}
 

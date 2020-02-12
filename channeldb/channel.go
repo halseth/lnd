@@ -2523,6 +2523,19 @@ func (c *OpenChannel) Snapshot() *ChannelSnapshot {
 	return snapshot
 }
 
+// TODO(halseth): store non-constant in db when actual negotiation takes place.
+const anchorSize = 330
+
+// AnchorSize returns the output size for anchors on the channel commitment.
+// Will be zero for channel types without anchors.
+func (c *OpenChannel) AnchorSize() btcutil.Amount {
+	if c.ChanType.HasAnchors() {
+		return anchorSize
+	}
+
+	return 0
+}
+
 // LatestCommitments returns the two latest commitments for both the local and
 // remote party. These commitments are read from disk to ensure that only the
 // latest fully committed state is returned. The first commitment returned is

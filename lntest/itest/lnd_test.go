@@ -1055,6 +1055,10 @@ const (
 	// commiTypeTweakless is the commitment type where the remote key is
 	// static (non-tweaked).
 	commitTypeTweakless
+
+	// commitTypeAnchors is the kind of commitment that has extra outputs
+	// used for anchoring down to commitment using CPFP.
+	commitTypeAnchors
 )
 
 // String returns that name of the commitment type.
@@ -1064,6 +1068,8 @@ func (c commitType) String() string {
 		return "legacy"
 	case commitTypeTweakless:
 		return "tweakless"
+	case commitTypeAnchors:
+		return "anchors"
 	default:
 		return "invalid"
 	}
@@ -1076,6 +1082,8 @@ func (c commitType) Args() []string {
 		return []string{"--protocol.committweak"}
 	case commitTypeTweakless:
 		return []string{}
+	case commitTypeAnchors:
+		return []string{"--protocol.anchors"}
 	}
 
 	return nil
@@ -1095,6 +1103,7 @@ func testBasicChannelFunding(net *lntest.NetworkHarness, t *harnessTest) {
 	allTypes := []commitType{
 		commitTypeLegacy,
 		commitTypeTweakless,
+		commitTypeAnchors,
 	}
 
 test:
@@ -1147,9 +1156,15 @@ test:
 					t.Fatalf("failed funding flow: %v", err)
 				}
 
+				// The tweakless type and the anchor type are
+				// both tweakless.
+				carolAnchors := carolCommitType == commitTypeAnchors
 				carolTweakless := carolCommitType == commitTypeTweakless
+				carolTweakless = carolTweakless || carolAnchors
 
+				daveAnchors := daveCommitType == commitTypeAnchors
 				daveTweakless := daveCommitType == commitTypeTweakless
+				daveTweakless = daveTweakless || daveAnchors
 
 				tweaklessSignalled := carolTweakless && daveTweakless
 				tweaklessChans := (carolChannel.StaticRemoteKey &&
@@ -1168,6 +1183,34 @@ test:
 				case !tweaklessSignalled && tweaklessChans:
 					t.Fatalf("expected non-tweaked channel, got " +
 						"tweakless channel")
+				}
+
+				// Both nodes should report the same anchor
+				// size.
+				anchorSize := carolChannel.AnchorOutputSize
+				if anchorSize != daveChannel.AnchorOutputSize {
+					t.Fatalf("anchor size mismatch")
+				}
+				anchorsSignalled := carolAnchors && daveAnchors
+
+				switch {
+				// If both sides signalled support for anchor
+				// commitments, and the resulting channel
+				// doesn't reflect this, then this is a failed
+				// case.
+				case anchorsSignalled && anchorSize != 330:
+					t.Fatalf("expected anchor "+
+						"commitments, got anchor "+
+						"size %v", anchorSize)
+
+				// If either side didn't signal support for
+				// anchor commitments, and any of them is
+				// reporting the anchor size being non-zero.
+				// this is also a failed case.
+				case !anchorsSignalled && anchorSize != 0:
+					t.Fatalf("expected non-anchor "+
+						"channel, got anchor size %v",
+						anchorSize)
 				}
 
 				// As we've concluded this sub-test case we'll
@@ -2979,6 +3022,7 @@ func testChannelForceClosure(net *lntest.NetworkHarness, t *harnessTest) {
 	allTypes := []commitType{
 		commitTypeLegacy,
 		commitTypeTweakless,
+		commitTypeAnchors,
 	}
 
 	for _, channelType := range allTypes {

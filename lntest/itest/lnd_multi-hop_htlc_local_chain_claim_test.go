@@ -69,8 +69,8 @@ func testMultiHopHtlcClaims(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 
 	allTypes := []commitType{
-		commitTypeLegacy,
-		commitTypeTweakless,
+		//		commitTypeLegacy,
+		//		commitTypeTweakless,
 		commitTypeAnchors,
 	}
 

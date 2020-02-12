@@ -193,7 +193,24 @@ func (b *JusticeKit) CommitToRemoteWitnessScript() ([]byte, error) {
 		return nil, ErrNoCommitToRemoteOutput
 	}
 
-	return b.CommitToRemotePubKey[:], nil
+	pub, err := btcec.ParsePubKey(b.CommitToRemotePubKey[:], btcec.S256())
+	if err != nil {
+		return nil, err
+	}
+
+	//	switch b.WitnessType {
+	//	case input.CommitSpendToRemoteConfirmed:
+	//
+	//	default:
+	//		return nil, fmt.Errorf("unknown witness type: %v", b.WitnessType)
+	//	}
+
+	script, err := input.CommitScriptToRemoteConfirmed(pub)
+	if err != nil {
+		return nil, err
+	}
+
+	return script, nil
 }
 
 // CommitToRemoteWitnessStack returns a witness stack spending the commitment

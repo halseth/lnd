@@ -86,7 +86,16 @@ func newBackupTask(chanID *lnwire.ChannelID,
 	}
 	if breachInfo.LocalOutputSignDesc != nil {
 		witnessType := input.CommitmentNoDelay
-		if isTweakless {
+
+		switch {
+		// If we have our output (the breach's to_remote output) has a
+		// non-zero delay, it means it's of the confiremd to_remote
+		// type.
+		case breachInfo.LocalDelay != 0:
+			witnessType = input.CommitmentToRemoteConfirmed
+
+		// Otherwise, it could be non-delayed regular tweakless type.
+		case isTweakless:
 			witnessType = input.CommitSpendNoDelayTweakless
 		}
 
@@ -211,9 +220,10 @@ func (t *backupTask) craftSessionPayload(
 	// information. This will either be contain both the to-local and
 	// to-remote outputs, or only be the to-local output.
 	inputs := t.inputs()
-	for prevOutPoint := range inputs {
+	for prevOutPoint, inp := range inputs {
 		justiceTxn.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: prevOutPoint,
+			Sequence:         inp.BlocksToMaturity(),
 		})
 	}
 
@@ -280,6 +290,8 @@ func (t *backupTask) craftSessionPayload(
 		case input.CommitSpendNoDelayTweakless:
 			fallthrough
 		case input.CommitmentNoDelay:
+			fallthrough
+		case input.CommitmentToRemoteConfirmed:
 			copy(justiceKit.CommitToRemoteSig[:], signature[:])
 		}
 	}

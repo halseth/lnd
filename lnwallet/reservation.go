@@ -1,6 +1,7 @@
 package lnwallet
 
 import (
+	"fmt"
 	"net"
 	"sync"
 
@@ -136,7 +137,7 @@ type ChannelReservation struct {
 func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
 	commitFeePerKw chainfee.SatPerKWeight, wallet *LightningWallet,
 	id uint64, pushMSat lnwire.MilliSatoshi, chainHash *chainhash.Hash,
-	flags lnwire.FundingFlag, tweaklessCommit bool,
+	flags lnwire.FundingFlag, tweaklessCommit, anchorOutputs bool,
 	fundingAssembler chanfunding.Assembler,
 	pendingChanID [32]byte) (*ChannelReservation, error) {
 
@@ -146,12 +147,25 @@ func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
 		initiator    bool
 	)
 
-	commitFee := commitFeePerKw.FeeForWeight(input.CommitWeight)
+	// Based on the channel type, we determine the initial commit weight
+	// and fee.
+	commitWeight := int64(input.CommitWeight)
+	if anchorOutputs {
+		commitWeight = input.AnchorCommitWeight
+	}
+	commitFee := commitFeePerKw.FeeForWeight(commitWeight)
+
 	localFundingMSat := lnwire.NewMSatFromSatoshis(localFundingAmt)
 	// TODO(halseth): make method take remote funding amount directly
 	// instead of inferring it from capacity and local amt.
 	capacityMSat := lnwire.NewMSatFromSatoshis(capacity)
+
+	// The total fee paid by the initiator will be the commitment fee in
+	// addition to the two anchor outputs.
 	feeMSat := lnwire.NewMSatFromSatoshis(commitFee)
+	if anchorOutputs {
+		feeMSat += 2 * lnwire.NewMSatFromSatoshis(anchorSize)
+	}
 
 	// If we're the responder to a single-funder reservation, then we have
 	// no initial balance in the channel unless the remote party is pushing
@@ -249,6 +263,16 @@ func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
 		// technically the "initiator"
 		initiator = false
 		chanType |= channeldb.DualFunderBit
+	}
+
+	// We are adding anchor outputs to our commitment.
+	if anchorOutputs {
+		chanType |= channeldb.AnchorOutputsBit
+	}
+
+	// Anchor channel type must be used in combination with tweakless.
+	if chanType.HasAnchors() && !chanType.IsTweakless() {
+		return nil, fmt.Errorf("non-teakless anchor type")
 	}
 
 	return &ChannelReservation{

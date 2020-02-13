@@ -952,6 +952,12 @@ func newRetributionInfo(chanPoint *wire.OutPoint,
 			witnessType = input.CommitSpendNoDelayTweakless
 		}
 
+		// If the local delay is non-zero, it means this output is of
+		// the confirmed to_remote type.
+		if breachInfo.LocalDelay != 0 {
+			witnessType = input.CommitmentToRemoteConfirmed
+		}
+
 		localOutput := makeBreachedOutput(
 			&breachInfo.LocalOutpoint,
 			witnessType,
@@ -1117,6 +1123,7 @@ func (b *breachArbiter) sweepSpendableOutputsTxn(txWeight int64,
 	for _, input := range inputs {
 		txn.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: *input.OutPoint(),
+			Sequence:         input.BlocksToMaturity(),
 		})
 	}
 

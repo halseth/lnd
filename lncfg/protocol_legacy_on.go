@@ -2,10 +2,10 @@
 
 package lncfg
 
-// LegacyProtocol is a struct that we use to be able to test backwards
+// ProtocolOptions is a struct that we use to be able to test backwards
 // compatibility of protocol additions, while defaulting to the latest within
-// lnd.
-type LegacyProtocol struct {
+// lnd, or to enable experimental protocol changes.
+type ProtocolOptions struct {
 	// Onion if set to true, then we won't signal TLVOnionPayloadOptional.
 	// As a result, nodes that include us in the route won't use the new
 	// modern onion framing.
@@ -21,12 +21,12 @@ type LegacyProtocol struct {
 // LegacyOnion returns true if the old legacy onion format should be used when
 // we're an intermediate or final hop. This controls if we set the
 // TLVOnionPayloadOptional bit or not.
-func (l *LegacyProtocol) LegacyOnion() bool {
+func (l *ProtocolOptions) LegacyOnion() bool {
 	return l.Onion
 }
 
-// LegacyOnion returns true if the old commitment format should be used for new
-// funded channels.
-func (l *LegacyProtocol) LegacyCommitment() bool {
+// LegacyCommitment returns true if the old commitment format should be used
+// for new funded channels.
+func (l *ProtocolOptions) LegacyCommitment() bool {
 	return l.CommitmentTweak
 }

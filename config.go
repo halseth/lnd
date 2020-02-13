@@ -1125,6 +1125,15 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("Unable to parse node color: %v", err)
 	}
 
+	// For now we don't allow watchtowers to be active while anchpr
+	// commitments are, as it'll require a change to how we communicate
+	// with the tower.
+	// TODO(halseth): make the change you want to see in the world.
+	if cfg.Watchtower.Active && cfg.ProtocolOptions.AnchorCommitments() {
+		return nil, fmt.Errorf("anchor commitment type has no " +
+			"watchtower support")
+	}
+
 	// Warn about missing config file only after all other configuration is
 	// done.  This prevents the warning on help messages and invalid
 	// options.  Note this should go directly before the return.

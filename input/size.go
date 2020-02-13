@@ -213,7 +213,7 @@ const (
 	//      - witness_script (to_local_script)
 	ToLocalPenaltyWitnessSize = 1 + 1 + 73 + 1 + 1 + ToLocalScriptSize
 
-	// AcceptedHtlcScriptSize 139 bytes
+	// AcceptedHtlcScriptSize 142 bytes
 	//      - OP_DUP: 1 byte
 	//      - OP_HASH160: 1 byte
 	//      - OP_DATA: 1 byte (RIPEMD160(SHA256(revocationkey)) length)
@@ -247,11 +247,14 @@ const (
 	//                      - OP_DROP: 1 byte
 	//                      - OP_CHECKSIG: 1 byte
 	//              - OP_ENDIF: 1 byte
+	//              - OP_1: 1 byte
+	//              - OP_CSV: 1 byte
+	//              - OP_DROP: 1 byte
 	//      - OP_ENDIF: 1 byte
 	AcceptedHtlcScriptSize = 3*1 + 20 + 5*1 + 33 + 7*1 + 20 + 4*1 +
-		33 + 5*1 + 4 + 5*1
+		33 + 5*1 + 4 + 8*1
 
-	// AcceptedHtlcTimeoutWitnessSize 216
+	// AcceptedHtlcTimeoutWitnessSize 219
 	//      - number_of_witness_elements: 1 byte
 	//      - sender_sig_length: 1 byte
 	//      - sender_sig: 73 bytes
@@ -260,7 +263,7 @@ const (
 	//      - witness_script: (accepted_htlc_script)
 	AcceptedHtlcTimeoutWitnessSize = 1 + 1 + 73 + 1 + 1 + AcceptedHtlcScriptSize
 
-	// AcceptedHtlcSuccessWitnessSize 322 bytes
+	// AcceptedHtlcSuccessWitnessSize 325 bytes
 	//      - number_of_witness_elements: 1 byte
 	//      - nil_length: 1 byte
 	//      - sig_alice_length: 1 byte
@@ -273,7 +276,7 @@ const (
 	//      - witness_script (accepted_htlc_script)
 	AcceptedHtlcSuccessWitnessSize = 1 + 1 + 73 + 1 + 73 + 1 + 32 + 1 + AcceptedHtlcScriptSize
 
-	// AcceptedHtlcPenaltyWitnessSize 249 bytes
+	// AcceptedHtlcPenaltyWitnessSize 252 bytes
 	//      - number_of_witness_elements: 1 byte
 	//      - revocation_sig_length: 1 byte
 	//      - revocation_sig: 73 bytes
@@ -283,7 +286,7 @@ const (
 	//      - witness_script (accepted_htlc_script)
 	AcceptedHtlcPenaltyWitnessSize = 1 + 1 + 73 + 1 + 33 + 1 + AcceptedHtlcScriptSize
 
-	// OfferedHtlcScriptSize 133 bytes
+	// OfferedHtlcScriptSize 136 bytes
 	//      - OP_DUP: 1 byte
 	//      - OP_HASH160: 1 byte
 	//      - OP_DATA: 1 byte (RIPEMD160(SHA256(revocationkey)) length)
@@ -314,10 +317,13 @@ const (
 	//                      - OP_EQUALVERIFY: 1 byte
 	//                      - OP_CHECKSIG: 1 byte
 	//              - OP_ENDIF: 1 byte
+	//              - OP_1: 1 byte
+	//              - OP_CSV: 1 byte
+	//              - OP_DROP: 1 byte
 	//      - OP_ENDIF: 1 byte
-	OfferedHtlcScriptSize = 3*1 + 20 + 5*1 + 33 + 10*1 + 33 + 5*1 + 20 + 4*1
+	OfferedHtlcScriptSize = 3*1 + 20 + 5*1 + 33 + 10*1 + 33 + 5*1 + 20 + 7*1
 
-	// OfferedHtlcTimeoutWitnessSize 285 bytes
+	// OfferedHtlcTimeoutWitnessSize 288 bytes
 	//      - number_of_witness_elements: 1 byte
 	//      - nil_length: 1 byte
 	//      - sig_alice_length: 1 byte
@@ -329,7 +335,7 @@ const (
 	//      - witness_script (offered_htlc_script)
 	OfferedHtlcTimeoutWitnessSize = 1 + 1 + 1 + 73 + 1 + 73 + 1 + 1 + OfferedHtlcScriptSize
 
-	// OfferedHtlcSuccessWitnessSize 317 bytes
+	// OfferedHtlcSuccessWitnessSize 320 bytes
 	//      - number_of_witness_elements: 1 byte
 	//      - nil_length: 1 byte
 	//      - receiver_sig_length: 1 byte
@@ -342,7 +348,7 @@ const (
 	//      - witness_script (offered_htlc_script)
 	OfferedHtlcSuccessWitnessSize = 1 + 1 + 1 + 73 + 1 + 73 + 1 + 32 + 1 + OfferedHtlcScriptSize
 
-	// OfferedHtlcPenaltyWitnessSize 243 bytes
+	// OfferedHtlcPenaltyWitnessSize 246 bytes
 	//      - number_of_witness_elements: 1 byte
 	//      - revocation_sig_length: 1 byte
 	//      - revocation_sig: 73 bytes

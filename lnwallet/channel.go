@@ -6000,7 +6000,7 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 	// Compute the current balances for this commitment. This will take
 	// into account HTLCs to determine the commit weight, which the
 	// initiator must pay the fee for.
-	ourBalance, _, commitWeight, filteredView := lc.computeView(
+	ourBalance, theirBalance, commitWeight, filteredView := lc.computeView(
 		view, false, false,
 	)
 
@@ -6015,6 +6015,18 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 		ourBalance = 0
 	}
 
+	// We'll also subtract our counterparty's reserve from their balance,
+	// as we'll use thie balance below to calculate whether they can afford
+	// to pay the fee for our HTLC in case they are the channel initiator.
+	theirReserve := lnwire.NewMSatFromSatoshis(
+		lc.channelState.RemoteChanCfg.ChanReserve,
+	)
+	if theirReserve <= theirBalance {
+		theirBalance -= theirReserve
+	} else {
+		theirBalance = 0
+	}
+
 	// Calculate the commitment fee in the case where we would add another
 	// HTLC to the commitment, as only the balance remaining after this fee
 	// has been paid is actually available for sending.
@@ -6023,11 +6035,30 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 		feePerKw.FeeForWeight(commitWeight + input.HTLCWeight),
 	)
 
+	// In case the remote party is the initiator and cannot pay the fee for
+	// our HTLC, we'll find the largest HTLC value that will be considered
+	// dust on the commitment.
+	dustlimit := lnwire.NewMSatFromSatoshis(
+		lc.channelState.LocalChanCfg.DustLimit,
+	)
+
+	// For an extra HTLC fee to be paid on our commitment, the HTLC must be
+	// large enough to make a non-dust HTLC timeout transaction.
+	htlcFee := lnwire.NewMSatFromSatoshis(
+		htlcTimeoutFee(feePerKw),
+	)
+
+	// The HTLC output will be manifested on the commitment if it
+	// is non-dust after paying the HTLC fee.
+	nonDustHtlcAmt := dustlimit + htlcFee
+
+	switch {
+
 	// If we are the channel initiator, we must to subtract this commitment
 	// fee from our available balance in order to ensure we can afford both
 	// the value of the HTLC and the additional commitment fee from adding
 	// the HTLC.
-	if lc.channelState.IsInitiator {
+	case lc.channelState.IsInitiator:
 		// There is an edge case where our non-zero balance is lower
 		// than the htlcCommitFee, where we could still be sending dust
 		// HTLCs, but we return 0 in this case. This is to avoid
@@ -6039,6 +6070,14 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 		}
 
 		ourBalance -= htlcCommitFee
+
+	// If we're not the initiator, we must check whether the remote has
+	// enough balance to pay for the fee of our HTLC. If the they cannot
+	// pay the fee if we add another non-dust HTLC, set our available
+	// balance just below the non-dust amount, to avoid attempting HTLCs
+	// larger than this size.
+	case theirBalance < htlcCommitFee && ourBalance >= nonDustHtlcAmt:
+		ourBalance = nonDustHtlcAmt - 1
 	}
 
 	return ourBalance, commitWeight

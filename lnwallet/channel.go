@@ -6004,6 +6004,17 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 		view, false, false,
 	)
 
+	// We can never spend from the channel reserve, so we'll subtract it
+	// from our available balance.
+	ourReserve := lnwire.NewMSatFromSatoshis(
+		lc.channelState.LocalChanCfg.ChanReserve,
+	)
+	if ourReserve <= ourBalance {
+		ourBalance -= ourReserve
+	} else {
+		ourBalance = 0
+	}
+
 	// Given the commitment weight, find the commitment fee in case of no
 	// added HTLC output.
 	feePerKw := filteredView.feePerKw
@@ -6014,6 +6025,9 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView) (
 	// If we are the channel initiator, we must to subtract the commitment
 	// fee from our available balance.
 	if lc.channelState.IsInitiator {
+		if ourBalance < baseCommitFee {
+			return 0, commitWeight
+		}
 		ourBalance -= baseCommitFee
 	}
 
@@ -6225,13 +6239,14 @@ func (lc *LightningChannel) MaxFeeRate(maxAllocation float64) chainfee.SatPerKWe
 
 	// The maximum fee depends of the available balance that can be
 	// committed towards fees.
-	balance, weight := lc.availableBalance()
+	commit := lc.channelState.LocalCommitment
 	feeBalance := float64(
-		balance.ToSatoshis() + lc.channelState.LocalCommitment.CommitFee,
+		commit.LocalBalance.ToSatoshis() + commit.CommitFee,
 	)
 	maxFee := feeBalance * maxAllocation
 
 	// Ensure the fee rate doesn't dip below the fee floor.
+	_, weight := lc.availableBalance()
 	maxFeeRate := maxFee / (float64(weight) / 1000)
 	return chainfee.SatPerKWeight(
 		math.Max(maxFeeRate, float64(chainfee.FeePerKwFloor)),

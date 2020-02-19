@@ -2809,6 +2809,9 @@ message HTLCAttempt {
         This value will not be set if the HTLC is still IN_FLIGHT.
         */
         int64 resolve_time_ns = 4 [json_name = "resolve_time_ns"];
+
+        // Detailed htlc failure info.
+        Failure failure = 5;
 }
 
 message ListPaymentsRequest {
@@ -3135,6 +3138,11 @@ message Failure {
         PERMANENT_CHANNEL_FAILURE = 21;
         EXPIRY_TOO_FAR = 22;
         MPP_TIMEOUT = 23;
+
+        /**
+        An internal error occurred.
+        */
+        INTERNAL_FAILURE = 997;
 
         /**
         The error source is known, but the failure itself couldn't be decoded.

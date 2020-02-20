@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
@@ -135,9 +136,7 @@ func (p *controlTower) SettleAttempt(paymentHash lntypes.Hash,
 func (p *controlTower) FailAttempt(paymentHash lntypes.Hash,
 	attemptID uint64, reason error) error {
 
-	failInfo := &channeldb.HTLCFailInfo{
-		FailTime: time.Now(),
-	}
+	failInfo := marshallError(reason, time.Now())
 
 	return p.db.FailAttempt(paymentHash, attemptID, failInfo)
 }
@@ -280,4 +279,50 @@ func (p *controlTower) notifyFinalEvent(paymentHash lntypes.Hash,
 		subscriber <- *event
 		close(subscriber)
 	}
+}
+
+// marshallError marshall an error as received from the switch to a structure
+// that is suitable for database storage.
+func marshallError(sendError error, time time.Time) *channeldb.HTLCFailInfo {
+	response := &channeldb.HTLCFailInfo{
+		FailTime: time,
+	}
+
+	switch sendError {
+
+	case htlcswitch.ErrPaymentIDNotFound:
+		response.Reason = channeldb.HTLCFailInternal
+		return response
+
+	case htlcswitch.ErrUnreadableFailureMessage:
+		response.Reason = channeldb.HTLCFailUnreadable
+		return response
+	}
+
+	rtErr, ok := sendError.(htlcswitch.ClearTextError)
+	if !ok {
+		response.Reason = channeldb.HTLCFailInternal
+		return response
+	}
+
+	message := rtErr.WireMessage()
+	if message != nil {
+		response.Reason = channeldb.HTLCFailMessage
+		response.Message = message
+	} else {
+		response.Reason = channeldb.HTLCFailUnknown
+	}
+
+	// If the ClearTextError received is a ForwardingError, the error
+	// originated from a node along the route, not locally on our outgoing
+	// link. We set failureSourceIdx to the index of the node where the
+	// failure occurred. If the error is not a ForwardingError, the failure
+	// occurred at our node, so we leave the index as 0 to indicate that
+	// we failed locally.
+	fErr, ok := rtErr.(*htlcswitch.ForwardingError)
+	if ok {
+		response.FailureSourceIndex = uint32(fErr.FailureSourceIdx)
+	}
+
+	return response
 }

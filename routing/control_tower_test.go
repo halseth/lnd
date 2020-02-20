@@ -3,6 +3,7 @@ package routing
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,9 +14,8 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/routing/route"
-
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 var (
@@ -111,7 +111,8 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 	}
 
 	// Mark the payment as successful.
-	if err := pControl.Success(info.PaymentHash, preimg); err != nil {
+	err = pControl.SettleAttempt(info.PaymentHash, attempt.AttemptID, preimg)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,6 +213,15 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 		err = pControl.RegisterAttempt(info.PaymentHash, attempt)
 		if err != nil {
 			t.Fatal(err)
+		}
+
+		// Fail the payment attempt.
+		err := pControl.FailAttempt(
+			info.PaymentHash, attempt.AttemptID,
+			errors.New("fail"),
+		)
+		if err != nil {
+			t.Fatalf("unable to fail htlc: %v", err)
 		}
 	}
 

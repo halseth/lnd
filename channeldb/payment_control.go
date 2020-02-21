@@ -251,8 +251,15 @@ func (p *PaymentControl) GetAttempts(paymentHash lntypes.Hash) (
 			return err
 		}
 
-		as, err = fetchHtlcAttempts(bucket)
-		return err
+		htlcsBucket := bucket.Bucket(paymentHtlcsBucket)
+		if htlcsBucket != nil {
+			as, err = fetchHtlcAttempts(htlcsBucket)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -278,9 +285,9 @@ func (p *PaymentControl) updateHtlcKey(paymentHash lntypes.Hash,
 		}
 
 		// We can only update keys of in-flight payments.
-		if err := ensureInFlight(bucket); err != nil {
-			return err
-		}
+		//		if err := ensureInFlight(bucket); err != nil {
+		//			return err
+		//		}
 
 		htlcsBucket := bucket.Bucket(paymentHtlcsBucket)
 		if htlcsBucket == nil {

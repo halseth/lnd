@@ -133,6 +133,10 @@ func (svc *Service) StreamServerInterceptor(
 	return func(srv interface{}, ss grpc.ServerStream,
 		info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 
+		// TODO: if wallet unlocker, call handler without cehcking macaroon.
+		// or just add methods with empty permissions to map?
+		//  - no, because stor is not unlocked at that point.
+
 		if _, ok := permissionMap[info.FullMethod]; !ok {
 			return fmt.Errorf("%s: unknown permissions required "+
 				"for method", info.FullMethod)

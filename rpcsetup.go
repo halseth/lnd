@@ -172,6 +172,20 @@ func (r *rpcState) Init() error {
 
 	lnrpc.RegisterLightningServer(r.grpcServer, r.rpcServer)
 
+	registeredSubServers := lnrpc.RegisteredSubServers()
+	for _, subServer := range registeredSubServers {
+		subServerInstance, macPerms, err := subServer.New(deps.subServerCgs)
+		if err != nil {
+			return err
+		}
+
+		// We'll collect the sub-server, and also the set of
+		// permissions it needs for macaroons so we can apply the
+		// interceptors below.
+		subServers = append(subServers, subServerInstance)
+		subServerPerms = append(subServerPerms, macPerms)
+	}
+
 	// Now the main RPC server has been registered, we'll iterate through
 	// all the sub-RPC servers and register them to ensure that requests
 	// are properly routed towards them.

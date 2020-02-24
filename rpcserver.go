@@ -568,6 +568,8 @@ func (r *rpcServer) populateDependencies(deps *rpcDeps) error {
 
 	// Now that the sub-servers have all their dependencies in place, we
 	// can create each sub-server!
+
+	// Hmm, we must create subservers before dependencies are set, such that they can be registered with the RPC server.
 	registeredSubServers := lnrpc.RegisteredSubServers()
 	for _, subServer := range registeredSubServers {
 		subServerInstance, macPerms, err := subServer.New(deps.subServerCgs)

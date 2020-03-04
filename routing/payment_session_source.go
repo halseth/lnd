@@ -78,8 +78,7 @@ func (m *SessionSource) NewPaymentSession(p *LightningPayment) (
 // NewPaymentSessionForRoute creates a new paymentSession instance that is just
 // used for failure reporting to missioncontrol.
 func (m *SessionSource) NewPaymentSessionForRoute(preBuiltRoute *route.Route) PaymentSession {
-	return &paymentSession{
-		sessionSource: m,
+	return &paymentSessionBuilder{
 		preBuiltRoute: preBuiltRoute,
 	}
 }
@@ -88,8 +87,7 @@ func (m *SessionSource) NewPaymentSessionForRoute(preBuiltRoute *route.Route) Pa
 // and will be exhausted immediately. Used for failure reporting to
 // missioncontrol for resumed payment we don't want to make more attempts for.
 func (m *SessionSource) NewPaymentSessionEmpty() PaymentSession {
-	return &paymentSession{
-		sessionSource:      m,
+	return &paymentSessionBuilder{
 		preBuiltRoute:      &route.Route{},
 		preBuiltRouteTried: true,
 	}

@@ -1818,8 +1818,11 @@ func (r *ChannelRouter) sendPayment(
 		paymentHash:   paymentHash,
 		paySession:    paySession,
 		currentHeight: currentHeight,
-		attempt:       existingAttempt,
 		lastError:     nil,
+	}
+
+	if existingAttempt != nil {
+		p.existingAttempts = append(p.existingAttempts, *existingAttempt)
 	}
 
 	// If a timeout is specified, create a timeout channel. If no timeout is

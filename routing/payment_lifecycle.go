@@ -55,6 +55,10 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 		p.wgCollectShard.Wait()
 	}()
 
+	// Cancel the payment session when we exit to signal underlying
+	// goroutines can exit.
+	defer p.paySession.Cancel()
+
 	// Each time we send a new payment shard, we'll spin up a goroutine
 	// that will collect the result. Either a payment result will be
 	// returned, or a critical error signaling that we should immediately
@@ -70,7 +74,10 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 	// outstanding shards and resume their goroutines such that the final
 	// result will be given to the lifecycle loop below.
 	for _, a := range p.existingAttempts {
-		err := shards.AddShard(&a)
+		err := shards.AddShard(
+			&a,
+			make(chan *RouteResult, 1), // Result will be ignore.
+		)
 		if err != nil {
 			return [32]byte{}, nil, err
 		}
@@ -85,6 +92,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 		// If we have no outstanding shards, we create and send one
 		// now.
+		var rt *RouteIntent
 		if shards.Num() == 0 {
 			// Before we attempt this next payment, we'll check to see if either
 			// we've gone past the payment attempt timeout, or the router is
@@ -117,8 +125,11 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			}
 
 			// Create a new payment attempt from the given payment session.
-			rt, err := p.paySession.RequestRoute(uint32(p.currentHeight))
-			if err != nil {
+			newRoute, routeErr := p.paySession.RequestRoute(
+				p.totalAmount, uint32(p.currentHeight),
+			)
+			select {
+			case err := <-routeErr:
 				log.Warnf("Failed to find route for payment %x: %v",
 					p.paymentHash, err)
 
@@ -143,12 +154,14 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 				// Terminal state, return.
 				return [32]byte{}, nil, err
+
+			case rt = <-newRoute:
 			}
 
 			// Using the route received from the payment session,
 			// create a new shard to send.
 			firstHop, htlcAdd, attempt, err := p.createNewPaymentAttempt(
-				rt,
+				rt.Route,
 			)
 			// With SendToRoute, it can happen that the route exceeds protocol
 			// constraints. Mark the payment as failed with an internal error.
@@ -177,7 +190,8 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			// such that we can query the Switch for its whereabouts. The
 			// route is needed to handle the result when it eventually
 			// comes back.
-			if err := shards.RegisterNewShard(attempt); err != nil {
+			err = shards.RegisterNewShard(attempt, rt.ResultChan)
+			if err != nil {
 				return [32]byte{}, nil, err
 			}
 

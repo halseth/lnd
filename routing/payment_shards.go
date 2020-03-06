@@ -10,6 +10,8 @@ import (
 // larger payment.
 type paymentShard struct {
 	*channeldb.HTLCAttemptInfo
+
+	ResultChan chan *RouteResult
 }
 
 // PaymentShards holds a set of active payment shards.
@@ -28,25 +30,28 @@ func (p *PaymentShards) Num() int {
 
 // RegisterNewShard checkpoints the passed attempt to the ControlTower, and
 // adds it to the set of payment shards.
-func (p *PaymentShards) RegisterNewShard(
-	attempt *channeldb.HTLCAttemptInfo) error {
+func (p *PaymentShards) RegisterNewShard(attempt *channeldb.HTLCAttemptInfo,
+	resultChan chan *RouteResult) error {
 
 	err := p.Control.RegisterAttempt(p.PaymentHash, attempt)
 	if err != nil {
 		return err
 	}
 
-	return p.AddShard(attempt)
+	return p.AddShard(attempt, resultChan)
 }
 
 // AddShard adds the given shard to the set of active payment shards.
-func (p *PaymentShards) AddShard(attempt *channeldb.HTLCAttemptInfo) error {
+func (p *PaymentShards) AddShard(attempt *channeldb.HTLCAttemptInfo,
+	resultChan chan *RouteResult) error {
+
 	if p.shards == nil {
 		p.shards = make(map[uint64]*paymentShard)
 	}
 
 	s := &paymentShard{
 		HTLCAttemptInfo: attempt,
+		ResultChan:      resultChan,
 	}
 
 	// Add the shard and update the total value of the set.
@@ -68,9 +73,15 @@ func (p *PaymentShards) SettleShard(attempt *channeldb.HTLCAttemptInfo,
 		return err
 	}
 
+	s := p.shards[attempt.AttemptID]
+	s.ResultChan <- &RouteResult{
+		Preimage: preimage,
+	}
+
 	// Remove and updat the total value.
 	delete(p.shards, attempt.AttemptID)
 	p.totalValue -= attempt.Route.Amt()
+
 	return nil
 }
 
@@ -83,6 +94,11 @@ func (p *PaymentShards) FailShard(attempt *channeldb.HTLCAttemptInfo,
 	)
 	if err != nil {
 		return err
+	}
+
+	s := p.shards[attempt.AttemptID]
+	s.ResultChan <- &RouteResult{
+		Err: sendErr,
 	}
 
 	// Remove and update the total value.

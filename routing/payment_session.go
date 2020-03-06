@@ -27,6 +27,34 @@ type PaymentSession interface {
 	RequestRoute(height uint32) (*route.Route, error)
 }
 
+// paymentSessionBuilder is an implementation of PaymentSession that can be
+// used in combination with SendToRoute.
+type paymentSessionBuilder struct {
+	preBuiltRoute      *route.Route
+	preBuiltRouteTried bool
+}
+
+// RequestRoutes fetches routes fromt the paymentSessionBuilder's prebuilt
+// routes.
+//
+// NOTE: Part of the PaymentSession interface.
+func (p *paymentSessionBuilder) RequestRoute(height uint32) (
+	*route.Route, error) {
+
+	switch {
+
+	// If we have a pre-built route, use that directly.
+	case p.preBuiltRoute != nil && !p.preBuiltRouteTried:
+		p.preBuiltRouteTried = true
+
+		return p.preBuiltRoute, nil
+	}
+
+	// If the pre-built route has been tried already, the payment session is
+	// over.
+	return nil, errPrebuiltRouteTried
+}
+
 // paymentSession is used during an HTLC routings session to prune the local
 // chain view in response to failures, and also report those failures back to
 // MissionControl. The snapshot copied for this session will only ever grow,
@@ -44,9 +72,6 @@ type paymentSession struct {
 
 	payment *LightningPayment
 
-	preBuiltRoute      *route.Route
-	preBuiltRouteTried bool
-
 	pathFinder pathFinder
 }
 
@@ -60,21 +85,6 @@ type paymentSession struct {
 // NOTE: This function is safe for concurrent access.
 // NOTE: Part of the PaymentSession interface.
 func (p *paymentSession) RequestRoute(height uint32) (*route.Route, error) {
-
-	switch {
-
-	// If we have a pre-built route, use that directly.
-	case p.preBuiltRoute != nil && !p.preBuiltRouteTried:
-		p.preBuiltRouteTried = true
-
-		return p.preBuiltRoute, nil
-
-	// If the pre-built route has been tried already, the payment session is
-	// over.
-	case p.preBuiltRoute != nil:
-		return nil, errPrebuiltRouteTried
-	}
-
 	// Add BlockPadding to the finalCltvDelta so that the receiving node
 	// does not reject the HTLC if some blocks are mined while it's in-flight.
 	finalCltvDelta := p.payment.FinalCLTVDelta

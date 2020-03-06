@@ -1748,6 +1748,14 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 		// Calculate amount paid to receiver.
 		amt := route.Amt()
 
+		// If this is meant as a MP payment shard, we set the amount
+		// for the creting info to the total amount of the payment.
+		finalHop := route.Hops[len(route.Hops)-1]
+		mpp := finalHop.MPP
+		if mpp != nil {
+			amt = mpp.TotalMsat()
+		}
+
 		// Record this payment hash with the ControlTower, ensuring it
 		// is not already in-flight.
 		info := &channeldb.PaymentCreationInfo{

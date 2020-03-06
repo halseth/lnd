@@ -239,6 +239,35 @@ func (p *PaymentControl) FailAttempt(hash lntypes.Hash,
 	return err
 }
 
+// GetAttempts returns all registered attempts for this payment, and
+// their status.
+func (p *PaymentControl) GetAttempts(paymentHash lntypes.Hash) (
+	[]HTLCAttempt, error) {
+
+	var as []HTLCAttempt
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		bucket, err := fetchPaymentBucket(tx, paymentHash)
+		if err != nil {
+			return err
+		}
+
+		htlcsBucket := bucket.Bucket(paymentHtlcsBucket)
+		if htlcsBucket != nil {
+			as, err = fetchHtlcAttempts(htlcsBucket)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return as, nil
+}
+
 // updateHtlcKey updates a database key for the specified htlc.
 func (p *PaymentControl) updateHtlcKey(paymentHash lntypes.Hash,
 	attemptID uint64, key, value []byte) (*MPPayment, error) {

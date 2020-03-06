@@ -1819,7 +1819,6 @@ func (r *ChannelRouter) sendPayment(
 		paySession:    paySession,
 		currentHeight: currentHeight,
 		attempt:       existingAttempt,
-		circuit:       nil,
 		lastError:     nil,
 	}
 

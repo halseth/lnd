@@ -168,15 +168,20 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			}
 
 			// With the route in hand, laumnch a new shard.
-			attempt, err = shardHandler.launch(rt)
+			attempt, outcome, err = shardHandler.launch(rt)
 			if err != nil {
 				return [32]byte{}, nil, err
 			}
 
-			// We'll collect the result of the shard just sent.
-			outcome, err = shardHandler.collectResult(attempt)
-			if err != nil {
-				return [32]byte{}, nil, err
+			// It could happen we have an outcome available
+			// already, if so go straight to handling this outcome.
+			if outcome == nil {
+				// We'll collect the result of the shard just sent.
+				var err error
+				outcome, err = shardHandler.collectResult(attempt)
+				if err != nil {
+					return [32]byte{}, nil, err
+				}
 			}
 		}
 
@@ -223,9 +228,12 @@ type shardHandler struct {
 	router      *ChannelRouter
 }
 
-// launch creates and send a HTLC attempt along the given route.
+// launch creates and send a HTLC attempt along the given route. If the HTLC is
+// successfully sent an HTLCAttemptInfo will be returned. If we encounter a
+// non-critical outcome before we are able to send the HTLC, a non-nil
+// shardOutcome will be returned.
 func (p *shardHandler) launch(rt *route.Route) (*channeldb.HTLCAttemptInfo,
-	error) {
+	*shardOutcome, error) {
 
 	// Using the route received from the payment session, create a new
 	// shard to send.
@@ -233,7 +241,7 @@ func (p *shardHandler) launch(rt *route.Route) (*channeldb.HTLCAttemptInfo,
 		rt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Before sending this HTLC to the switch, we checkpoint the fresh
@@ -243,7 +251,7 @@ func (p *shardHandler) launch(rt *route.Route) (*channeldb.HTLCAttemptInfo,
 	// when it eventually comes back.
 	err = p.router.cfg.Control.RegisterAttempt(p.paymentHash, attempt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Now that the attempt is created and checkpointed to the DB, we send
@@ -254,28 +262,17 @@ func (p *shardHandler) launch(rt *route.Route) (*channeldb.HTLCAttemptInfo,
 		// from real send errors.
 		err = p.failAttempt(attempt, sendErr)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
-		// We must inspect the error to know whether it was critical or
-		// not, to decide whether we should continue trying.
+		// We enncountered an error before we were able to send the
+		// shard, return a shardOutcome for the caller to handle this
+		// properly.
 		outcome := p.handleSendError(attempt, sendErr)
-
-		// If the outcome had a payment level failure, we'll mark the
-		// payment failed with the control tower and exit.
-		if outcome.paymentFailure != nil {
-			err := p.router.cfg.Control.Fail(
-				p.paymentHash,
-				outcome.paymentFailure.failureCode,
-			)
-			if err != nil {
-				return nil, err
-			}
-			return nil, outcome.paymentFailure
-		}
+		return nil, outcome, nil
 	}
 
-	return attempt, nil
+	return attempt, nil, nil
 }
 
 // collectResult waits for the result for the given attempt to be available

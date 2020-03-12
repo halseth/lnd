@@ -1759,7 +1759,7 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 		paymentHash: hash,
 	}
 
-	attempt, err := sh.launch(rt)
+	attempt, outcome, err := sh.launch(rt)
 
 	// With SendToRoute, it can happen that the route exceeds protocol
 	// constraints. Mark the payment as failed with an internal error.
@@ -1782,10 +1782,14 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 		return lntypes.Preimage{}, err
 	}
 
-	// Wait for the result to be available.
-	outcome, err := sh.collectResult(attempt)
-	if err != nil {
-		return lntypes.Preimage{}, err
+	// It could happen we have an outcome available
+	// already, if so go straight to handling this outcome.
+	if outcome == nil {
+		// Wait for the result to be available.
+		outcome, err = sh.collectResult(attempt)
+		if err != nil {
+			return lntypes.Preimage{}, err
+		}
 	}
 
 	// If the outcome had any failure, we'll mark the

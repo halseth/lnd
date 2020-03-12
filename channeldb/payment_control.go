@@ -242,11 +242,6 @@ func (p *PaymentControl) updateHtlcKey(paymentHash lntypes.Hash,
 			return err
 		}
 
-		// We can only update keys of in-flight payments.
-		if err := ensureInFlight(bucket); err != nil {
-			return err
-		}
-
 		htlcsBucket := bucket.Bucket(paymentHtlcsBucket)
 		if htlcsBucket == nil {
 			return fmt.Errorf("htlcs bucket not found")

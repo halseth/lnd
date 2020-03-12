@@ -275,6 +275,34 @@ func (p *PaymentControl) updateHtlcKey(paymentHash lntypes.Hash,
 	return payment, err
 }
 
+// GetAttempts returns all registered attempts for this payment.
+func (p *PaymentControl) GetAttempts(paymentHash lntypes.Hash) (
+	[]HTLCAttempt, error) {
+
+	var as []HTLCAttempt
+	err := p.db.View(func(tx *bbolt.Tx) error {
+		bucket, err := fetchPaymentBucket(tx, paymentHash)
+		if err != nil {
+			return err
+		}
+
+		htlcsBucket := bucket.Bucket(paymentHtlcsBucket)
+		if htlcsBucket != nil {
+			as, err = fetchHtlcAttempts(htlcsBucket)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return as, nil
+}
+
 // Fail transitions a payment into the Failed state, and records the reason the
 // payment failed. After invoking this method, InitPayment should return nil on
 // its next call for this payment hash, allowing the switch to make a

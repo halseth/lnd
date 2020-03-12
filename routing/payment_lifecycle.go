@@ -27,6 +27,42 @@ func (e errNoRoute) Error() string {
 		e.lastError)
 }
 
+// paymentFailure represents a terminal failure that can happen during the
+// payment lifecycle, indicating that the overall payment should be considered
+// failed. We use it to record such an encountered error while we wait for the
+// remaining shards to finish.
+type paymentFailure struct {
+	failureCode channeldb.FailureReason
+	err         error
+}
+
+// Error returns the human-readable error string for the paymentFailure.
+func (e *paymentFailure) Error() string {
+	return e.err.Error()
+}
+
+// shardOutcome represents the parsed result of a payment shard. It can
+// indicate if the shard succeeded yielding a preimage, if the shard failed
+// with an error that indicates the overall payment should be considered
+// failed, or if only the shard failed and we can re-attempt with the remaining
+// value.
+type shardOutcome struct {
+	// preimage is the preimage retrieved from the succeeding shard. Will
+	// only be non-zero if neither failures are set.
+	preimage lntypes.Preimage
+
+	// paymentFailure indicates this shard encountered a failure serious
+	// enough that we should stop attempting this payment and consider it
+	// failed. If this is nil it is considered safe to make another shard
+	// attempt.
+	paymentFailure *paymentFailure
+
+	// shardFailure is an error indicating that the shard failed. If this
+	// is non-nil but the paymentFailure is nil, we consider the shard
+	// failed, but safe to continue the payment process with new shards.
+	shardFailure error
+}
+
 // paymentLifecycle holds all information about the current state of a payment
 // needed to resume if from any point.
 type paymentLifecycle struct {
@@ -164,9 +200,20 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				// We must inspect the error to know whether it
 				// was critical or not, to decide whether we
 				// should continue trying.
-				err := p.handleSendError(sendErr)
-				if err != nil {
-					return [32]byte{}, nil, err
+				outcome := p.handleSendError(sendErr)
+
+				// If the outcome had a payment level failure,
+				// we'll mark the payment failed with the
+				// control tower and exit.
+				if outcome.paymentFailure != nil {
+					err := p.router.cfg.Control.Fail(
+						p.paymentHash,
+						outcome.paymentFailure.failureCode,
+					)
+					if err != nil {
+						return [32]byte{}, nil, err
+					}
+					return [32]byte{}, nil, outcome.paymentFailure
 				}
 
 				// Error was handled successfully, reset the
@@ -259,11 +306,24 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				return [32]byte{}, nil, err
 			}
 
-			// We must inspect the error to know whether it was
-			// critical or not, to decide whether we should
-			// continue trying.
-			if err := p.handleSendError(result.Error); err != nil {
-				return [32]byte{}, nil, err
+			// We must inspect the error to know whether it
+			// was critical or not, to decide whether we
+			// should continue trying.
+			outcome := p.handleSendError(result.Error)
+
+			// If the outcome had a payment level failure,
+			// we'll mark the payment failed with the
+			// control tower and exit.
+			if outcome.paymentFailure != nil {
+				err := p.router.cfg.Control.Fail(
+					p.paymentHash,
+					outcome.paymentFailure.failureCode,
+				)
+				if err != nil {
+					return [32]byte{}, nil, err
+				}
+
+				return [32]byte{}, nil, outcome.paymentFailure
 			}
 
 			// Error was handled successfully, reset the attempt to
@@ -419,8 +479,14 @@ func (p *paymentLifecycle) sendPaymentAttempt(firstHop lnwire.ShortChannelID,
 }
 
 // handleSendError inspects the given error from the Switch and determines
-// whether we should make another payment attempt.
-func (p *paymentLifecycle) handleSendError(sendErr error) error {
+// whether we should make another payment attempt. It returns a shardOutcome
+// indicating if the shard failed, or the whole payment should be considered
+// failed.
+func (p *paymentLifecycle) handleSendError(sendErr error) *shardOutcome {
+	// The shard failed so set the sendErr as shardFailure to begin with.
+	outcome := &shardOutcome{
+		shardFailure: sendErr,
+	}
 
 	reason := p.router.processSendError(
 		p.attempt.AttemptID, &p.attempt.Route, sendErr,
@@ -430,25 +496,21 @@ func (p *paymentLifecycle) handleSendError(sendErr error) error {
 		// this turns out to be the last attempt.
 		p.lastError = sendErr
 
-		return nil
+		return outcome
 	}
 
 	log.Debugf("Payment %x failed: final_outcome=%v, raw_err=%v",
 		p.paymentHash, *reason, sendErr)
 
-	// Mark the payment failed with no route.
-	//
-	// TODO(halseth): make payment codes for the actual reason we don't
-	// continue path finding.
-	err := p.router.cfg.Control.Fail(
-		p.paymentHash, *reason,
-	)
-	if err != nil {
-		return err
+	// If we find a payment level failure reason, populate the
+	// paymentFailure of the outcome to indicate the whole payment should
+	// be considered failed, not just the shard.
+	outcome.paymentFailure = &paymentFailure{
+		failureCode: *reason,
+		err:         sendErr,
 	}
 
-	// Terminal state, return the error we encountered.
-	return sendErr
+	return outcome
 }
 
 // failAttempt calls control tower to fail the current payment attempt.

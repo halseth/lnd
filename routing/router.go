@@ -525,6 +525,7 @@ func (r *ChannelRouter) Start() error {
 	for _, payment := range payments {
 		log.Infof("Resuming payment with hash %v", payment.Info.PaymentHash)
 		r.wg.Add(1)
+
 		go func(payment *channeldb.InFlightPayment) {
 			defer r.wg.Done()
 
@@ -533,18 +534,10 @@ func (r *ChannelRouter) Start() error {
 			// result for the in-flight attempt is received.
 			paySession := r.cfg.SessionSource.NewPaymentSessionEmpty()
 
-			// TODO(joostjager): For mpp, possibly relaunch multiple
-			// in-flight htlcs here.
-			var attempt *channeldb.HTLCAttemptInfo
-			if len(payment.Attempts) > 0 {
-				attempt = &payment.Attempts[0]
-			}
-
 			// Timeout doesn't need to be set, as there is
 			// only a single attempt.
 			_, _, err := r.sendPayment(
-				attempt, payment.Info.Value,
-				payment.Info.PaymentHash, 0, paySession,
+				payment.Info.Value, payment.Info.PaymentHash, 0, paySession,
 			)
 			if err != nil {
 				log.Errorf("Resuming payment with hash %v "+
@@ -1640,7 +1633,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte,
 	// Since this is the first time this payment is being made, we pass nil
 	// for the existing attempt.
 	return r.sendPayment(
-		nil, payment.Amount, payment.PaymentHash,
+		payment.Amount, payment.PaymentHash,
 		payment.PayAttemptTimeout, paySession,
 	)
 }
@@ -1660,7 +1653,7 @@ func (r *ChannelRouter) SendPaymentAsync(payment *LightningPayment) error {
 		defer r.wg.Done()
 
 		_, _, err := r.sendPayment(
-			nil, payment.Amount, payment.PaymentHash,
+			payment.Amount, payment.PaymentHash,
 			payment.PayAttemptTimeout, paySession,
 		)
 		if err != nil {
@@ -1782,8 +1775,8 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 		return lntypes.Preimage{}, err
 	}
 
-	// It could happen we have an outcome available
-	// already, if so go straight to handling this outcome.
+	// It could happen we have an outcome available already, if so go
+	// straight to handling this outcome.
 	if outcome == nil {
 		// Wait for the result to be available.
 		outcome, err = sh.collectResult(attempt)
@@ -1839,7 +1832,6 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
 func (r *ChannelRouter) sendPayment(
-	existingAttempt *channeldb.HTLCAttemptInfo,
 	totalAmt lnwire.MilliSatoshi, paymentHash lntypes.Hash,
 	timeout time.Duration,
 	paySession PaymentSession) ([32]byte, *route.Route, error) {
@@ -1854,12 +1846,11 @@ func (r *ChannelRouter) sendPayment(
 	// Now set up a paymentLifecycle struct with these params, such that we
 	// can resume the payment from the current state.
 	p := &paymentLifecycle{
-		router:          r,
-		totalAmount:     totalAmt,
-		paymentHash:     paymentHash,
-		paySession:      paySession,
-		currentHeight:   currentHeight,
-		existingAttempt: existingAttempt,
+		router:        r,
+		totalAmount:   totalAmt,
+		paymentHash:   paymentHash,
+		paySession:    paySession,
+		currentHeight: currentHeight,
 	}
 
 	// If a timeout is specified, create a timeout channel. If no timeout is

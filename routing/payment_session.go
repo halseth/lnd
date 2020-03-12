@@ -24,7 +24,7 @@ var (
 type PaymentSession interface {
 	// RequestRoute returns the next route to attempt for routing the
 	// specified HTLC payment to the target node.
-	RequestRoute(height uint32) (*route.Route, error)
+	RequestRoute(amt lnwire.MilliSatoshi, height uint32) (*route.Route, error)
 }
 
 // paymentSession is used during an HTLC routings session to prune the local
@@ -59,7 +59,8 @@ type paymentSession struct {
 //
 // NOTE: This function is safe for concurrent access.
 // NOTE: Part of the PaymentSession interface.
-func (p *paymentSession) RequestRoute(height uint32) (*route.Route, error) {
+func (p *paymentSession) RequestRoute(amt lnwire.MilliSatoshi,
+	height uint32) (*route.Route, error) {
 
 	switch {
 
@@ -124,7 +125,7 @@ func (p *paymentSession) RequestRoute(height uint32) (*route.Route, error) {
 		},
 		restrictions, &ss.PathFindingConfig,
 		ss.SelfNode.PubKeyBytes, p.payment.Target,
-		p.payment.Amount, finalHtlcExpiry,
+		amt, finalHtlcExpiry,
 	)
 	if err != nil {
 		return nil, err
@@ -136,7 +137,7 @@ func (p *paymentSession) RequestRoute(height uint32) (*route.Route, error) {
 	route, err := newRoute(
 		sourceVertex, path, height,
 		finalHopParams{
-			amt:         p.payment.Amount,
+			amt:         amt,
 			cltvDelta:   finalCltvDelta,
 			records:     p.payment.DestCustomRecords,
 			paymentAddr: p.payment.PaymentAddr,

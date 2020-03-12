@@ -268,7 +268,7 @@ func (p *paymentLifecycle) createNewPaymentAttempt() (lnwire.ShortChannelID,
 	}
 
 	// Create a new payment attempt from the given payment session.
-	rt, err := p.paySession.RequestRoute(uint32(p.currentHeight))
+	rt, err := p.paySession.RequestRoute(p.totalAmount, uint32(p.currentHeight))
 	if err != nil {
 		log.Warnf("Failed to find route for payment %x: %v",
 			p.paymentHash, err)

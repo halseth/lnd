@@ -82,8 +82,22 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 		paymentHash: p.paymentHash,
 	}
 
-	var lastError error
-	attempt := p.existingAttempt
+	var (
+		lastError error
+		outcome   *shardOutcome
+		attempt   *channeldb.HTLCAttemptInfo
+	)
+
+	// If we have an existing attempt, we'll start by collecting its result.
+	if p.existingAttempt != nil {
+		attempt = p.existingAttempt
+
+		var err error
+		outcome, err = shardHandler.collectResult(attempt)
+		if err != nil {
+			return [32]byte{}, nil, err
+		}
+	}
 
 	// We'll continue until either our payment succeeds, or we encounter a
 	// critical error during path finding.
@@ -158,13 +172,12 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			if err != nil {
 				return [32]byte{}, nil, err
 			}
-		}
 
-		// Whether this was an existing attempt or one we just sent,
-		// we'll not collect its result.
-		outcome, err := shardHandler.collectResult(attempt)
-		if err != nil {
-			return [32]byte{}, nil, err
+			// We'll collect the result of the shard just sent.
+			outcome, err = shardHandler.collectResult(attempt)
+			if err != nil {
+				return [32]byte{}, nil, err
+			}
 		}
 
 		// We must inspect the error to know whether it

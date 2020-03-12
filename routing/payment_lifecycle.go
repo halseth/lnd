@@ -556,7 +556,7 @@ func errorToPaymentFailure(err error) channeldb.FailureReason {
 		errNoTlvPayload,
 		errNoPaymentAddr,
 		errNoPathFound,
-		errPrebuiltRouteTried:
+		errEmptyPaysession:
 
 		return channeldb.FailureReasonNoRoute
 

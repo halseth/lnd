@@ -13,9 +13,8 @@ import (
 const BlockPadding uint16 = 3
 
 var (
-	// errPrebuiltRouteTried is returned when the single pre-built route
-	// failed and there is nothing more we can do.
-	errPrebuiltRouteTried = errors.New("pre-built route already tried")
+	// errEmptyPaysession
+	errEmptyPaysession = errors.New("empty payment session")
 )
 
 // PaymentSession is used during SendPayment attempts to provide routes to
@@ -44,8 +43,7 @@ type paymentSession struct {
 
 	payment *LightningPayment
 
-	preBuiltRoute      *route.Route
-	preBuiltRouteTried bool
+	empty bool
 
 	pathFinder pathFinder
 }
@@ -62,18 +60,8 @@ type paymentSession struct {
 func (p *paymentSession) RequestRoute(amt lnwire.MilliSatoshi,
 	height uint32) (*route.Route, error) {
 
-	switch {
-
-	// If we have a pre-built route, use that directly.
-	case p.preBuiltRoute != nil && !p.preBuiltRouteTried:
-		p.preBuiltRouteTried = true
-
-		return p.preBuiltRoute, nil
-
-	// If the pre-built route has been tried already, the payment session is
-	// over.
-	case p.preBuiltRoute != nil:
-		return nil, errPrebuiltRouteTried
+	if p.empty {
+		return nil, errEmptyPaysession
 	}
 
 	// Add BlockPadding to the finalCltvDelta so that the receiving node

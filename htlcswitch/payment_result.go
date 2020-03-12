@@ -9,6 +9,7 @@ import (
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
 )
@@ -33,7 +34,7 @@ var (
 // for processing.
 type PaymentResult struct {
 	// Preimage is set by the switch in case a sent HTLC was settled.
-	Preimage [32]byte
+	Preimage lntypes.Preimage
 
 	// Error is non-nil in case a HTLC send failed, and the HTLC is now
 	// irrevocably canceled. If the payment failed during forwarding, this

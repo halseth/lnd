@@ -1721,6 +1721,14 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 	// Calculate amount paid to receiver.
 	amt := rt.Amt()
 
+	// If this is meant as a MP payment shard, we set the amount
+	// for the creting info to the total amount of the payment.
+	finalHop := rt.Hops[len(rt.Hops)-1]
+	mpp := finalHop.MPP
+	if mpp != nil {
+		amt = mpp.TotalMsat()
+	}
+
 	// Record this payment hash with the ControlTower, ensuring it is not
 	// already in-flight.
 	info := &channeldb.PaymentCreationInfo{
@@ -1731,7 +1739,13 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 	}
 
 	err := r.cfg.Control.InitPayment(hash, info)
-	if err != nil {
+	switch {
+	// If this is an MPP attempt and the hash is already registered with
+	// the database, we can go on to launch the shard.
+	case err == channeldb.ErrPaymentInFlight && mpp != nil:
+
+	// Any other error is not tolerated.
+	case err != nil:
 		return [32]byte{}, err
 	}
 
@@ -1750,19 +1764,28 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 	attempt, outcome, err := sh.launch(rt)
 
 	// With SendToRoute, it can happen that the route exceeds protocol
-	// constraints. Mark the payment as failed with an internal error.
+	// constraints.
 	if err == route.ErrMaxRouteHopsExceeded ||
 		err == sphinx.ErrMaxRoutingInfoSizeExceeded {
 
 		log.Debugf("Invalid route provided for payment %x: %v",
 			hash, err)
 
-		controlErr := r.cfg.Control.Fail(
+		// For MPP payments we don't mark them failed with the control
+		// tower, since we might want to try more shards.
+		if mpp != nil {
+			return lntypes.Preimage{}, err
+		}
+
+		// Mark the payment failed with an internal error.
+		err := r.cfg.Control.Fail(
 			hash, channeldb.FailureReasonError,
 		)
-		if controlErr != nil {
-			return [32]byte{}, err
+		if err != nil {
+			return lntypes.Preimage{}, err
 		}
+
+		return [32]byte{}, err
 	}
 
 	// In any case, don't continue if there is an error.
@@ -1799,6 +1822,15 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 	}
 
 	if failureCode != nil {
+		log.Debugf("Failure received for shard for payment %x: %v",
+			hash, outcome.paymentFailure)
+
+		// For MPP payments we don't mark them failed with the control
+		// tower, since we might want to try more shards.
+		if mpp != nil {
+			return lntypes.Preimage{}, sendErr
+		}
+
 		err := r.cfg.Control.Fail(hash, *failureCode)
 		if err != nil {
 			return lntypes.Preimage{}, err

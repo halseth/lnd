@@ -1730,9 +1730,6 @@ func (r *ChannelRouter) preparePayment(payment *LightningPayment) (
 func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 	lntypes.Preimage, error) {
 
-	// Create a payment session for just this route.
-	paySession := r.cfg.SessionSource.NewPaymentSessionForRoute(route)
-
 	// Calculate amount paid to receiver.
 	amt := route.Amt()
 
@@ -1756,27 +1753,51 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, route *route.Route) (
 		}),
 	)
 
-	// Timeout doesn't need to be set, as there is only a single attempt.
-	// Since this is the first time this payment is being made, we pass nil
-	// for the existing attempt.
-	preimage, _, err := r.sendPayment(nil, amt, hash, 0, paySession)
+	// Launch a shard along the given route.
+	sh := &shardHandler{
+		router:      r,
+		paymentHash: hash,
+	}
+
+	attempt, err := sh.launch(route)
 	if err != nil {
-		// SendToRoute should return a structured error. In case the
-		// provided route fails, payment lifecycle will return a
-		// noRouteError with the structured error embedded.
-		if noRouteError, ok := err.(errNoRoute); ok {
-			if noRouteError.lastError == nil {
-				return lntypes.Preimage{},
-					errors.New("failure message missing")
-			}
-
-			return lntypes.Preimage{}, noRouteError.lastError
-		}
-
 		return lntypes.Preimage{}, err
 	}
 
-	return preimage, nil
+	// Wait for the result to be available.
+	outcome, err := sh.collectResult(attempt)
+	if err != nil {
+		return lntypes.Preimage{}, err
+	}
+
+	// If the outcome had any failure, we'll mark the
+	// payment failed with the control tower.
+	var (
+		failureCode *channeldb.FailureReason
+		sendErr     error
+	)
+
+	switch {
+	case outcome.paymentFailure != nil:
+		failureCode = &outcome.paymentFailure.failureCode
+		sendErr = outcome.paymentFailure
+
+	case outcome.shardFailure != nil:
+		c := channeldb.FailureReasonError
+		failureCode = &c
+		sendErr = outcome.shardFailure
+	}
+
+	if failureCode != nil {
+		err := r.cfg.Control.Fail(hash, *failureCode)
+		if err != nil {
+			return lntypes.Preimage{}, err
+		}
+
+		return lntypes.Preimage{}, sendErr
+	}
+
+	return outcome.preimage, nil
 }
 
 // sendPayment attempts to send a payment to the passed payment hash. This

@@ -79,11 +79,6 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 	chain := newMockChain(startingHeight)
 	chainView := newMockChainView(chain)
 
-	selfNode, err := graphInstance.graph.SourceNode()
-	if err != nil {
-		return nil, nil, err
-	}
-
 	pathFindingConfig := PathFindingConfig{
 		MinProbability:        0.01,
 		PaymentAttemptPenalty: 100,
@@ -104,8 +99,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 	}
 
 	sessionSource := &SessionSource{
-		Graph:    graphInstance.graph,
-		SelfNode: selfNode,
+		Graph: graphInstance.graph,
 		QueryBandwidth: func(e *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {
 			return lnwire.NewMSatFromSatoshis(e.Capacity)
 		},

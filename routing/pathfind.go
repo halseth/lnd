@@ -39,9 +39,12 @@ const (
 )
 
 // pathFinder defines the interface of a path finding algorithm.
-type pathFinder = func(g *graphParams, r *RestrictParams,
-	cfg *PathFindingConfig, source, target route.Vertex,
-	amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
+type pathFinder = func(
+	additionalEdges map[route.Vertex][]*channeldb.ChannelEdgePolicy,
+	bandwidthHints map[uint64]lnwire.MilliSatoshi,
+	graph routingGraph,
+	r *RestrictParams, cfg *PathFindingConfig,
+	source, target route.Vertex, amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
 	[]*channeldb.ChannelEdgePolicy, error)
 
 var (

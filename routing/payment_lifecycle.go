@@ -13,20 +13,6 @@ import (
 	"github.com/lightningnetwork/lnd/routing/route"
 )
 
-// errNoRoute is returned when all routes from the payment session have been
-// attempted.
-type errNoRoute struct {
-	// lastError is the error encountered during the last payment attempt,
-	// if at least one attempt has been made.
-	lastError error
-}
-
-// Error returns a string representation of the error.
-func (e errNoRoute) Error() string {
-	return fmt.Sprintf("unable to route payment to destination: %v",
-		e.lastError)
-}
-
 // paymentLifecycle holds all information about the current state of a payment
 // needed to resume if from any point.
 type paymentLifecycle struct {
@@ -145,14 +131,6 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 					return [32]byte{}, nil, saveErr
 				}
 
-				// If there was an error already recorded for this
-				// payment, we'll return that.
-				if shardHandler.lastError != nil {
-					return [32]byte{}, nil, errNoRoute{
-						lastError: shardHandler.lastError,
-					}
-				}
-
 				// Terminal state, return.
 				return [32]byte{}, nil, err
 			}
@@ -231,8 +209,6 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 type shardHandler struct {
 	paymentHash lntypes.Hash
 	router      *ChannelRouter
-
-	lastError error
 }
 
 // launchOutcome is a type returned from launchShard that indicates whether the
@@ -541,9 +517,6 @@ func (p *shardHandler) handleSendError(attempt *channeldb.HTLCAttemptInfo,
 		attempt.AttemptID, &attempt.Route, sendErr,
 	)
 	if reason == nil {
-		// Save the forwarding error so it can be returned if
-		// this turns out to be the last attempt.
-		p.lastError = sendErr
 		return nil
 	}
 

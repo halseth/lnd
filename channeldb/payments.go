@@ -194,6 +194,35 @@ type PaymentCreationInfo struct {
 	PaymentRequest []byte
 }
 
+// FetchPayment fetches the payment corresponding to the given payment hash.
+func (db *DB) FetchPayment(phash lntypes.Hash) (*MPPayment, error) {
+	var payment *MPPayment
+	err := kvdb.View(db, func(tx kvdb.ReadTx) error {
+		paymentsBucket := tx.ReadBucket(paymentsRootBucket)
+		if paymentsBucket == nil {
+			return fmt.Errorf("payment %v not found", phash)
+		}
+
+		bucket := paymentsBucket.NestedReadBucket(phash[:])
+		if bucket == nil {
+			return fmt.Errorf("payment %v not found", phash)
+		}
+
+		p, err := fetchPayment(bucket)
+		if err != nil {
+			return err
+		}
+
+		payment = p
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return payment, nil
+}
+
 // FetchPayments returns all sent payments found in the DB.
 //
 // nolint: dupl

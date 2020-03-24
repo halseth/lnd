@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -29,9 +31,23 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 	shardHandler := &shardHandler{
 		router:      p.router,
 		paymentHash: p.paymentHash,
+		quit:        make(chan struct{}),
 	}
 
-	// If we have an existing attempt, we'll start by collecting its result.
+	// When the payment lifecycle loop exits, we make sure to signal any
+	// sub goroutine of the shardhandler  to exit, then wait for them to
+	// return.
+	defer shardHandler.Stop()
+
+	// Each time we send a new payment shard, the shardHandler will spin up
+	// a goroutine that will collect the result. Either a payment result
+	// will be returned, or a critical error signaling that we should
+	// immediately exit.
+	shardErrors := make(chan error)
+
+	// If we had any existing attempts outstanding, we'll start by spinning
+	// up goroutines that'll collect their results and deliver them to the
+	// lifecycle loop below.
 	payment, err := p.router.cfg.Control.FetchPayment(
 		p.paymentHash,
 	)
@@ -46,15 +62,36 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			continue
 		}
 
-		_, err := shardHandler.collectResult(&a.HTLCAttemptInfo)
-		if err != nil {
-			return [32]byte{}, nil, err
-		}
+		log.Debugf("Resuming payment shard %v for hash %v",
+			a.AttemptID, p.paymentHash)
+
+		shardHandler.collectResultAsync(
+			&a.HTLCAttemptInfo, shardErrors,
+		)
 	}
 
 	// We'll continue until either our payment succeeds, or we encounter a
 	// critical error during path finding.
 	for {
+		// Start by quickly checking if there are any outcomes already
+		// available to handle before we reevaluate our state.
+		for {
+			select {
+			case err := <-shardErrors:
+				if err != nil {
+					return [32]byte{}, nil, err
+				}
+				continue
+
+			case <-p.router.quit:
+				return [32]byte{}, nil, ErrRouterShuttingDown
+
+			default:
+			}
+
+			break
+		}
+
 		// We start every iteration by fetching the lastest state of
 		// the payment from the ControlTower. This ensures that we will
 		// act on the latest available information, whether we are
@@ -66,89 +103,135 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			return [32]byte{}, nil, err
 		}
 
+		var (
+			// Keep track of whether we have any shards in-flight...
+			activeShards bool
+
+			// ...and the total value and fees of all in-flight and
+			// settled shards.
+			remValue = p.totalAmount
+			feeLimit = p.feeLimit
+
+			// If the payment is already marked failed, we'll get
+			// ready to terminate the moment all shards have
+			// returned.
+			terminate = payment.FailureReason != nil
+		)
+
 		// Go through the HTLCs for this payment, determining if there
-		// are any in flight or settled.
-		var attempt *channeldb.HTLCAttemptInfo
-		var settle *channeldb.HTLCAttempt
-
+		// are any in flight.
 		for _, a := range payment.HTLCs {
-			a := a
-
-			// We have a settled HTLC, and should return when all
-			// shards are back.
-			if a.Settle != nil {
-				settle = &a
-				continue
-			}
-
 			// This HTLC already failed, ignore.
 			if a.Failure != nil {
 				continue
 			}
 
-			// HTLC was neither setteld nor failed, it is still in
-			// flight.
-			attempt = &a.HTLCAttemptInfo
-			break
+			// Subtract settled or in flight attempts from the
+			// remaining value.
+			remValue -= a.Route.ReceiverAmt()
+			feeLimit -= a.Route.TotalFees()
+
+			// If this attempt is settled, we don't want to send
+			// more shards, we will terminate the payment.
+			if a.Settle != nil {
+				terminate = true
+				continue
+			}
+
+			// If the attempt is still in flight, take note that we
+			// have active shards.
+			activeShards = true
 		}
 
-		// Terminal state, return the preimage and the route taken.
-		if attempt == nil && settle != nil {
-			return settle.Settle.Preimage, &settle.Route, nil
-		}
+		log.Debugf("Payment %v in state terminate=%v, "+
+			"active_shards=%v, rem_value=%v, fee_limit=%v",
+			p.paymentHash, terminate, activeShards, remValue,
+			feeLimit)
 
-		// If the payment already is failed, and there is no in-flight
-		// HTLC, return immediately.
-		if attempt == nil && payment.FailureReason != nil {
+		switch {
+
+		// We have a terminal condition and no active shards, we are
+		// ready to exit.
+		case terminate && !activeShards:
+			// Find the first successful shard and return
+			// the preimage and route.
+			for _, a := range payment.HTLCs {
+				if a.Settle != nil {
+					return a.Settle.Preimage, &a.Route, nil
+				}
+			}
+
+			// Payment failed.
 			return [32]byte{}, nil, *payment.FailureReason
-		}
 
-		// If this payment had no existing payment attempt, we create
-		// and send one now.
-		if attempt == nil {
-			// Before we attempt this next payment, we'll check to see if either
-			// we've gone past the payment attempt timeout, or the router is
-			// exiting. In either case, we'll stop this payment attempt short. If a
-			// timeout is not applicable, timeoutChan will be nil.
+		// If we either reached a terminal error condition (but had
+		// active shards still) or there is no remaining value to send,
+		// we'll wait for a shard outcome.
+		case terminate || remValue == 0:
+			// We still have outstanding shards, so wait for a new
+			// outcome to be available before re-evaluating our
+			// state.
 			select {
-			case <-p.timeoutChan:
-				// Mark the payment as failed because of the
-				// timeout.
-				err := p.router.cfg.Control.Fail(
-					p.paymentHash, channeldb.FailureReasonTimeout,
-				)
+			case err := <-shardErrors:
 				if err != nil {
 					return [32]byte{}, nil, err
 				}
 
-				continue
-
-			// The payment will be resumed from the current state
-			// after restart.
 			case <-p.router.quit:
 				return [32]byte{}, nil, ErrRouterShuttingDown
-
-			// Fall through if we haven't hit our time limit or are
-			// exiting.
-			default:
 			}
 
-			// Create a new payment attempt from the given payment session.
-			rt, err := p.paySession.RequestRoute(
-				p.totalAmount, p.feeLimit, uint32(p.currentHeight),
+			continue
+		}
+
+		// Before we attempt any new shard, we'll check to see if
+		// either we've gone past the payment attempt timeout, or the
+		// router is exiting. In either case, we'll stop this payment
+		// attempt short. If a timeout is not applicable, timeoutChan
+		// will be nil.
+		select {
+		case <-p.timeoutChan:
+			errStr := fmt.Sprintf("payment attempt not completed " +
+				"before timeout")
+			log.Warnf(errStr)
+
+			saveErr := p.router.cfg.Control.Fail(
+				p.paymentHash, channeldb.FailureReasonTimeout,
 			)
-			if err != nil {
-				log.Warnf("Failed to find route for payment %x: %v",
-					p.paymentHash, err)
+			if saveErr != nil {
+				return [32]byte{}, nil, saveErr
+			}
 
-				// Convert error to payment-level failure.
-				failure := errorToPaymentFailure(err)
+			continue
 
-				// If we're unable to successfully make a payment using
-				// any of the routes we've found, then mark the payment
-				// as permanently failed.
+		// The payment will be resumed from the current state after
+		// restart.
+		case <-p.router.quit:
+			return [32]byte{}, nil, ErrRouterShuttingDown
+
+		// Fall through if we haven't hit our time limit.
+		default:
+		}
+
+		// Create a new payment attempt from the given payment session.
+		rt, err := p.paySession.RequestRoute(
+			remValue, feeLimit, uint32(p.currentHeight),
+		)
+		if err != nil {
+			log.Warnf("Failed to find route for payment %x: %v",
+				p.paymentHash, err)
+
+			// There is no route to try, and we have no active
+			// shards. This means that there is no way for us to
+			// send the payment, so mark it failed with no route.
+			if !activeShards {
+				failureCode := errorToPaymentFailure(err)
+				log.Debugf("Marking payment %v permanently "+
+					"failed with no route: %v",
+					p.paymentHash, failureCode)
+
 				saveErr := p.router.cfg.Control.Fail(
-					p.paymentHash, failure,
+					p.paymentHash, failureCode,
 				)
 				if saveErr != nil {
 					return [32]byte{}, nil, saveErr
@@ -157,56 +240,54 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 				continue
 			}
 
-			// With the route in hand, launch a new shard.
-			var outcome *launchOutcome
-			attempt, outcome, err = shardHandler.launchShard(rt)
-			if err != nil {
-				return [32]byte{}, nil, err
-			}
-
-			// We ew encountered a non-critical error when
-			// launching the shard, handle it
-			if outcome.err != nil {
-				// We must inspect the error to know whether it
-				// was critical or not, to decide whether we
-				// should continue trying.
-				err = shardHandler.handleSendError(
-					attempt, outcome.err,
-				)
+			// We still have active shards, we'll wait for an
+			// outcome to be available before retrying.
+			select {
+			case err := <-shardErrors:
 				if err != nil {
 					return [32]byte{}, nil, err
 				}
 
-				// Error was handled successfully, continue to
-				// make a new attempt.
-				continue
+			case <-p.router.quit:
+				return [32]byte{}, nil, ErrRouterShuttingDown
 			}
 
-			// We'll collect the result of the shard just sent. We
-			// ignore the result for now if it is a success, as we
-			// will look it up in the control tower on the next
-			// loop iteration.
-			result, err := shardHandler.collectResult(attempt)
-			if err != nil {
-				return [32]byte{}, nil, err
-			}
-
-			if result.err != nil {
-				// We must inspect the error to know whether it
-				// was critical or not, to decide whether we
-				// should continue trying.
-				err := shardHandler.handleSendError(
-					attempt, result.err,
-				)
-				if err != nil {
-					return [32]byte{}, nil, err
-				}
-
-				// Error was handled successfully, continue to
-				// make a new attempt.
-				continue
-			}
+			continue
 		}
+
+		// We found a route to try, launch a new shard.
+		attempt, outcome, err := shardHandler.launchShard(rt)
+		if err != nil {
+			return [32]byte{}, nil, err
+		}
+
+		// We ew encountered a non-critical error when launching the
+		// shard, handle it
+		if outcome.err != nil {
+			log.Warnf("Failed to launch shard %v for "+
+				"payment %v: %v", attempt.AttemptID,
+				p.paymentHash, outcome.err)
+
+			// We must inspect the error to know whether it was
+			// critical or not, to decide whether we should
+			// continue trying.
+			err := shardHandler.handleSendError(
+				attempt, outcome.err,
+			)
+			if err != nil {
+				return [32]byte{}, nil, err
+			}
+
+			// Error was handled successfully, continue to make a
+			// new attempt.
+			continue
+		}
+
+		// Now that the shard was successfully sent, launch a go
+		// routine that will handle its result when its back.
+		shardHandler.collectResultAsync(
+			attempt, shardErrors,
+		)
 	}
 }
 
@@ -215,6 +296,16 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 type shardHandler struct {
 	paymentHash lntypes.Hash
 	router      *ChannelRouter
+
+	// quit is closed to signal the sub goroutines of the payment lifecycle
+	// to stop.
+	quit chan struct{}
+	wg   sync.WaitGroup
+}
+
+func (p *shardHandler) Stop() {
+	close(p.quit)
+	p.wg.Wait()
 }
 
 // launchOutcome is a type returned from launchShard that indicates whether the
@@ -284,6 +375,50 @@ type shardResult struct {
 
 	// err indicates that the shard failed.
 	err error
+}
+
+// collectResultAsync launches a goroutine that will wait for the result of the
+// given HTLC attempt to be available then handle its result. Note that it will
+// fail the payment with the control tower if a terminal error is encountered.
+func (p *shardHandler) collectResultAsync(attempt *channeldb.HTLCAttemptInfo,
+	errChan chan error) {
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+
+		// Block until the result is available.
+		result, err := p.collectResult(attempt)
+		if err != nil {
+			log.Errorf("Error collecting result for shard %v for "+
+				"payment %v: %v", attempt.AttemptID,
+				p.paymentHash, err)
+
+			select {
+			case errChan <- err:
+			case <-p.quit:
+			}
+			return
+		}
+
+		// If a non-critical error was encountered handle it and mark
+		// the payment failed if the failure was terminal.
+		if result.err != nil {
+			err := p.handleSendError(attempt, result.err)
+			if err != nil {
+				select {
+				case errChan <- err:
+				case <-p.quit:
+				}
+				return
+			}
+		}
+
+		select {
+		case errChan <- nil:
+		case <-p.quit:
+		}
+	}()
 }
 
 // collectResult waits for the result for the given attempt to be available
@@ -356,14 +491,14 @@ func (p *shardHandler) collectResult(attempt *channeldb.HTLCAttemptInfo) (
 
 	case <-p.router.quit:
 		return nil, ErrRouterShuttingDown
+
+	case <-p.quit:
+		return nil, fmt.Errorf("shard handler exiting")
 	}
 
 	// In case of a payment failure, fail the attempt with the control
 	// tower and return.
 	if result.Error != nil {
-		log.Errorf("Attempt to send payment %x failed: %v",
-			p.paymentHash, result.Error)
-
 		err := p.failAttempt(attempt, result.Error)
 		if err != nil {
 			return nil, err
@@ -542,6 +677,9 @@ func (p *shardHandler) handleSendError(attempt *channeldb.HTLCAttemptInfo,
 // failAttempt calls control tower to fail the current payment attempt.
 func (p *shardHandler) failAttempt(attempt *channeldb.HTLCAttemptInfo,
 	sendError error) error {
+
+	log.Warnf("Attempt %v for payment %v failed: %v", attempt.AttemptID,
+		p.paymentHash, sendError)
 
 	failInfo := marshallError(
 		sendError,

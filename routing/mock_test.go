@@ -290,16 +290,7 @@ func (m *mockControlTower) SettleAttempt(phash lntypes.Hash,
 		m.success <- successArgs{settleInfo.Preimage}
 	}
 
-	// Only allow setting attempts for payments not yet succeeded or
-	// failed.
-	if _, ok := m.successful[phash]; ok {
-		return fmt.Errorf("already successful")
-	}
-
-	if _, ok := m.failed[phash]; ok {
-		return fmt.Errorf("already failed")
-	}
-
+	// Only allow setting attempts if the payment is known.
 	p, ok := m.payments[phash]
 	if !ok {
 		return fmt.Errorf("not in flight")
@@ -309,6 +300,13 @@ func (m *mockControlTower) SettleAttempt(phash lntypes.Hash,
 	for i, a := range p.attempts {
 		if a.AttemptID != pid {
 			continue
+		}
+
+		if a.Settle != nil {
+			return fmt.Errorf("already settled")
+		}
+		if a.Failure != nil {
+			return fmt.Errorf("already failed")
 		}
 
 		a.Settle = settleInfo
@@ -328,16 +326,7 @@ func (m *mockControlTower) FailAttempt(phash lntypes.Hash, pid uint64,
 	m.Lock()
 	defer m.Unlock()
 
-	// Only allow failing attempts for payments not yet succeeded or
-	// failed.
-	if _, ok := m.successful[phash]; ok {
-		return fmt.Errorf("already successful")
-	}
-
-	if _, ok := m.failed[phash]; ok {
-		return fmt.Errorf("already failed")
-	}
-
+	// Only allow failing attempts if the payment is known.
 	p, ok := m.payments[phash]
 	if !ok {
 		return fmt.Errorf("not in flight")
@@ -347,6 +336,13 @@ func (m *mockControlTower) FailAttempt(phash lntypes.Hash, pid uint64,
 	for i, a := range p.attempts {
 		if a.AttemptID != pid {
 			continue
+		}
+
+		if a.Settle != nil {
+			return fmt.Errorf("already settled")
+		}
+		if a.Failure != nil {
+			return fmt.Errorf("already failed")
 		}
 
 		a.Failure = failInfo
@@ -367,15 +363,7 @@ func (m *mockControlTower) Fail(phash lntypes.Hash,
 		m.fail <- failArgs{reason}
 	}
 
-	// Cannot fail already successful or failed payments.
-	if _, ok := m.successful[phash]; ok {
-		return fmt.Errorf("already successful")
-	}
-
-	if _, ok := m.failed[phash]; ok {
-		return fmt.Errorf("already failed")
-	}
-
+	// Payment must be known.
 	if _, ok := m.payments[phash]; !ok {
 		return fmt.Errorf("not in flight")
 	}

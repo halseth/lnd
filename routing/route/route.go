@@ -311,6 +311,11 @@ func (r *Route) TotalFees() lnwire.MilliSatoshi {
 	return r.TotalAmount - r.Hops[len(r.Hops)-1].AmtToForward
 }
 
+// ReceiverAmt is the amount received by the final hop of this route.
+func (r *Route) ReceiverAmt() lnwire.MilliSatoshi {
+	return r.TotalAmount - r.TotalFees()
+}
+
 // NewRouteFromHops creates a new Route structure from the minimally required
 // information to perform the payment. It infers fee amounts and populates the
 // node, chan and prev/next hop maps.

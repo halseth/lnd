@@ -105,7 +105,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 		var (
 			// Keep track of whether we have any shards in-flight...
-			activeShards bool
+			activeShards int
 
 			// ...and the total value and fees of all in-flight and
 			// settled shards.
@@ -140,7 +140,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 			// If the attempt is still in flight, take note that we
 			// have active shards.
-			activeShards = true
+			activeShards++
 		}
 
 		log.Debugf("Payment %v in state terminate=%v, "+
@@ -149,10 +149,9 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			feeLimit)
 
 		switch {
-
 		// We have a terminal condition and no active shards, we are
 		// ready to exit.
-		case terminate && !activeShards:
+		case terminate && activeShards == 0:
 			// Find the first successful shard and return
 			// the preimage and route.
 			for _, a := range payment.HTLCs {
@@ -166,7 +165,8 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 		// If we either reached a terminal error condition (but had
 		// active shards still) or there is no remaining value to send,
-		// we'll wait for a shard outcome.
+		// we'll wait for a shard outcome. We also wait if we've
+		// received the maximum number of active shards.
 		case terminate || remValue == 0:
 			// We still have outstanding shards, so wait for a new
 			// outcome to be available before re-evaluating our
@@ -215,7 +215,8 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 		// Create a new payment attempt from the given payment session.
 		rt, err := p.paySession.RequestRoute(
-			remValue, feeLimit, uint32(p.currentHeight),
+			remValue, feeLimit, activeShards,
+			uint32(p.currentHeight),
 		)
 		if err != nil {
 			log.Warnf("Failed to find route for payment %x: %v",
@@ -224,7 +225,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 			// There is no route to try, and we have no active
 			// shards. This means that there is no way for us to
 			// send the payment, so mark it failed with no route.
-			if !activeShards {
+			if activeShards == 0 {
 				failureCode := errorToPaymentFailure(err)
 				log.Debugf("Marking payment %v permanently "+
 					"failed with no route: %v",

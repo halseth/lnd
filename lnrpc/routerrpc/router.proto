@@ -114,6 +114,8 @@ message SendPaymentRequest {
     fallback.
     */
     repeated lnrpc.FeatureBit dest_features = 16;
+
+    // TODO: Add max_htlcs
 }
 
 message TrackPaymentRequest {

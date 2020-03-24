@@ -1009,6 +1009,8 @@ message SendRequest {
     fallback.
     */
     repeated FeatureBit dest_features = 15;
+
+    int32 max_htlcs = 16;
 }
 
 message SendResponse {

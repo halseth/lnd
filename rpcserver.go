@@ -3616,6 +3616,7 @@ type rpcPaymentIntent struct {
 	destFeatures      *lnwire.FeatureVector
 	paymentAddr       *[32]byte
 	payReq            []byte
+	maxHtlcs          int
 
 	destCustomRecords record.CustomSet
 
@@ -3675,6 +3676,13 @@ func (r *rpcServer) extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPayme
 		return payIntent, err
 	}
 	payIntent.cltvLimit = cltvLimit
+
+	// Take max htlcs from the request
+	maxHtlcs := int(rpcPayReq.MaxHtlcs)
+	if maxHtlcs < 1 {
+		return payIntent, errors.New("minimum number of htlcs is one")
+	}
+	payIntent.maxHtlcs = maxHtlcs
 
 	customRecords := record.CustomSet(rpcPayReq.DestCustomRecords)
 	if err := customRecords.Validate(); err != nil {
@@ -3882,6 +3890,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			DestCustomRecords: payIntent.destCustomRecords,
 			DestFeatures:      payIntent.destFeatures,
 			PaymentAddr:       payIntent.paymentAddr,
+			MaxHtlcs:          payIntent.maxHtlcs,
 		}
 
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(

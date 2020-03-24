@@ -141,6 +141,7 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 		DestFeatures:   lnwire.NewFeatureVector(destFeatures, nil),
 		Amount:         c.amt,
 		CltvLimit:      math.MaxUint32,
+		MaxHtlcs:       math.MaxInt32,
 	}
 
 	session := &paymentSession{
@@ -157,7 +158,10 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 
 	// Now the payment control loop starts. It will keep trying routes until
 	// the payment succeeds.
-	var amtRemaining = payment.Amount
+	var (
+		amtRemaining  = payment.Amount
+		inFlightHtlcs int
+	)
 	for {
 		// Create bandwidth hints based on local channel balances.
 		bandwidthHints := map[uint64]lnwire.MilliSatoshi{}
@@ -167,7 +171,7 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 
 		// Find a route.
 		route, err := session.RequestRoute(
-			amtRemaining, lnwire.MaxMilliSatoshi, 0,
+			amtRemaining, lnwire.MaxMilliSatoshi, inFlightHtlcs, 0,
 		)
 		if err != nil {
 			return attempts, err
@@ -191,6 +195,8 @@ func (c *integratedRoutingContext) testPayment() ([]htlcAttempt, error) {
 
 		// Process the result.
 		if success {
+			inFlightHtlcs++
+
 			err := mc.ReportPaymentSuccess(pid, route)
 			if err != nil {
 				c.t.Fatal(err)

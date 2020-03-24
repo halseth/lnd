@@ -2165,6 +2165,13 @@ var (
 			"<hex_value>,.. For example: --data 3438382=0a21ff. " +
 			"Custom record ids start from 65536.",
 	}
+
+	maxHtlcsFlag = cli.UintFlag{
+		Name: "max_htlcs",
+		Usage: "the maximum number of partial payments that may be " +
+			"used",
+		Value: 1,
+	}
 )
 
 // paymentFlags returns common flags for sendpayment and payinvoice.
@@ -2201,7 +2208,7 @@ func paymentFlags() []cli.Flag {
 			Name:  "allow_self_payment",
 			Usage: "allow sending a circular payment to self",
 		},
-		dataFlag,
+		dataFlag, maxHtlcsFlag,
 	}
 }
 
@@ -2431,6 +2438,8 @@ func sendPaymentRequest(ctx *cli.Context, req *lnrpc.SendRequest) error {
 	req.CltvLimit = uint32(ctx.Int(cltvLimitFlag.Name))
 
 	req.AllowSelfPayment = ctx.Bool("allow_self_payment")
+
+	req.MaxHtlcs = int32(ctx.Int(maxHtlcsFlag.Name))
 
 	// Parse custom data records.
 	data := ctx.String(dataFlag.Name)

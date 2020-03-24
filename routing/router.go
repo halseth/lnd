@@ -532,7 +532,7 @@ func (r *ChannelRouter) Start() error {
 			// only a single attempt. We also set a zero fee limit,
 			// as no more routes should be tried.
 			_, _, err := r.sendPayment(
-				payment.Info.Value, 0,
+				payment.Info.Value, 0, 0,
 				payment.Info.PaymentHash, 0, paySession,
 			)
 			if err != nil {
@@ -1609,6 +1609,10 @@ type LightningPayment struct {
 	// understand this new onion payload format, then the payment will
 	// fail.
 	DestCustomRecords record.CustomSet
+
+	// MaxHtlcs is the maximum number of partial payments that may be use to
+	// complete the full amount.
+	MaxHtlcs int
 }
 
 // SendPayment attempts to send a payment as described within the passed
@@ -1629,8 +1633,8 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte,
 	// Since this is the first time this payment is being made, we pass nil
 	// for the existing attempt.
 	return r.sendPayment(
-		payment.Amount, payment.FeeLimit, payment.PaymentHash,
-		payment.PayAttemptTimeout, paySession,
+		payment.Amount, payment.FeeLimit, payment.MaxHtlcs,
+		payment.PaymentHash, payment.PayAttemptTimeout, paySession,
 	)
 }
 
@@ -1649,8 +1653,9 @@ func (r *ChannelRouter) SendPaymentAsync(payment *LightningPayment) error {
 		defer r.wg.Done()
 
 		_, _, err := r.sendPayment(
-			payment.Amount, payment.FeeLimit, payment.PaymentHash,
-			payment.PayAttemptTimeout, paySession,
+			payment.Amount, payment.FeeLimit, payment.MaxHtlcs,
+			payment.PaymentHash, payment.PayAttemptTimeout,
+			paySession,
 		)
 		if err != nil {
 			log.Errorf("Payment with hash %x failed: %v",
@@ -1843,8 +1848,8 @@ func (r *ChannelRouter) SendToRoute(hash lntypes.Hash, rt *route.Route) (
 // router will call this method for every payment still in-flight according to
 // the ControlTower.
 func (r *ChannelRouter) sendPayment(
-	totalAmt, feeLimit lnwire.MilliSatoshi, paymentHash lntypes.Hash,
-	timeout time.Duration,
+	totalAmt, feeLimit lnwire.MilliSatoshi, maxHtlcs int,
+	paymentHash lntypes.Hash, timeout time.Duration,
 	paySession PaymentSession) ([32]byte, *route.Route, error) {
 
 	// We'll also fetch the current block height so we can properly

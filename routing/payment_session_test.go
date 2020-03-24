@@ -67,7 +67,7 @@ func TestRequestRoute(t *testing.T) {
 	}
 
 	route, err := session.RequestRoute(
-		payment.Amount, payment.FeeLimit, height,
+		payment.Amount, payment.FeeLimit, 0, height,
 	)
 	if err != nil {
 		t.Fatal(err)

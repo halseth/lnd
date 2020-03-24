@@ -32,7 +32,7 @@ type PaymentSession interface {
 	// specified HTLC payment to the target node. The returned route should
 	// carry at most maxAmt to the target node, and pay at most feeLimit in
 	// fees. It can carry less if the payment is MPP.
-	RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
+	RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi, inFlightHtlcs int,
 		height uint32) (*route.Route, error)
 }
 
@@ -78,7 +78,7 @@ type paymentSession struct {
 // NOTE: This function is safe for concurrent access.
 // NOTE: Part of the PaymentSession interface.
 func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
-	height uint32) (*route.Route, error) {
+	inFlightHtlcs int, height uint32) (*route.Route, error) {
 
 	if p.empty {
 		return nil, errEmptyPaySession
@@ -167,6 +167,12 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 			}
 
 			return route, err
+		}
+
+		// No splitting if this is the last shard.
+		isLastShard := inFlightHtlcs+1 >= p.payment.MaxHtlcs
+		if isLastShard {
+			return nil, err
 		}
 
 		// This is where the magic happens. If we can't find a route,

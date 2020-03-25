@@ -91,6 +91,7 @@ type edgePolicyWithSource struct {
 // custom records and payment address.
 type finalHopParams struct {
 	amt         lnwire.MilliSatoshi
+	totalAmt    lnwire.MilliSatoshi
 	cltvDelta   uint16
 	records     record.CustomSet
 	paymentAddr *[32]byte
@@ -194,7 +195,8 @@ func newRoute(sourceVertex route.Vertex,
 			// Otherwise attach the mpp record if it exists.
 			if finalHop.paymentAddr != nil {
 				mpp = record.NewMPP(
-					finalHop.amt, *finalHop.paymentAddr,
+					finalHop.totalAmt,
+					*finalHop.paymentAddr,
 				)
 			}
 		} else {

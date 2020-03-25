@@ -552,9 +552,6 @@ func errorToPaymentFailure(err error) channeldb.FailureReason {
 		errEmptyPaySession:
 
 		return channeldb.FailureReasonNoRoute
-
-	case errInsufficientBalance:
-		return channeldb.FailureReasonInsufficientBalance
 	}
 
 	return channeldb.FailureReasonError

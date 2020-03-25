@@ -72,10 +72,6 @@ var (
 	// errNoPathFound is returned when a path to the target destination does
 	// not exist in the graph.
 	errNoPathFound = errors.New("unable to find a path to destination")
-
-	// errInsufficientLocalBalance is returned when none of the local
-	// channels have enough balance for the payment.
-	errInsufficientBalance = errors.New("insufficient local balance")
 )
 
 // edgePolicyWithSource is a helper struct to keep track of the source node
@@ -496,7 +492,7 @@ func findPathInternal(
 			return nil, err
 		}
 		if max < amt {
-			return nil, errInsufficientBalance
+			return nil, errNoPathFound
 		}
 	}
 

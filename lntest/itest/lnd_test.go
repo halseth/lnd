@@ -30,6 +30,8 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
+	"github.com/gogo/protobuf/jsonpb"
+	"github.com/gogo/protobuf/proto"
 	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -45,6 +47,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 var (
@@ -5016,6 +5019,408 @@ func testSingleHopSendToRouteCase(net *lntest.NetworkHarness, t *harnessTest,
 
 	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
 	closeChannelAndAssert(ctxt, t, net, carol, chanPointCarol, false)
+}
+
+// testSendPaymentMultiPath tests that we are able to successfully route a
+// payment using multiple shards across different paths.
+func testSendPaymentMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
+	ctxb := context.Background()
+
+	// To ensure the payment goes through seperate paths, we'll set a
+	// channel size that can only carry one shard at a time. We'll divide
+	// the payment into 3 shards. We'll also set a small push amt, to make
+	// sure we don't violate channel reserves when we send a payment back.
+	const (
+		paymentAmt = btcutil.Amount(300000)
+		shardAmt   = paymentAmt / 3
+		chanAmt    = shardAmt * 3 / 2
+		pushAmt    = shardAmt / 10
+	)
+
+	// Set up a network with three different paths Alice <-> Bob.
+	//              _ Eve _
+	//             /       \
+	// Alice -- Carol ---- Bob
+	//      \              /
+	//       \__ Dave ____/
+	nodes := make(map[string]*lntest.HarnessNode)
+	nodes["alice"] = net.Alice
+	nodes["bob"] = net.Bob
+
+	// Keep a list of all our active channels.
+	var networkChans []*lnrpc.ChannelPoint
+
+	// Open channels to/from the three new nodes.
+	nodeNames := []string{"carol", "dave", "eve"}
+	for _, name := range nodeNames {
+		node, err := net.NewNode(name, nil)
+		if err != nil {
+			t.Fatalf("unable to create new nodes: %v", err)
+		}
+		defer shutdownAndAssert(net, t, node)
+
+		nodes[name] = node
+
+		// All nodes will have a channel to Bob.
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+		if err := net.ConnectNodes(ctxt, node, net.Bob); err != nil {
+			t.Fatalf("unable to connect %v to alice: %v", name, err)
+		}
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		err = net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, node)
+		if err != nil {
+			t.Fatalf("unable to send coins to %v: %v", name, err)
+		}
+		ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+		chanPointBob := openChannelAndAssert(
+			ctxt, t, net, node, net.Bob,
+			lntest.OpenChannelParams{
+				Amt:     chanAmt,
+				PushAmt: pushAmt,
+			},
+		)
+
+		defer func() {
+			ctxt, _ := context.WithTimeout(ctxb, channelCloseTimeout)
+			closeChannelAndAssert(
+				ctxt, t, net, node, chanPointBob, false,
+			)
+		}()
+
+		networkChans = append(networkChans, chanPointBob)
+
+		// Set up channels coming into the node.
+		var from *lntest.HarnessNode
+		switch name {
+
+		// Eve will have a channel from Carol.
+		case "eve":
+			from = nodes["carol"]
+
+		// The other nodes will have a channel from Alice.
+		default:
+			from = net.Alice
+		}
+
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		if err := net.ConnectNodes(ctxt, from, node); err != nil {
+			t.Fatalf("unable to connect %v to %v: %v", from.Name(),
+				name, err)
+		}
+
+		// Since the channel Alice-> Carol will have to carry two
+		// shards, we make it larger.
+		amt := chanAmt
+		if name == "carol" {
+			amt += shardAmt
+		}
+
+		ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+		chanPointAlice := openChannelAndAssert(
+			ctxt, t, net, from, node,
+			lntest.OpenChannelParams{
+				Amt:     amt,
+				PushAmt: pushAmt,
+			},
+		)
+
+		defer func() {
+			ctxt, _ := context.WithTimeout(ctxb, channelCloseTimeout)
+			closeChannelAndAssert(
+				ctxt, t, net, from, chanPointAlice, false,
+			)
+		}()
+
+		networkChans = append(networkChans, chanPointAlice)
+	}
+
+	// Wait for all nodes to have seen all channels.
+	for _, chanPoint := range networkChans {
+		for _, node := range nodes {
+			txid, err := lnd.GetChanPointFundingTxid(chanPoint)
+			if err != nil {
+				t.Fatalf("unable to get txid: %v", err)
+			}
+			point := wire.OutPoint{
+				Hash:  *txid,
+				Index: chanPoint.OutputIndex,
+			}
+
+			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			if err != nil {
+				t.Fatalf("(%d): timeout waiting for "+
+					"channel(%s) open: %v",
+					node.NodeID, point, err)
+			}
+		}
+
+	}
+
+	// Our first test will be Alice paying Bob using a SendPayment call.
+	// Let Bob create an invoice for Alice to pay.
+	payReqs, rHashes, invoices, err := createPayReqs(
+		net.Bob, paymentAmt, 1,
+	)
+	if err != nil {
+		t.Fatalf("unable to create pay reqs: %v", err)
+	}
+
+	rHash := rHashes[0]
+	payReq := payReqs[0]
+
+	// TODO: MPP sending is slow, so timeout must be large.
+	ctxt, _ := context.WithTimeout(ctxb, 4*defaultTimeout)
+	alicePayStream, err := net.Alice.SendPayment(ctxt)
+	if err != nil {
+		t.Fatalf("unable to create payment stream for alice: %v", err)
+	}
+
+	sendReq := &lnrpc.SendRequest{
+		PaymentRequest: payReq,
+		MaxHtlcs:       10,
+	}
+
+	// Pay the invoice. Since no channel is large enough to carry the full
+	// amount it must be sharded.
+	err = alicePayStream.Send(sendReq)
+	if err != nil {
+		t.Fatalf("unable to send payment: %v", err)
+	}
+
+	// Now we should get a response when the payment settle.
+	resp, err := alicePayStream.Recv()
+	if err != nil {
+		t.Fatalf("unable to send payment: %v", err)
+	}
+	if resp.PaymentError != "" {
+		t.Fatalf("received payment error: %v", resp.PaymentError)
+	}
+
+	// Make sure we got the preimage.
+	if !bytes.Equal(resp.PaymentPreimage, invoices[0].RPreimage) {
+		t.Fatalf("preimage doesn't match")
+	}
+
+	// assertNumHtlcs is a helper that checks the node's latest payment,
+	// and sserts it was split into num shards.
+	assertNumHtlcs := func(node *lntest.HarnessNode, num int) {
+		req := &lnrpc.ListPaymentsRequest{
+			IncludeIncomplete: true,
+		}
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+		paymentsResp, err := node.ListPayments(ctxt, req)
+		if err != nil {
+			t.Fatalf("error when obtaining payments: %v",
+				err)
+		}
+
+		// TODO: remove debug output.
+		printRespJSON(paymentsResp)
+
+		payments := paymentsResp.Payments
+		if len(payments) == 0 {
+			t.Fatalf("no payments found")
+		}
+
+		payment := payments[len(payments)-1]
+		htlcs := payment.Htlcs
+		if len(htlcs) == 0 {
+			t.Fatalf("no htlcs")
+		}
+
+		succeeded := 0
+		for _, htlc := range htlcs {
+			if htlc.Status == lnrpc.HTLCAttempt_SUCCEEDED {
+				succeeded++
+			}
+		}
+
+		if succeeded != num {
+			t.Fatalf("expected %v succussful HTLCs, got %v", num,
+				succeeded)
+		}
+	}
+
+	// Check that Alice split the payment as expected.
+	assertNumHtlcs(net.Alice, 3)
+
+	// assertSettledInvoice checks that the invoice for the given payment
+	// hash is settled, and has been paid using num HTLCs.
+	assertSettledInvoice := func(node *lntest.HarnessNode, rhash []byte,
+		num int) {
+
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		invoicesResp, err := node.ListInvoices(
+			ctxt, &lnrpc.ListInvoiceRequest{},
+		)
+		if err != nil {
+			t.Fatalf("error when obtaining payments: %v", err)
+		}
+
+		found := false
+		for _, inv := range invoicesResp.Invoices {
+			if !bytes.Equal(inv.RHash, rHash) {
+				continue
+			}
+
+			// Assert that the amount paid to the invoice is
+			// correct.
+			if inv.AmtPaidSat != int64(paymentAmt) {
+				t.Fatalf("incorrect payment amt for invoice"+
+					"want: %d, got %d",
+					paymentAmt, inv.AmtPaidSat)
+			}
+
+			if inv.State != lnrpc.Invoice_SETTLED {
+				t.Fatalf("Invoice not settled: %v", inv.State)
+			}
+
+			if len(inv.Htlcs) != num {
+				t.Fatalf("expected invoice to be settled "+
+					"with %v HTLCs, had %v", num, len(inv.Htlcs))
+			}
+
+			found = true
+			break
+		}
+
+		if !found {
+			t.Fatalf("invoice not found")
+		}
+	}
+
+	// Finally make sure Bob show the invoice as settled for the full
+	// amount.
+	assertSettledInvoice(net.Bob, rHash, 3)
+
+	// Now do the same payment from Bob to Alice, this time using
+	// SendToRoute.
+	payReqs, rHashes, invoices, err = createPayReqs(
+		net.Alice, paymentAmt, 1,
+	)
+	if err != nil {
+		t.Fatalf("unable to create pay reqs: %v", err)
+	}
+
+	rHash = rHashes[0]
+	payReq = payReqs[0]
+
+	ctx, _ := context.WithTimeout(ctxb, defaultTimeout)
+	decodeResp, err := net.Bob.DecodePayReq(
+		ctx, &lnrpc.PayReqString{PayReq: payReq},
+	)
+	if err != nil {
+		t.Fatalf("decode pay req: %v", err)
+	}
+
+	payAddr := decodeResp.PaymentAddr
+
+	fmt.Println(spew.Sdump(nodes))
+
+	// Helper function to build a route from pubkeys.
+	buildRoute := func(amt btcutil.Amount, hops []string) (
+		*lnrpc.Route, error) {
+
+		rpcHops := make([][]byte, 0, len(hops))
+		for _, hop := range hops {
+			k := nodes[hop].PubKeyStr
+			pubkey, err := route.NewVertexFromStr(k)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing %v: %v",
+					k, err)
+			}
+			rpcHops = append(rpcHops, pubkey[:])
+		}
+
+		req := &routerrpc.BuildRouteRequest{
+			AmtMsat:        int64(amt * 1000),
+			FinalCltvDelta: lnd.DefaultBitcoinTimeLockDelta,
+			HopPubkeys:     rpcHops,
+		}
+
+		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+		routeResp, err := net.Bob.RouterClient.BuildRoute(ctxt, req)
+		if err != nil {
+			return nil, err
+		}
+
+		return routeResp.Route, nil
+	}
+
+	// We'll send shards along three routes.
+	sendRoutes := [][]string{
+		{"carol", "alice"},
+		{"dave", "alice"},
+		{"eve", "carol", "alice"},
+	}
+
+	bobPayStream, err := net.Bob.SendToRoute(ctxt)
+	if err != nil {
+		t.Fatalf("unable to create payment stream for bob: %v", err)
+	}
+
+	for _, hops := range sendRoutes {
+		// Build a route for the specified hops.
+		r, err := buildRoute(shardAmt, hops)
+		if err != nil {
+			t.Fatalf("unable to build route: %v", err)
+		}
+
+		// Set the MPP records to indicate this is a payment shard.
+		hop := r.Hops[len(r.Hops)-1]
+		hop.TlvPayload = true
+		hop.MppRecord = &lnrpc.MPPRecord{
+			PaymentAddr:  payAddr,
+			TotalAmtMsat: int64(paymentAmt * 1000),
+		}
+
+		// Send the shard.
+		sendReq := &lnrpc.SendToRouteRequest{
+			PaymentHash: rHash,
+			Route:       r,
+		}
+
+		err = bobPayStream.Send(sendReq)
+		if err != nil {
+			t.Fatalf("unable to send payment: %v", err)
+		}
+	}
+
+	// All shards should come back with the preimage.
+	for range sendRoutes {
+		// Now we should get a response when the payment settle.
+		resp, err := bobPayStream.Recv()
+		if err != nil {
+			t.Fatalf("unable to send payment: %v", err)
+		}
+		if resp.PaymentError != "" {
+			t.Fatalf("received payment error: %v", resp.PaymentError)
+		}
+
+		if !bytes.Equal(resp.PaymentPreimage, invoices[0].RPreimage) {
+			t.Fatalf("preimage doesn't match")
+		}
+	}
+
+	assertNumHtlcs(net.Bob, 3)
+	assertSettledInvoice(net.Alice, rHash, 3)
+}
+
+func printRespJSON(resp proto.Message) {
+	jsonMarshaler := &jsonpb.Marshaler{
+		EmitDefaults: true,
+		OrigName:     true,
+		Indent:       "    ",
+	}
+
+	jsonStr, err := jsonMarshaler.MarshalToString(resp)
+	if err != nil {
+		fmt.Println("unable to decode response: ", err)
+		return
+	}
+
+	fmt.Println(jsonStr)
 }
 
 // testMultiHopSendToRoute tests that payments are properly processed
@@ -14706,6 +15111,10 @@ var testsCases = []*testCase{
 	{
 		name: "external channel funding",
 		test: testExternalFundingChanPoint,
+	},
+	{
+		name: "send multi path payment",
+		test: testSendPaymentMultiPath,
 	},
 }
 

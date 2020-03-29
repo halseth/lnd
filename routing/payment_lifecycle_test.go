@@ -88,6 +88,11 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 		t.Fatalf("unable to create route: %v", err)
 	}
 
+	shard, err := createTestRoute(paymentAmt/4, testGraph.aliasMap)
+	if err != nil {
+		t.Fatalf("unable to create route: %v", err)
+	}
+
 	// A payment state machine test case consists of several ordered steps,
 	// that we use for driving the scenario.
 	type testCase struct {
@@ -368,6 +373,182 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 				resentPaymentSuccess,
 			},
 			routes: []*route.Route{rt},
+		},
+
+		// =====================================
+		// ||          MPP scenarios          ||
+		// =====================================
+		{
+			// Tests a simple successful MP payment of 4 shards.
+			steps: []string{
+				routerInitPayment,
+
+				// shard 0
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 1
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 2
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 3
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// All shards succeed.
+				getPaymentResultSuccess,
+				getPaymentResultSuccess,
+				getPaymentResultSuccess,
+				getPaymentResultSuccess,
+
+				// Router should settle them all.
+				routerSettleAttempt,
+				routerSettleAttempt,
+				routerSettleAttempt,
+				routerSettleAttempt,
+
+				// And the final result is obviously
+				// successful.
+				paymentSuccess,
+			},
+			routes: []*route.Route{shard, shard, shard, shard},
+		},
+		{
+			// An MP payment scenario where we need several extra
+			// attempts before the payment finally settle.
+			steps: []string{
+				routerInitPayment,
+
+				// shard 0
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 1
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 2
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 3
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// First two shards fail, two new ones are sent.
+				getPaymentResultTempFailure,
+				getPaymentResultTempFailure,
+				routerFailAttempt,
+				routerFailAttempt,
+
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// The four shards settle.
+				getPaymentResultSuccess,
+				getPaymentResultSuccess,
+				getPaymentResultSuccess,
+				getPaymentResultSuccess,
+				routerSettleAttempt,
+				routerSettleAttempt,
+				routerSettleAttempt,
+				routerSettleAttempt,
+
+				// Overall payment succeeds.
+				paymentSuccess,
+			},
+			routes: []*route.Route{
+				shard, shard, shard, shard, shard, shard,
+			},
+		},
+		{
+			// An MP payment scenario where 3 of the shards fail.
+			// However the last shard settle, which means we get
+			// the preimage and should consider the overall payment
+			// a success.
+			steps: []string{
+				routerInitPayment,
+
+				// shard 0
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 1
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 2
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 3
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// 3 shards fail, and should be failed by the
+				// router.
+				getPaymentResultTempFailure,
+				getPaymentResultTempFailure,
+				getPaymentResultTempFailure,
+				routerFailAttempt,
+				routerFailAttempt,
+				routerFailAttempt,
+
+				// The fourth shard succeed against all odds,
+				// making the overall payment succeed.
+				getPaymentResultSuccess,
+				routerSettleAttempt,
+				paymentSuccess,
+			},
+			routes: []*route.Route{shard, shard, shard, shard},
+		},
+		{
+			// An MP payment scenario a shard fail with a terminal
+			// error, causing the router to stop attempting.
+			steps: []string{
+				routerInitPayment,
+
+				// shard 0
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 1
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 2
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// shard 3
+				routerRegisterAttempt,
+				sendToSwitchSuccess,
+
+				// The first shard fail with a terminal error.
+				getPaymentResultTerminalFailure,
+				routerFailAttempt,
+				routerFailPayment,
+
+				// Remaining 3 shards fail.
+				getPaymentResultTempFailure,
+				getPaymentResultTempFailure,
+				getPaymentResultTempFailure,
+				routerFailAttempt,
+				routerFailAttempt,
+				routerFailAttempt,
+
+				// Payment fails.
+				paymentError,
+			},
+			routes: []*route.Route{
+				shard, shard, shard, shard, shard, shard,
+			},
 		},
 	}
 

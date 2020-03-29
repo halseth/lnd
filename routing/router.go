@@ -1815,7 +1815,6 @@ func (r *ChannelRouter) sendPayment(
 		paymentHash:   paymentHash,
 		paySession:    paySession,
 		currentHeight: currentHeight,
-		lastError:     nil,
 	}
 
 	// If a timeout is specified, create a timeout channel. If no timeout is

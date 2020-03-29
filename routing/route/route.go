@@ -129,6 +129,23 @@ type Hop struct {
 	LegacyPayload bool
 }
 
+// Copy returns a deep copy of the Hop.
+func (h *Hop) Copy() *Hop {
+	c := *h
+
+	if h.MPP != nil {
+		m := *h.MPP
+		c.MPP = &m
+	}
+
+	if h.AMP != nil {
+		a := *h.AMP
+		c.AMP = &a
+	}
+
+	return &c
+}
+
 // PackHopPayload writes to the passed io.Writer, the series of byes that can
 // be placed directly into the per-hop payload (EOB) for this hop. This will
 // include the required routing fields, as well as serializing any of the
@@ -285,6 +302,18 @@ type Route struct {
 	// Hops contains details concerning the specific forwarding details at
 	// each hop.
 	Hops []*Hop
+}
+
+// Copy returns a deep copy of the Route.
+func (r *Route) Copy() *Route {
+	c := *r
+
+	c.Hops = make([]*Hop, len(r.Hops))
+	for i := range r.Hops {
+		c.Hops[i] = r.Hops[i].Copy()
+	}
+
+	return &c
 }
 
 // HopFee returns the fee charged by the route hop indicated by hopIndex.

@@ -304,11 +304,12 @@ func (r *Route) HopFee(hopIndex int) lnwire.MilliSatoshi {
 // the case of a one-hop payment, this value will be zero as we don't need to
 // pay a fee to ourself.
 func (r *Route) TotalFees() lnwire.MilliSatoshi {
-	if len(r.Hops) == 0 {
-		return 0
-	}
+	return r.TotalAmount - r.ReceiverAmt()
+}
 
-	return r.TotalAmount - r.Hops[len(r.Hops)-1].AmtToForward
+// ReceiverAmt is the amount received by the final hop of this route.
+func (r *Route) ReceiverAmt() lnwire.MilliSatoshi {
+	return r.Hops[len(r.Hops)-1].AmtToForward
 }
 
 // NewRouteFromHops creates a new Route structure from the minimally required

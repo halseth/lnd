@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 var (
@@ -44,6 +45,11 @@ var (
 	// ErrAttemptAlreadyFailed is returned if we try to alter an already
 	// failed HTLC attempt.
 	ErrAttemptAlreadyFailed = errors.New("attempt already failed")
+
+	// ErrValueExceedsAmt is returned if we try to register an attempt that
+	// would take the total sent amount above the payment amount.
+	ErrValueExceedsAmt = errors.New("attempted value exceeds payment" +
+		"amount")
 
 	// errNoAttemptInfo is returned when no attempt info is stored yet.
 	errNoAttemptInfo = errors.New("unable to find attempt info for " +
@@ -87,7 +93,7 @@ func (p *PaymentControl) InitPayment(paymentHash lntypes.Hash,
 		}
 
 		// Get the existing status of this payment, if any.
-		paymentStatus, _, err := fetchPaymentStatus(bucket)
+		paymentStatus, _, _, err := fetchPaymentStatus(bucket)
 		if err != nil {
 			return err
 		}
@@ -179,6 +185,12 @@ func (p *PaymentControl) RegisterAttempt(paymentHash lntypes.Hash,
 			return err
 		}
 
+		info, err := fetchCreationInfo(bucket)
+		if err != nil {
+			return err
+
+		}
+
 		// Since payments that have reached a terminal condition but
 		// still have active shards are considered being in-flight
 		// (since there still is a possibility one of the outstanding
@@ -187,6 +199,14 @@ func (p *PaymentControl) RegisterAttempt(paymentHash lntypes.Hash,
 		// status is non-terminal.
 		var check []inflightCheck
 		check = append(check, ensureNonTerminal())
+
+		// We must also check that registering this attempt doesn't
+		// take the total sent amount above the payment value.
+		if info.Value < attempt.Route.ReceiverAmt() {
+			return ErrValueExceedsAmt
+		}
+		maxSent := info.Value - attempt.Route.ReceiverAmt()
+		check = append(check, ensureMaxSent(maxSent))
 
 		// Ensure the payment is in-flight and passes the checks set
 		// above.
@@ -457,13 +477,17 @@ func nextPaymentSequence(tx kvdb.RwTx) ([]byte, error) {
 // fetchPaymentStatus fetches the payment status of the payment. If the payment
 // isn't found, it will default to "StatusUnknown". The returned boolean is
 // true if the payment is InFlight but has reached a terminal condition,
-// waiting for active shards to finish.
-func fetchPaymentStatus(bucket kvdb.ReadBucket) (PaymentStatus, bool, error) {
+// waiting for active shards to finish. The returned value is the currently
+// sent amount (in-flight + settled attempts).
+func fetchPaymentStatus(bucket kvdb.ReadBucket) (PaymentStatus, bool,
+	lnwire.MilliSatoshi, error) {
+
 	// Creation info should be set for all payments, regardless of state.
 	if bucket.Get(paymentCreationInfoKey) == nil {
-		return StatusUnknown, false, nil
+		return StatusUnknown, false, 0, nil
 	}
 
+	sentAmt := lnwire.MilliSatoshi(0)
 	activeHTLCs := false
 	settled := false
 
@@ -471,16 +495,20 @@ func fetchPaymentStatus(bucket kvdb.ReadBucket) (PaymentStatus, bool, error) {
 	if htlcsBucket != nil {
 		htlcs, err := fetchHtlcAttempts(htlcsBucket)
 		if err != nil {
-			return 0, false, err
+			return 0, false, 0, err
 		}
 
 		for _, h := range htlcs {
-			if h.Settle != nil {
-				settled = true
+			if h.Failure != nil {
 				continue
 			}
 
-			if h.Failure != nil {
+			// The attempt was not failed, meaning the amount was
+			// potentially sent to the receiver.
+			sentAmt += h.Route.ReceiverAmt()
+
+			if h.Settle != nil {
+				settled = true
 				continue
 			}
 
@@ -493,7 +521,7 @@ func fetchPaymentStatus(bucket kvdb.ReadBucket) (PaymentStatus, bool, error) {
 	// Return StatusSucceeded if any of the the HTLCs did succeed and there
 	// a no active shards left.
 	if !activeHTLCs && settled {
-		return StatusSucceeded, false, nil
+		return StatusSucceeded, false, sentAmt, nil
 
 	}
 
@@ -501,24 +529,36 @@ func fetchPaymentStatus(bucket kvdb.ReadBucket) (PaymentStatus, bool, error) {
 	// payment is considered failed.
 	failed := bucket.Get(paymentFailInfoKey) != nil
 	if !activeHTLCs && failed {
-		return StatusFailed, false, nil
+		return StatusFailed, false, sentAmt, nil
 	}
 
 	// Otherwise it is still in flight.
-	return StatusInFlight, settled || failed, nil
+	return StatusInFlight, settled || failed, sentAmt, nil
 }
 
 // inflightCheck is a functional option that can be passed to ensureInFlight
 // that can do additional checks on the in-flight payment. A bool indicating
-// whether it had encountered a terminal condition is passed in.
-type inflightCheck func(bool) error
+// whether it had encountered a terminal condition, and a value representing
+// the total sent amount are passed in.
+type inflightCheck func(bool, lnwire.MilliSatoshi) error
 
 // ensureNonTerminal is a functional option to ensureInFlight that checks that
 // the payment has not encountered a terminal condition.
 func ensureNonTerminal() inflightCheck {
-	return func(terminal bool) error {
+	return func(terminal bool, _ lnwire.MilliSatoshi) error {
 		if terminal {
 			return ErrPaymentTerminal
+		}
+		return nil
+	}
+}
+
+// ensureMaxSent is a functional option to ensureInFlight that checks the
+// current sent amount doesn't exceed the given value.
+func ensureMaxSent(max lnwire.MilliSatoshi) inflightCheck {
+	return func(_ bool, sentAmt lnwire.MilliSatoshi) error {
+		if sentAmt > max {
+			return ErrValueExceedsAmt
 		}
 		return nil
 	}
@@ -529,7 +569,7 @@ func ensureNonTerminal() inflightCheck {
 // ensure we only mark in-flight payments as succeeded or failed. Additional
 // checks can be passed in to perform if the payment is in-flight.
 func ensureInFlight(bucket kvdb.ReadBucket, checks ...inflightCheck) error {
-	paymentStatus, terminal, err := fetchPaymentStatus(bucket)
+	paymentStatus, terminal, sentAmt, err := fetchPaymentStatus(bucket)
 	if err != nil {
 		return err
 	}
@@ -540,7 +580,7 @@ func ensureInFlight(bucket kvdb.ReadBucket, checks ...inflightCheck) error {
 	case paymentStatus == StatusInFlight:
 		// Perform any extra checks on the in-flight payment.
 		for _, c := range checks {
-			err := c(terminal)
+			err := c(terminal, sentAmt)
 			if err != nil {
 				return err
 			}
@@ -594,7 +634,7 @@ func (p *PaymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
 			}
 
 			// If the status is not InFlight, we can return early.
-			paymentStatus, _, err := fetchPaymentStatus(bucket)
+			paymentStatus, _, _, err := fetchPaymentStatus(bucket)
 			if err != nil {
 				return err
 			}
@@ -609,6 +649,7 @@ func (p *PaymentControl) FetchInFlightPayments() ([]*InFlightPayment, error) {
 			inFlight.Info, err = fetchCreationInfo(bucket)
 			if err != nil {
 				return err
+
 			}
 
 			htlcsBucket := bucket.NestedReadBucket(

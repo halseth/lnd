@@ -48,14 +48,14 @@ func genInfo() (*PaymentCreationInfo, *HTLCAttemptInfo,
 	rhash := fastsha256.Sum256(preimage[:])
 	return &PaymentCreationInfo{
 			PaymentHash:    rhash,
-			Value:          1,
+			Value:          testRoute.ReceiverAmt(),
 			CreationTime:   time.Unix(time.Now().Unix(), 0),
 			PaymentRequest: []byte("hola"),
 		},
 		&HTLCAttemptInfo{
 			AttemptID:  0,
 			SessionKey: priv,
-			Route:      testRoute,
+			Route:      *testRoute.Copy(),
 		}, preimage, nil
 }
 
@@ -504,14 +504,35 @@ func TestPaymentControlMultiShard(t *testing.T) {
 		)
 
 		// Create four unique attempts we'll use for the test, and
-		// register three of them with the payment control.
+		// register three of them with the payment control. We each
+		// attempts's value to one third of the payment amount.
+		shardAmt := info.Value / 3
+
 		var attempts []*HTLCAttemptInfo
 		for i := uint64(0); i < 4; i++ {
 			a := *attempt
 			a.AttemptID = i
+
+			// Make a copy of the route and modify the last hop amt
+			// to be the shard amount we want.
+			routeCopy := a.Route.Copy()
+			routeCopy.Hops[len(routeCopy.Hops)-1].AmtToForward = shardAmt
+			a.Route = *routeCopy
+
 			attempts = append(attempts, &a)
 
+			// For the fourth attempt, check that attempting to
+			// register it will fail since the total sent amount
+			// will be too large.
 			if i >= 3 {
+				err = pControl.RegisterAttempt(
+					info.PaymentHash, &a,
+				)
+				if err != ErrValueExceedsAmt {
+					t.Fatalf("expected "+
+						"ErrValueExceedsAmt, got: %v",
+						err)
+				}
 				continue
 			}
 

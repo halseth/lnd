@@ -126,9 +126,66 @@ type MPPayment struct {
 	// NOTE: Will only be set once the daemon has given up on the payment
 	// altogether.
 	FailureReason *FailureReason
+}
 
-	// Status is the current PaymentStatus of this payment.
-	Status PaymentStatus
+// Status is the current PaymentStatus of this payment.
+func (m *MPPayment) Status() (PaymentStatus, bool) {
+	activeHTLCs := false
+	settled := false
+
+	for _, h := range m.HTLCs {
+		if h.Failure != nil {
+			continue
+		}
+
+		if h.Settle != nil {
+			settled = true
+			continue
+		}
+
+		// If any of the HTLCs are not failed nor settled, we
+		// still have active HTLCs.
+		activeHTLCs = true
+	}
+
+	// Return StatusSucceeded if any of the the HTLCs did succeed and there
+	// a no active shards left.
+	if !activeHTLCs && settled {
+		return StatusSucceeded, true
+	}
+
+	// If we have no active HTLCs, and the payment failure is set, the
+	// payment is considered failed.
+	failed := m.FailureReason != nil
+	if !activeHTLCs && failed {
+		return StatusFailed, true
+	}
+
+	// Otherwise it is still in flight.
+	return StatusInFlight, settled || failed
+
+}
+
+func (m *MPPayment) ActiveHTLCs() ([]HTLCAttempt,
+	lnwire.MilliSatoshi, lnwire.MilliSatoshi) {
+
+	var active []HTLCAttempt
+	sent := lnwire.MilliSatoshi(0)
+	fees := lnwire.MilliSatoshi(0)
+
+	for _, h := range m.HTLCs {
+		if h.Failure != nil {
+			continue
+		}
+
+		// The attempt was not failed, meaning the amount was
+		// potentially sent to the receiver.
+		sent += h.Route.ReceiverAmt()
+		fees += h.Route.TotalFees()
+		active = append(active, h)
+	}
+
+	return active, sent, fees
 }
 
 // serializeHTLCSettleInfo serializes the details of a settled htlc.

@@ -221,9 +221,11 @@ func (p *controlTower) SubscribePayment(paymentHash lntypes.Hash) (
 		return false, nil, err
 	}
 
+	paymentStatus, _ := payment.Status()
+
 	var event PaymentResult
 
-	switch payment.Status {
+	switch paymentStatus {
 
 	// Payment is currently in flight. Register this subscriber and
 	// return without writing a result to the channel yet.

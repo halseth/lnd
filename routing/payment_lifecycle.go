@@ -29,13 +29,9 @@ type paymentLifecycle struct {
 // paymentState uses the passed payment to find the latest information we need
 // to act on every iteration of the payment loop.
 func (p *paymentLifecycle) paymentState(payment *channeldb.MPPayment) (
-	uint32, lnwire.MilliSatoshi, lnwire.MilliSatoshi, bool, error) {
+	int, lnwire.MilliSatoshi, lnwire.MilliSatoshi, bool, error) {
 
 	var (
-		// Keep track of the number of active shards we have
-		// in-flight...
-		activeShards uint32
-
 		// ...and the total value of all in-flight and settled shards.
 		remValue = p.totalAmount
 
@@ -51,47 +47,27 @@ func (p *paymentLifecycle) paymentState(payment *channeldb.MPPayment) (
 		terminate = payment.FailureReason != nil
 	)
 
-	// Go through the HTLCs for this payment, determining if there
-	// are any in flight.
-	for _, a := range payment.HTLCs {
-		// This HTLC already failed, ignore.
-		if a.Failure != nil {
-			continue
-		}
+	activeShards, sentAmt, fees := payment.ActiveHTLCs()
 
-		// Subtract settled or in flight attempts from the
-		// remaining value.
-		amt := a.Route.ReceiverAmt()
-		if amt > remValue {
-			return 0, 0, 0, false, fmt.Errorf("amount "+
-				"sent %v exceeds remaining amount %v",
-				amt, remValue)
-		}
-		remValue -= amt
-
-		// We'll subtract the used fee from our fee budget, but allow
-		// the fees of the alrady sent shards to exceed our budget (can
-		// happen after restarts).
-		fee := a.Route.TotalFees()
-		if fee <= feeBudget {
-			feeBudget -= fee
-		} else {
-			feeBudget = 0
-		}
-
-		// If this attempt is settled, we don't want to send
-		// more shards, we will terminate the payment.
-		if a.Settle != nil {
+	for _, h := range activeShards {
+		if h.Settle != nil {
 			terminate = true
-			continue
 		}
-
-		// If the attempt is still in flight, count it towards
-		// our active shards.
-		activeShards++
 	}
 
-	return activeShards, remValue, feeBudget, terminate, nil
+	if sentAmt > remValue {
+		return 0, 0, 0, false, fmt.Errorf("amount "+
+			"sent %v exceeds remaining amount %v",
+			sentAmt, remValue)
+	}
+
+	if fees <= feeBudget {
+		feeBudget -= fees
+	} else {
+		feeBudget = 0
+	}
+
+	return len(activeShards), remValue, feeBudget, terminate, nil
 }
 
 // resumePayment resumes the paymentLifecycle from the current state.
@@ -226,7 +202,7 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 
 		// Create a new payment attempt from the given payment session.
 		rt, err := p.paySession.RequestRoute(
-			remValue, feeLimit, activeShards, uint32(p.currentHeight),
+			remValue, feeLimit, uint32(activeShards), uint32(p.currentHeight),
 		)
 		if err != nil {
 			log.Warnf("Failed to find route for payment %x: %v",

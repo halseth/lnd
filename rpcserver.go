@@ -5126,7 +5126,8 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 	for _, payment := range payments {
 		// To keep compatibility with the old API, we only return
 		// non-suceeded payments if requested.
-		if payment.Status != channeldb.StatusSucceeded &&
+		paymentStatus, _ := payment.Status()
+		if paymentStatus != channeldb.StatusSucceeded &&
 			!req.IncludeIncomplete {
 			continue
 		}
@@ -5157,7 +5158,7 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 		msatValue := int64(payment.Info.Value)
 		satValue := int64(payment.Info.Value.ToSatoshis())
 
-		status, err := convertPaymentStatus(payment.Status)
+		status, err := convertPaymentStatus(paymentStatus)
 		if err != nil {
 			return nil, err
 		}

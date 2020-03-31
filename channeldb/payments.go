@@ -270,12 +270,6 @@ func fetchPayment(bucket kvdb.ReadBucket) (*MPPayment, error) {
 
 	sequenceNum := binary.BigEndian.Uint64(seqBytes)
 
-	// Get the payment status.
-	paymentStatus, _, _, err := fetchPaymentStatus(bucket)
-	if err != nil {
-		return nil, err
-	}
-
 	// Get the PaymentCreationInfo.
 	creationInfo, err := fetchCreationInfo(bucket)
 	if err != nil {
@@ -306,7 +300,6 @@ func fetchPayment(bucket kvdb.ReadBucket) (*MPPayment, error) {
 		Info:          creationInfo,
 		HTLCs:         htlcs,
 		FailureReason: failureReason,
-		Status:        paymentStatus,
 	}, nil
 }
 
@@ -409,12 +402,14 @@ func (db *DB) DeletePayments() error {
 					"payments bucket")
 			}
 
-			// If the status is InFlight, we cannot safely delete
-			// the payment information, so we return early.
-			paymentStatus, _, _, err := fetchPaymentStatus(bucket)
+			payment, err := fetchPayment(bucket)
 			if err != nil {
 				return err
 			}
+
+			// If the status is InFlight, we cannot safely delete
+			// the payment information, so we return early.
+			paymentStatus, _ := payment.Status()
 
 			if paymentStatus == StatusInFlight {
 				return nil

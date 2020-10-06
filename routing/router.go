@@ -1155,7 +1155,7 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 			return err
 		}
 
-		if err := r.cfg.Graph.AddLightningNode(msg); err != nil {
+		if err := r.cfg.Graph.BatchedAddLightningNode(msg); err != nil {
 			return errors.Errorf("unable to add node %v to the "+
 				"graph: %v", msg.PubKeyBytes, err)
 		}
@@ -1187,7 +1187,7 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 		// short-circuit our path straight to adding the edge to our
 		// graph.
 		if r.cfg.AssumeChannelValid {
-			if err := r.cfg.Graph.AddChannelEdge(msg); err != nil {
+			if err := r.cfg.Graph.BatchedAddChannelEdge(msg); err != nil {
 				return fmt.Errorf("unable to add edge: %v", err)
 			}
 			log.Tracef("New channel discovered! Link "+
@@ -1358,7 +1358,7 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 		// Now that we know this isn't a stale update, we'll apply the
 		// new edge policy to the proper directional edge within the
 		// channel graph.
-		if err = r.cfg.Graph.UpdateEdgePolicy(msg); err != nil {
+		if err = r.cfg.Graph.BatchedUpdateEdgePolicy(msg); err != nil {
 			err := errors.Errorf("unable to add channel: %v", err)
 			log.Error(err)
 			return err

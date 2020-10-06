@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/batch"
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -177,16 +178,22 @@ type ChannelGraph struct {
 	cacheMu     sync.RWMutex
 	rejectCache *rejectCache
 	chanCache   *channelCache
+
+	chanScheduler batch.Scheduler
+	nodeScheduler batch.Scheduler
 }
 
 // newChannelGraph allocates a new ChannelGraph backed by a DB instance. The
 // returned instance has its own unique reject cache and channel cache.
 func newChannelGraph(db *DB, rejectCacheSize, chanCacheSize int) *ChannelGraph {
-	return &ChannelGraph{
+	g := &ChannelGraph{
 		db:          db,
 		rejectCache: newRejectCache(rejectCacheSize),
 		chanCache:   newChannelCache(chanCacheSize),
 	}
+	g.chanScheduler = batch.NewTimeScheduler(db.Backend, &g.cacheMu, time.Second)
+	g.nodeScheduler = batch.NewTimeScheduler(db.Backend, nil, time.Second)
+	return g
 }
 
 // Database returns a pointer to the underlying database.
@@ -432,12 +439,29 @@ func (c *ChannelGraph) SetSourceNode(node *LightningNode) error {
 	})
 }
 
+// BatchedAddLightningNode adds a vertex/node to the graph database. If the node
+// is not in the database from before, this will add a new, unconnected one to
+// the graph. If it is present from before, this will update that node's
+// information. Note that this method is expected to only be called to update an
+// already present node from a node announcement, or to insert a node found in a
+// channel update.
+func (c *ChannelGraph) BatchedAddLightningNode(node *LightningNode) error {
+	return c.nodeScheduler.Execute(&batch.Request{
+		Update: func(tx kvdb.RwTx) error {
+			return addLightningNode(tx, node)
+		},
+		Solo: func() error {
+			return c.AddLightningNode(node)
+		},
+	})
+}
+
 // AddLightningNode adds a vertex/node to the graph database. If the node is not
 // in the database from before, this will add a new, unconnected one to the
 // graph. If it is present from before, this will update that node's
-// information. Note that this method is expected to only be called to update
-// an already present node from a node announcement, or to insert a node found
-// in a channel update.
+// information. Note that this method is expected to only be called to update an
+// already present node from a node announcement, or to insert a node found in a
+// channel update.
 //
 // TODO(roasbeef): also need sig of announcement
 func (c *ChannelGraph) AddLightningNode(node *LightningNode) error {
@@ -560,12 +584,52 @@ func (c *ChannelGraph) deleteLightningNode(nodes kvdb.RwBucket,
 	return nodeUpdateIndex.Delete(indexKey[:])
 }
 
+// BatchedAddChannelEdge adds a new (undirected, blank) edge to the graph
+// database. An undirected edge from the two target nodes are created. The
+// information stored denotes the static attributes of the channel, such as the
+// channelID, the keys involved in creation of the channel, and the set of
+// features that the channel supports. The chanPoint and chanID are used to
+// uniquely identify the edge globally within the database.
+func (c *ChannelGraph) BatchedAddChannelEdge(edge *ChannelEdgeInfo) error {
+	var alreadyExists bool
+	return c.chanScheduler.Execute(&batch.Request{
+		Update: func(tx kvdb.RwTx) error {
+			err := c.addChannelEdge(tx, edge)
+
+			// Silence ErrEdgeAlreadyExist so that the batch can
+			// succeed, but propagate the error via local state.
+			if err == ErrEdgeAlreadyExist {
+				alreadyExists = true
+				return nil
+			}
+
+			alreadyExists = false
+			return err
+		},
+		OnSuccess: func(err error) error {
+			switch {
+			case err != nil:
+				return err
+			case alreadyExists:
+				return ErrEdgeAlreadyExist
+			default:
+				c.rejectCache.remove(edge.ChannelID)
+				c.chanCache.remove(edge.ChannelID)
+				return nil
+			}
+		},
+		Solo: func() error {
+			return c.AddChannelEdge(edge)
+		},
+	})
+}
+
 // AddChannelEdge adds a new (undirected, blank) edge to the graph database. An
-// undirected edge from the two target nodes are created. The information
-// stored denotes the static attributes of the channel, such as the channelID,
-// the keys involved in creation of the channel, and the set of features that
-// the channel supports. The chanPoint and chanID are used to uniquely identify
-// the edge globally within the database.
+// undirected edge from the two target nodes are created. The information stored
+// denotes the static attributes of the channel, such as the channelID, the keys
+// involved in creation of the channel, and the set of features that the channel
+// supports. The chanPoint and chanID are used to uniquely identify the edge
+// globally within the database.
 func (c *ChannelGraph) AddChannelEdge(edge *ChannelEdgeInfo) error {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -1896,13 +1960,57 @@ func delChannelEdge(edges, edgeIndex, chanIndex, zombieIndex,
 	)
 }
 
+// BatchedUpdateEdgePolicy updates the edge routing policy for a single directed
+// edge within the database for the referenced channel. The `flags` attribute
+// within the ChannelEdgePolicy determines which of the directed edges are being
+// updated. If the flag is 1, then the first node's information is being
+// updated, otherwise it's the second node's information. The node ordering is
+// determined by the lexicographical ordering of the identity public keys of the
+// nodes on either side of the channel.
+func (c *ChannelGraph) BatchedUpdateEdgePolicy(edge *ChannelEdgePolicy) error {
+	var (
+		isUpdate1    bool
+		edgeNotFound bool
+	)
+	return c.chanScheduler.Execute(&batch.Request{
+		Update: func(tx kvdb.RwTx) error {
+			var err error
+			isUpdate1, err = updateEdgePolicy(tx, edge)
+
+			// Silence ErrEdgeNotFound so that the batch can
+			// succeed, but propagate the error via local state.
+			if err == ErrEdgeNotFound {
+				edgeNotFound = true
+				return nil
+			}
+
+			edgeNotFound = false
+			return err
+		},
+		OnSuccess: func(err error) error {
+			switch {
+			case err != nil:
+				return err
+			case edgeNotFound:
+				return ErrEdgeNotFound
+			default:
+				c.updateEdgeCache(edge, isUpdate1)
+				return nil
+			}
+		},
+		Solo: func() error {
+			return c.UpdateEdgePolicy(edge)
+		},
+	})
+}
+
 // UpdateEdgePolicy updates the edge routing policy for a single directed edge
 // within the database for the referenced channel. The `flags` attribute within
 // the ChannelEdgePolicy determines which of the directed edges are being
 // updated. If the flag is 1, then the first node's information is being
 // updated, otherwise it's the second node's information. The node ordering is
-// determined by the lexicographical ordering of the identity public keys of
-// the nodes on either side of the channel.
+// determined by the lexicographical ordering of the identity public keys of the
+// nodes on either side of the channel.
 func (c *ChannelGraph) UpdateEdgePolicy(edge *ChannelEdgePolicy) error {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()

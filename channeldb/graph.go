@@ -191,8 +191,8 @@ func newChannelGraph(db *DB, rejectCacheSize, chanCacheSize int) *ChannelGraph {
 		rejectCache: newRejectCache(rejectCacheSize),
 		chanCache:   newChannelCache(chanCacheSize),
 	}
-	g.chanScheduler = batch.NewTimeScheduler(db.Backend, &g.cacheMu, time.Second)
-	g.nodeScheduler = batch.NewTimeScheduler(db.Backend, nil, time.Second)
+	g.chanScheduler = batch.NewTimeScheduler(db.Backend, &g.cacheMu, 10*time.Millisecond)
+	g.nodeScheduler = batch.NewTimeScheduler(db.Backend, nil, 10*time.Millisecond)
 	return g
 }
 
@@ -465,9 +465,7 @@ func (c *ChannelGraph) BatchedAddLightningNode(node *LightningNode) error {
 //
 // TODO(roasbeef): also need sig of announcement
 func (c *ChannelGraph) AddLightningNode(node *LightningNode) error {
-	return kvdb.Update(c.db, func(tx kvdb.RwTx) error {
-		return addLightningNode(tx, node)
-	})
+	return c.BatchedAddLightningNode(node)
 }
 
 func addLightningNode(tx kvdb.RwTx, node *LightningNode) error {
@@ -631,20 +629,7 @@ func (c *ChannelGraph) BatchedAddChannelEdge(edge *ChannelEdgeInfo) error {
 // supports. The chanPoint and chanID are used to uniquely identify the edge
 // globally within the database.
 func (c *ChannelGraph) AddChannelEdge(edge *ChannelEdgeInfo) error {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-
-	err := kvdb.Update(c.db, func(tx kvdb.RwTx) error {
-		return c.addChannelEdge(tx, edge)
-	})
-	if err != nil {
-		return err
-	}
-
-	c.rejectCache.remove(edge.ChannelID)
-	c.chanCache.remove(edge.ChannelID)
-
-	return nil
+	return c.BatchedAddChannelEdge(edge)
 }
 
 // addChannelEdge is the private form of AddChannelEdge that allows callers to
@@ -2012,22 +1997,7 @@ func (c *ChannelGraph) BatchedUpdateEdgePolicy(edge *ChannelEdgePolicy) error {
 // determined by the lexicographical ordering of the identity public keys of the
 // nodes on either side of the channel.
 func (c *ChannelGraph) UpdateEdgePolicy(edge *ChannelEdgePolicy) error {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-
-	var isUpdate1 bool
-	err := kvdb.Update(c.db, func(tx kvdb.RwTx) error {
-		var err error
-		isUpdate1, err = updateEdgePolicy(tx, edge)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-
-	c.updateEdgeCache(edge, isUpdate1)
-
-	return nil
+	return c.BatchedUpdateEdgePolicy(edge)
 }
 
 func (c *ChannelGraph) updateEdgeCache(e *ChannelEdgePolicy, isUpdate1 bool) {

@@ -45,6 +45,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/walletunlocker"
@@ -375,6 +376,10 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 		return getListeners()
 	}
 
+	interceptor := rpcperms.NewInterceptor(rpcsLog)
+	rpcServerOpts := interceptor.CreateServerOpts()
+	serverOpts = append(serverOpts, rpcServerOpts...)
+
 	// We wait until the user provides a password over RPC. In case lnd is
 	// started with the --noseedbackup flag, we use the default password
 	// for wallet encryption.
@@ -492,6 +497,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 				ltndLog.Warnf(msg, "invoice", cfg.InvoiceMacPath)
 			}
 		}
+
+		interceptor.AddMacaroonService(macaroonService)
 	}
 
 	// Now we're definitely done with the unlocker, shut it down so we can
@@ -732,6 +739,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 		cfg, server, macaroonService, cfg.SubRPCServers, serverOpts,
 		restDialOpts, restProxyDest, atplManager, server.invoices,
 		tower, restListen, rpcListeners, chainedAcceptor,
+		interceptor,
 	)
 	if err != nil {
 		err := fmt.Errorf("unable to create RPC server: %v", err)

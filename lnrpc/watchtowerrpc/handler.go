@@ -50,8 +50,29 @@ var _ WatchtowerServer = (*Handler)(nil)
 // If the macaroons we need aren't found in the filepath, then we'll create them
 // on start up. If we're unable to locate, or create the macaroons we need, then
 // we'll return with an error.
-func New(cfg *Config) (*Handler, lnrpc.MacaroonPerms, error) {
-	return &Handler{*cfg}, macPermissions, nil
+func (c *Handler) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	subServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
+	}
+
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	config, ok := subServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, subServerConf)
+	}
+
+	c.cfg = *config
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the Handler to function.

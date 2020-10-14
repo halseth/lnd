@@ -22,6 +22,8 @@ type MacaroonPerms map[string][]bakery.Op
 // main RPC server. The main rpcserver will create, start, stop, and manage
 // each sub-server in a generalized manner.
 type SubServer interface {
+	Configure(subCfgs SubServerConfigDispatcher) (MacaroonPerms, error)
+
 	// Start starts the sub-server and all goroutines it needs to operate.
 	Start() error
 
@@ -75,7 +77,7 @@ type SubServerDriver struct {
 	// return the SubServer, ready for action, along with the set of
 	// macaroon permissions that the sub-server wishes to pass on to the
 	// root server for all methods routed towards it.
-	New func(subCfgs SubServerConfigDispatcher) (SubServer, MacaroonPerms, error)
+	New func() SubServer
 }
 
 var (

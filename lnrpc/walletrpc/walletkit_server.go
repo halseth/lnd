@@ -160,7 +160,57 @@ type WalletKit struct {
 var _ WalletKitServer = (*WalletKit)(nil)
 
 // New creates a new instance of the WalletKit sub-RPC server.
-func New(cfg *Config) (*WalletKit, lnrpc.MacaroonPerms, error) {
+func (w *WalletKit) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	walletKitServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
+	}
+
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	cfg, ok := walletKitServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, walletKitServerConf)
+	}
+
+	// Before we try to make the new WalletKit service instance, we'll
+	// perform some sanity checks on the arguments to ensure that they're
+	// useable.
+	switch {
+	case cfg.MacService != nil && cfg.NetworkDir == "":
+		return nil, fmt.Errorf("NetworkDir must be set to " +
+			"create WalletKit RPC server")
+
+	case cfg.FeeEstimator == nil:
+		return nil, fmt.Errorf("FeeEstimator must be set to " +
+			"create WalletKit RPC server")
+
+	case cfg.Wallet == nil:
+		return nil, fmt.Errorf("Wallet must be set to create " +
+			"WalletKit RPC server")
+
+	case cfg.KeyRing == nil:
+		return nil, fmt.Errorf("KeyRing must be set to create " +
+			"WalletKit RPC server")
+
+	case cfg.Sweeper == nil:
+		return nil, fmt.Errorf("Sweeper must be set to create " +
+			"WalletKit RPC server")
+
+	case cfg.Chain == nil:
+		return nil, fmt.Errorf("Chain must be set to create " +
+			"WalletKit RPC server")
+	}
+
 	// If the path of the wallet kit macaroon wasn't specified, then we'll
 	// assume that it's found at the default network directory.
 	if cfg.WalletKitMacPath == "" {
@@ -187,24 +237,22 @@ func New(cfg *Config) (*WalletKit, lnrpc.MacaroonPerms, error) {
 			macaroonOps...,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		walletKitMacBytes, err := walletKitMac.M().MarshalBinary()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		err = ioutil.WriteFile(macFilePath, walletKitMacBytes, 0644)
 		if err != nil {
 			_ = os.Remove(macFilePath)
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
-	walletKit := &WalletKit{
-		cfg: cfg,
-	}
+	w.cfg = cfg
 
-	return walletKit, macPermissions, nil
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the sub-server to function.

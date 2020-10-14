@@ -130,13 +130,49 @@ type Server struct {
 // A compile time check to ensure that Server fully implements the RouterServer
 // gRPC service.
 var _ RouterServer = (*Server)(nil)
+var _ lnrpc.SubServer = (*Server)(nil)
+
+func New() *Server {
+	return &Server{
+		quit: make(chan struct{}),
+	}
+}
 
 // New creates a new instance of the RouterServer given a configuration struct
 // that contains all external dependencies. If the target macaroon exists, and
 // we're unable to create it, then an error will be returned. We also return
 // the set of permissions that we require as a server. At the time of writing
 // of this documentation, this is the same macaroon as as the admin macaroon.
-func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
+func (r *Server) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	routeServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
+	}
+
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	cfg, ok := routeServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, routeServerConf)
+	}
+
+	// Before we try to make the new router service instance, we'll perform
+	// some sanity checks on the arguments to ensure that they're useable.
+	switch {
+	case cfg.Router == nil:
+		return nil, fmt.Errorf("Router must be set to create " +
+			"Routerpc")
+	}
+
 	// If the path of the router macaroon wasn't generated, then we'll
 	// assume that it's found at the default network directory.
 	if cfg.RouterMacPath == "" {
@@ -163,25 +199,21 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 			macaroonOps...,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		routerMacBytes, err := routerMac.M().MarshalBinary()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		err = ioutil.WriteFile(macFilePath, routerMacBytes, 0644)
 		if err != nil {
 			_ = os.Remove(macFilePath)
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
-	routerServer := &Server{
-		cfg:  cfg,
-		quit: make(chan struct{}),
-	}
-
-	return routerServer, macPermissions, nil
+	r.cfg = cfg
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the rpcServer to function.

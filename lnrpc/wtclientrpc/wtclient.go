@@ -79,8 +79,38 @@ var _ WatchtowerClientServer = (*WatchtowerClient)(nil)
 // within this method. If the macaroons we need aren't found in the filepath,
 // then we'll create them on start up. If we're unable to locate, or create the
 // macaroons we need, then we'll return with an error.
-func New(cfg *Config) (*WatchtowerClient, lnrpc.MacaroonPerms, error) {
-	return &WatchtowerClient{*cfg}, macPermissions, nil
+func (c *WatchtowerClient) Configure(
+	configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	subServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
+	}
+
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	config, ok := subServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, subServerConf)
+	}
+
+	// Before we try to make the new service instance, we'll perform
+	// some sanity checks on the arguments to ensure that they're useable.
+	switch {
+	case config.Resolver == nil:
+		return nil, errors.New("a lncfg.TCPResolver is required")
+	}
+
+	c.cfg = *config
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the WatchtowerClient to
@@ -116,8 +146,8 @@ func (c *WatchtowerClient) RegisterWithRootServer(grpcServer *grpc.Server) error
 	// all our methods are routed properly.
 	RegisterWatchtowerClientServer(grpcServer, c)
 
-	c.cfg.Log.Debugf("WatchtowerClient RPC server successfully registered " +
-		"with  root gRPC server")
+	//	c.cfg.Log.Debugf("WatchtowerClient RPC server successfully registered " +
+	//		"with  root gRPC server")
 
 	return nil
 }

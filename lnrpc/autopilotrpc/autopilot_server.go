@@ -5,6 +5,7 @@ package autopilotrpc
 import (
 	"context"
 	"encoding/hex"
+	fmt "fmt"
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -72,15 +73,42 @@ var _ AutopilotServer = (*Server)(nil)
 // this method. If the macaroons we need aren't found in the filepath, then
 // we'll create them on start up. If we're unable to locate, or create the
 // macaroons we need, then we'll return with an error.
-func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
-	// We don't create any new macaroons for this subserver, instead reuse
-	// existing onchain/offchain permissions.
-	server := &Server{
-		cfg:     cfg,
-		manager: cfg.Manager,
+func (s *Server) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	subServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
 	}
 
-	return server, macPermissions, nil
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	config, ok := subServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, subServerConf)
+	}
+
+	// Before we try to make the new service instance, we'll perform
+	// some sanity checks on the arguments to ensure that they're useable.
+	switch {
+	case config.Manager == nil:
+		return nil, fmt.Errorf("Manager must be set to create " +
+			"Autopilotrpc")
+	}
+
+	// We don't create any new macaroons for this subserver, instead reuse
+	// existing onchain/offchain permissions.
+	s.cfg = config
+	s.manager = config.Manager
+
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the Server to function.

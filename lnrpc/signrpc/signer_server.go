@@ -93,7 +93,43 @@ var _ SignerServer = (*Server)(nil)
 // method. If the macaroons we need aren't found in the filepath, then we'll
 // create them on start up. If we're unable to locate, or create the macaroons
 // we need, then we'll return with an error.
-func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
+func (s *Server) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	signServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
+	}
+
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	cfg, ok := signServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, signServerConf)
+	}
+
+	// Before we try to make the new signer service instance, we'll perform
+	// some sanity checks on the arguments to ensure that they're useable.
+
+	switch {
+	// If the macaroon service is set (we should use macaroons), then
+	// ensure that we know where to look for them, or create them if not
+	// found.
+	case cfg.MacService != nil && cfg.NetworkDir == "":
+		return nil, fmt.Errorf("NetworkDir must be set to create " +
+			"Signrpc")
+	case cfg.Signer == nil:
+		return nil, fmt.Errorf("Signer must be set to create " +
+			"Signrpc")
+	}
+
 	// If the path of the signer macaroon wasn't generated, then we'll
 	// assume that it's found at the default network directory.
 	if cfg.SignerMacPath == "" {
@@ -120,24 +156,21 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 			macaroonOps...,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		signerMacBytes, err := signerMac.M().MarshalBinary()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		err = ioutil.WriteFile(macFilePath, signerMacBytes, 0644)
 		if err != nil {
 			_ = os.Remove(macFilePath)
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
-	signerServer := &Server{
-		cfg: cfg,
-	}
-
-	return signerServer, macPermissions, nil
+	s.cfg = cfg
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the rpcServer to function.

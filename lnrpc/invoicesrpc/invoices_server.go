@@ -4,6 +4,7 @@ package invoicesrpc
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -84,7 +85,28 @@ var _ InvoicesServer = (*Server)(nil)
 // this method. If the macaroons we need aren't found in the filepath, then
 // we'll create them on start up. If we're unable to locate, or create the
 // macaroons we need, then we'll return with an error.
-func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
+func (s *Server) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+
+	// We'll attempt to look up the config that we expect, according to our
+	// subServerName name. If we can't find this, then we'll exit with an
+	// error, as we're unable to properly initialize ourselves without this
+	// config.
+	subServerConf, ok := configRegistry.FetchConfig(subServerName)
+	if !ok {
+		return nil, fmt.Errorf("unable to find config for "+
+			"subserver type %s", subServerName)
+	}
+
+	// Now that we've found an object mapping to our service name, we'll
+	// ensure that it's the type we need.
+	cfg, ok := subServerConf.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("wrong type of config for "+
+			"subserver %s, expected %T got %T", subServerName,
+			&Config{}, subServerConf)
+	}
+
 	// If the path of the invoices macaroon wasn't specified, then we'll
 	// assume that it's found at the default network directory.
 	macFilePath := filepath.Join(
@@ -108,25 +130,21 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 			macaroonOps...,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		invoicesMacBytes, err := invoicesMac.M().MarshalBinary()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		err = ioutil.WriteFile(macFilePath, invoicesMacBytes, 0644)
 		if err != nil {
 			_ = os.Remove(macFilePath)
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
-	server := &Server{
-		cfg:  cfg,
-		quit: make(chan struct{}, 1),
-	}
-
-	return server, macPermissions, nil
+	s.cfg = cfg
+	return macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the Server to function.

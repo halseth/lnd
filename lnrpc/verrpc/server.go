@@ -5,6 +5,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/build"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
@@ -21,6 +22,11 @@ var macPermissions = map[string][]bakery.Op{
 // Server is an rpc server that supports querying for information about the
 // running binary.
 type Server struct{}
+
+func (s *Server) Configure(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.MacaroonPerms, error) {
+	return macPermissions, nil
+}
 
 // Start launches any helper goroutines required for the rpcServer to function.
 //

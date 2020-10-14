@@ -639,7 +639,8 @@ func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
 	// can create each sub-server!
 	registeredSubServers := lnrpc.RegisteredSubServers()
 	for _, subServer := range registeredSubServers {
-		subServerInstance, macPerms, err := subServer.New(subServerCgs)
+		subServerInstance := subServer.New()
+		macPerms, err := subServerInstance.Configure(subServerCgs)
 		if err != nil {
 			return nil, err
 		}

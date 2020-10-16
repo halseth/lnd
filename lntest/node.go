@@ -819,7 +819,7 @@ func (hn *HarnessNode) FetchNodeInfo() error {
 	ctxb := context.Background()
 	info, err := hn.GetInfo(ctxb, &lnrpc.GetInfoRequest{})
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to get info in FetchNodeInfo: %v", err)
 	}
 
 	hn.PubKeyStr = info.IdentityPubkey

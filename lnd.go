@@ -319,7 +319,6 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 
 	var (
 		walletInitParams WalletUnlockParams
-		shutdownUnlocker = func() {}
 		privateWalletPw  = lnwallet.DefaultPrivatePassphrase
 		publicWalletPw   = lnwallet.DefaultPublicPassphrase
 	)
@@ -373,8 +372,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 		return getListeners()
 	}
 
-	interceptor := rpcperms.NewInterceptor(rpcsLog)
-	rpcServerOpts := interceptor.CreateServerOpts()
+	rpcInterceptor := rpcperms.NewInterceptor(rpcsLog)
+	rpcServerOpts := rpcInterceptor.CreateServerOpts()
 	serverOpts = append(serverOpts, rpcServerOpts...)
 
 	grpcServer := grpc.NewServer(serverOpts...)
@@ -386,7 +385,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	// exported by the rpcServer.
 	rpcServer, err := newRPCServer(
 		cfg, restDialOpts, restProxyDest, restListen, rpcListeners,
-		interceptor, lisCfg.ExternalRPCSubserverCfg,
+		rpcInterceptor, lisCfg.ExternalRPCSubserverCfg,
 		lisCfg.ExternalRestRegistrar,
 	)
 	if err != nil {
@@ -409,6 +408,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	// started with the --noseedbackup flag, we use the default password
 	// for wallet encryption.
 	if !cfg.NoSeedBackup {
+		rpcInterceptor.SetWalletLocked()
+
 		params, err := waitForWalletPassword(cfg, pwService)
 		if err != nil {
 			err := fmt.Errorf("unable to set up wallet password "+
@@ -519,12 +520,10 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 			}
 		}
 
-		interceptor.AddMacaroonService(macaroonService)
+		rpcInterceptor.AddMacaroonService(macaroonService)
 	}
 
-	// Now we're definitely done with the unlocker, shut it down so we can
-	// start the main RPC service later.
-	shutdownUnlocker()
+	//rpcInterceptor.SetWalletUnlocked()
 
 	// With the information parsed from the configuration, create valid
 	// instances of the pertinent interfaces required to operate the
@@ -755,6 +754,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 		return err
 	}
 	defer rpcServer.Stop()
+
+	rpcInterceptor.SetRpcActive()
 
 	// If we're not in regtest or simnet mode, We'll wait until we're fully
 	// synced to continue the start up of the remainder of the daemon. This

@@ -69,6 +69,7 @@ require (
 	golang.org/x/net v0.0.0-20191002035440-2ec189313ef0
 	golang.org/x/sys v0.0.0-20200202164722-d101bd2416d5
 	golang.org/x/time v0.0.0-20180412165947-fbb02b2291d2
+	google.golang.org/appengine v1.4.0
 	google.golang.org/grpc v1.24.0
 	gopkg.in/errgo.v1 v1.0.1 // indirect
 	gopkg.in/macaroon-bakery.v2 v2.0.1

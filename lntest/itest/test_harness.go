@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest"
@@ -145,8 +146,17 @@ func waitForNTxsInMempool(miner *rpcclient.Client, n int,
 	for {
 		select {
 		case <-breakTimeout:
+			var txs []*wire.MsgTx
+			for _, txid := range mempool {
+				tx, err := miner.GetRawTransaction(txid)
+				if err != nil {
+					return nil, err
+				}
+				txs = append(txs, tx.MsgTx())
+			}
+
 			return nil, fmt.Errorf("wanted %v, found %v txs "+
-				"in mempool: %v", n, len(mempool), mempool)
+				"in mempool: %v %v", n, len(mempool), mempool, spew.Sdump(txs))
 		case <-ticker.C:
 			mempool, err = miner.GetRawMempool()
 			if err != nil {

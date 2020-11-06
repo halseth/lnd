@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -102,6 +103,7 @@ func generateInputPartitionings(sweepableInputs []txInput,
 
 		// Check the current output value and add wallet utxos if
 		// needed to push the output value to the lower limit.
+		log.Infof("trying to add walet inputs")
 		if err := txInputs.tryAddWalletInputsIfNeeded(); err != nil {
 			return nil, err
 		}
@@ -112,14 +114,14 @@ func generateInputPartitionings(sweepableInputs []txInput,
 		// with an even lower output value.
 		if !txInputs.dustLimitReached() {
 			log.Debugf("Set value %v below dust limit of %v",
-				txInputs.outputValue, txInputs.dustLimit)
+				txInputs.changeOutput, txInputs.dustLimit)
 			return sets, nil
 		}
 
 		log.Infof("Candidate sweep set of size=%v (+%v wallet inputs), "+
 			"has yield=%v, weight=%v",
 			inputCount, len(txInputs.inputs)-inputCount,
-			txInputs.outputValue-txInputs.walletInputTotal,
+			txInputs.reqOutput+txInputs.changeOutput-txInputs.walletInputTotal,
 			txInputs.weightEstimate.weight())
 
 		sets = append(sets, txInputs.inputs)
@@ -138,9 +140,45 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 
 	txFee := estimator.fee()
 
+	sweepTx := wire.NewMsgTx(2)
+	// TODO: __MUST __ use the locktime the 2nd level HTLC was signed with!
+	sweepTx.LockTime = currentBlockHeight
+
+	for _, o := range inputs {
+		if o.RequiredTxOut() == nil {
+			continue
+		}
+		in := &wire.TxIn{
+			PreviousOutPoint: *o.OutPoint(),
+			Sequence:         o.BlocksToMaturity(),
+		}
+		sweepTx.AddTxIn(in)
+
+		sweepTx.AddTxOut(o.RequiredTxOut())
+		log.Infof("adding txin %v txout %v to sweep tx", spew.Sdump(in), spew.Sdump(o.RequiredTxOut()))
+
+		if lt, ok := o.RequiredLockTime(); ok {
+			sweepTx.LockTime = lt
+		}
+	}
+
 	// Sum up the total value contained in the inputs.
 	var totalSum btcutil.Amount
 	for _, o := range inputs {
+		if o.RequiredTxOut() != nil {
+			continue
+		}
+		in := &wire.TxIn{
+			PreviousOutPoint: *o.OutPoint(),
+			Sequence:         o.BlocksToMaturity(),
+		}
+		sweepTx.AddTxIn(in)
+		log.Infof("adding txin %v to sweep tx", spew.Sdump(in))
+
+		if lt, ok := o.RequiredLockTime(); ok {
+			sweepTx.LockTime = lt
+		}
+
 		totalSum += btcutil.Amount(o.SignDesc().Output.Value)
 	}
 
@@ -150,22 +188,18 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 	// Create the sweep transaction that we will be building. We use
 	// version 2 as it is required for CSV. The txn will sweep the amount
 	// after fees to the pkscript generated above.
-	sweepTx := wire.NewMsgTx(2)
 	sweepTx.AddTxOut(&wire.TxOut{
 		PkScript: outputPkScript,
 		Value:    sweepAmt,
 	})
-
-	sweepTx.LockTime = currentBlockHeight
-
 	// Add all inputs to the sweep transaction. Ensure that for each
 	// csvInput, we set the sequence number properly.
-	for _, input := range inputs {
-		sweepTx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: *input.OutPoint(),
-			Sequence:         input.BlocksToMaturity(),
-		})
-	}
+	//	for _, input := range inputs {
+	//		sweepTx.AddTxIn(&wire.TxIn{
+	//			PreviousOutPoint: *input.OutPoint(),
+	//			Sequence:         input.BlocksToMaturity(),
+	//		})
+	//	}
 
 	// Before signing the transaction, check to ensure that it meets some
 	// basic validity requirements.
@@ -188,6 +222,11 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 		)
 		if err != nil {
 			return err
+		}
+
+		if h, ok := tso.(*input.HtlcSecondLevelAnchorInput); ok {
+			log.Infof("crafted input witness %v", spew.Sdump(inputScript))
+			log.Infof("signed tx was %v", spew.Sdump(h.SignedTx))
 		}
 
 		sweepTx.TxIn[idx].Witness = inputScript.Witness
@@ -217,8 +256,27 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 		estimator.parentsWeight,
 	)
 
+	log.Infof("Sweep: %v", spew.Sdump(sweepTx))
+	for i, input := range inputs {
+		vm, err := txscript.NewEngine(
+			input.SignDesc().Output.PkScript,
+			sweepTx, i, txscript.StandardVerifyFlags, nil,
+			nil,
+			input.SignDesc().Output.Value,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := vm.Execute(); err != nil {
+			log.Errorf("failed to validate input %d: %v", i, err)
+		}
+	}
+
 	return sweepTx, nil
 }
+
+//func runEngine(
 
 // getWeightEstimate returns a weight estimate for the given inputs.
 // Additionally, it returns counts for the number of csv and cltv inputs.
@@ -250,6 +308,11 @@ func getWeightEstimate(inputs []input.Input, feeRate chainfee.SatPerKWeight) (
 			// Skip inputs for which no weight estimate can be
 			// given.
 			continue
+		}
+
+		if inp.RequiredTxOut() != nil {
+
+			// TODO: Add to weight estimate
 		}
 
 		sweepInputs = append(sweepInputs, inp)

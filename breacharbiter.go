@@ -864,6 +864,14 @@ func (bo *breachedOutput) OutPoint() *wire.OutPoint {
 	return &bo.outpoint
 }
 
+func (bo *breachedOutput) RequiredTxOut() *wire.TxOut {
+	return nil
+}
+
+func (bo *breachedOutput) RequiredLockTime() (uint32, bool) {
+	return 0, false
+}
+
 // WitnessType returns the type of witness that must be generated to spend the
 // breached output.
 func (bo *breachedOutput) WitnessType() input.WitnessType {

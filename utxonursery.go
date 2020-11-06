@@ -368,7 +368,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 	// timelock is zero), and enter the kid stage.
 	for _, htlcRes := range incomingHtlcs {
 		htlcOutput := makeKidOutput(
-			&htlcRes.ClaimOutpoint, &chanPoint, htlcRes.CsvDelay,
+			&htlcRes.ClaimOutpoint, &chanPoint, uint32(htlcRes.CsvDelay),
 			input.HtlcAcceptedSuccessSecondLevel,
 			&htlcRes.SweepSignDesc, 0,
 		)
@@ -401,7 +401,7 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 		// resolution encodes, since the sequence number must be set
 		// accordingly.
 		htlcOutput := makeKidOutput(
-			&htlcRes.ClaimOutpoint, &chanPoint, htlcRes.CsvDelay,
+			&htlcRes.ClaimOutpoint, &chanPoint, uint32(htlcRes.CsvDelay),
 			input.HtlcOfferedRemoteTimeout,
 			&htlcRes.SweepSignDesc, htlcRes.Expiry,
 		)
@@ -1206,7 +1206,7 @@ func makeBabyOutput(chanPoint *wire.OutPoint,
 	htlcResolution *lnwallet.OutgoingHtlcResolution) babyOutput {
 
 	htlcOutpoint := htlcResolution.ClaimOutpoint
-	blocksToMaturity := htlcResolution.CsvDelay
+	blocksToMaturity := uint32(htlcResolution.CsvDelay)
 	witnessType := input.HtlcOfferedTimeoutSecondLevel
 
 	kid := makeKidOutput(

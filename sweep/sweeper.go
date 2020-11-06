@@ -74,6 +74,8 @@ type Params struct {
 	// a fee rate whenever we attempt to cluster inputs for a sweep.
 	Fee FeePreference
 
+	// Could add locktime, tx out here?
+
 	// Force indicates whether the input should be swept regardless of
 	// whether it is economical to do so.
 	Force bool
@@ -117,6 +119,8 @@ type pendingInput struct {
 
 	// minPublishHeight indicates the minimum block height at which this
 	// input may be (re)published.
+
+	// TODO: must be set
 	minPublishHeight int32
 
 	// publishAttempts records the number of attempts that have already been
@@ -144,6 +148,7 @@ type pendingInputs = map[wire.OutPoint]*pendingInput
 // inputCluster is a helper struct to gather a set of pending inputs that should
 // be swept with the specified fee rate.
 type inputCluster struct {
+	lockTime     *uint32
 	sweepFeeRate chainfee.SatPerKWeight
 	inputs       pendingInputs
 }
@@ -647,7 +652,7 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch) {
 			// this to ensure any inputs which have had their fee
 			// rate bumped are broadcast first in order enforce the
 			// RBF policy.
-			inputClusters := s.clusterBySweepFeeRate()
+			inputClusters := s.createInputClusters()
 			sort.Slice(inputClusters, func(i, j int) bool {
 				return inputClusters[i].sweepFeeRate >
 					inputClusters[j].sweepFeeRate
@@ -750,17 +755,193 @@ func (s *UtxoSweeper) bucketForFeeRate(
 	return 1 + int(feeRate-s.relayFeeRate)/s.cfg.FeeRateBucketSize
 }
 
+func (s *UtxoSweeper) createInputClusters() []inputCluster {
+
+	inputs := s.pendingInputs
+	lockTimeClusters, inputs := s.clusterByLockTime(inputs)
+
+	log.Infof("locktime clusters: %v", printClusters(lockTimeClusters))
+	feeClusters := s.clusterBySweepFeeRate(inputs)
+	log.Infof("fee clusters: %v", printClusters(feeClusters))
+
+	sort.Slice(lockTimeClusters, func(i, j int) bool {
+		return lockTimeClusters[i].sweepFeeRate >
+			lockTimeClusters[j].sweepFeeRate
+	})
+
+	sort.Slice(feeClusters, func(i, j int) bool {
+		return feeClusters[i].sweepFeeRate >
+			feeClusters[j].sweepFeeRate
+	})
+
+	// TODO: unit test this heavilyy!!
+	var finalClusters []inputCluster
+	var j int
+	for i := range lockTimeClusters {
+
+		// We want to make sure we don't merge the lockTime cluster
+		// with a cluster of lower feerate. This to ensure they can
+		// swept in time. So we'll mege it with a fee cluster of at least the same feerate.
+		lt := lockTimeClusters[i]
+
+		var highFee *inputCluster
+		for ; j < len(feeClusters); j++ {
+
+			fc := feeClusters[j]
+			if fc.sweepFeeRate < lt.sweepFeeRate {
+				break
+			}
+
+			if highFee != nil {
+				finalClusters = append(finalClusters, *highFee)
+			}
+
+			highFee = &fc
+		}
+
+		if highFee == nil {
+			finalClusters = append(finalClusters, lt)
+			continue
+		}
+
+		merged, err := mergeClusters(lt, *highFee)
+		if err != nil {
+			/// oh oh
+			panic(err.Error())
+		}
+
+		finalClusters = append(finalClusters, merged)
+	}
+
+	for ; j < len(feeClusters); j++ {
+
+		fc := feeClusters[j]
+		finalClusters = append(finalClusters, fc)
+	}
+
+	log.Infof("final clusters: %v", printClusters(finalClusters))
+
+	// We want to merge the clusters.
+
+	// The locktime clusters can be combined by fee rate clusters.
+
+	return finalClusters
+}
+
+func printClusters(c []inputCluster) string {
+
+	s := "{\n"
+	for _, a := range c {
+		s += fmt.Sprintf(" {\nlocktime:%v\nsweeprate: %v\n", a.lockTime, a.sweepFeeRate)
+		for op := range a.inputs {
+			s += fmt.Sprintf("  input spending %v\n", op)
+		}
+
+		s += " }"
+	}
+	s += "}"
+
+	return s
+}
+
+func mergeClusters(a, b inputCluster) (inputCluster, error) {
+	newCluster := inputCluster{}
+
+	switch {
+	case a.lockTime != nil && b.lockTime != nil && *a.lockTime != *b.lockTime:
+		return newCluster, fmt.Errorf("incompatible locktimes")
+
+	case a.lockTime != nil:
+		newCluster.lockTime = a.lockTime
+
+	case b.lockTime != nil:
+		newCluster.lockTime = b.lockTime
+	}
+
+	switch {
+	case a.sweepFeeRate > b.sweepFeeRate:
+		newCluster.sweepFeeRate = a.sweepFeeRate
+
+	default:
+		newCluster.sweepFeeRate = b.sweepFeeRate
+	}
+
+	newCluster.inputs = make(pendingInputs)
+
+	for op, in := range a.inputs {
+		newCluster.inputs[op] = in
+	}
+
+	for op, in := range b.inputs {
+		newCluster.inputs[op] = in
+	}
+
+	return newCluster, nil
+}
+
+func (s *UtxoSweeper) clusterByLockTime(inputs pendingInputs) ([]inputCluster, pendingInputs) {
+	locktimes := make(map[uint32]pendingInputs)
+	inputFeeRates := make(map[wire.OutPoint]chainfee.SatPerKWeight)
+	rem := make(pendingInputs)
+
+	for op, input := range inputs {
+		lt, ok := input.RequiredLockTime()
+		if !ok {
+			rem[op] = input
+			continue
+		}
+
+		p, ok := locktimes[lt]
+		if !ok {
+			p = make(pendingInputs)
+		}
+
+		p[op] = input
+		locktimes[lt] = p
+
+		feeRate, err := s.feeRateForPreference(input.params.Fee)
+		if err != nil {
+			log.Warnf("Skipping input %v: %v", op, err)
+			continue
+		}
+
+		input.lastFeeRate = feeRate
+		inputFeeRates[op] = feeRate
+
+	}
+
+	inputClusters := make([]inputCluster, 0, len(locktimes))
+	for lt, inputs := range locktimes {
+		lt := lt
+
+		var sweepFeeRate chainfee.SatPerKWeight
+		for op := range inputs {
+			sweepFeeRate += inputFeeRates[op]
+		}
+
+		sweepFeeRate /= chainfee.SatPerKWeight(len(inputs))
+
+		inputClusters = append(inputClusters, inputCluster{
+			lockTime:     &lt,
+			sweepFeeRate: sweepFeeRate,
+			inputs:       inputs,
+		})
+	}
+
+	return inputClusters, rem
+}
+
 // clusterBySweepFeeRate takes the set of pending inputs within the UtxoSweeper
 // and clusters those together with similar fee rates. Each cluster contains a
 // sweep fee rate, which is determined by calculating the average fee rate of
 // all inputs within that cluster.
-func (s *UtxoSweeper) clusterBySweepFeeRate() []inputCluster {
+func (s *UtxoSweeper) clusterBySweepFeeRate(inputs pendingInputs) []inputCluster {
 	bucketInputs := make(map[int]*bucketList)
 	inputFeeRates := make(map[wire.OutPoint]chainfee.SatPerKWeight)
 
 	// First, we'll group together all inputs with similar fee rates. This
 	// is done by determining the fee rate bucket they should belong in.
-	for op, input := range s.pendingInputs {
+	for op, input := range inputs {
 		feeRate, err := s.feeRateForPreference(input.params.Fee)
 		if err != nil {
 			log.Warnf("Skipping input %v: %v", op, err)
@@ -836,7 +1017,7 @@ func (s *UtxoSweeper) scheduleSweep(currentHeight int32) error {
 
 	// We'll only start our timer once we have inputs we're able to sweep.
 	startTimer := false
-	for _, cluster := range s.clusterBySweepFeeRate() {
+	for _, cluster := range s.createInputClusters() {
 		// Examine pending inputs and try to construct lists of inputs.
 		// We don't need to obtain the coin selection lock, because we
 		// just need an indication as to whether we can sweep. More

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
@@ -270,6 +272,8 @@ var (
 	// resolutionsKey is the key under the logScope that we'll use to store
 	// the full set of resolutions for a channel.
 	resolutionsKey = []byte("resolutions")
+
+	resolutionsSignDetailsKey = []byte("resolutions-sign-details")
 
 	// anchorResolutionKey is the key under the logScope that we'll use to
 	// store the anchor resolution, if any.
@@ -633,6 +637,8 @@ func (b *boltArbitratorLog) LogContractResolutions(c *ContractResolutions) error
 			}
 		}
 
+		var signDet bytes.Buffer
+
 		// With the output for the commitment transaction written, we
 		// can now write out the resolutions for the incoming and
 		// outgoing HTLC's.
@@ -642,6 +648,11 @@ func (b *boltArbitratorLog) LogContractResolutions(c *ContractResolutions) error
 		}
 		for _, htlc := range c.HtlcResolutions.IncomingHTLCs {
 			err := encodeIncomingResolution(&b, &htlc)
+			if err != nil {
+				return err
+			}
+
+			err = encodeSignDetails(&signDet, htlc.SignDetails)
 			if err != nil {
 				return err
 			}
@@ -655,9 +666,19 @@ func (b *boltArbitratorLog) LogContractResolutions(c *ContractResolutions) error
 			if err != nil {
 				return err
 			}
+
+			err = encodeSignDetails(&signDet, htlc.SignDetails)
+			if err != nil {
+				return err
+			}
 		}
 
 		err = scopeBucket.Put(resolutionsKey, b.Bytes())
+		if err != nil {
+			return err
+		}
+
+		err = scopeBucket.Put(resolutionsSignDetailsKey, signDet.Bytes())
 		if err != nil {
 			return err
 		}
@@ -732,6 +753,9 @@ func (b *boltArbitratorLog) FetchContractResolutions() (*ContractResolutions, er
 		if err != nil {
 			return err
 		}
+
+		// Can possibly have different serialization based on channel type here.
+
 		c.HtlcResolutions.IncomingHTLCs = make([]lnwallet.IncomingHtlcResolution, numIncoming)
 		for i := uint32(0); i < numIncoming; i++ {
 			err := decodeIncomingResolution(
@@ -753,6 +777,26 @@ func (b *boltArbitratorLog) FetchContractResolutions() (*ContractResolutions, er
 			)
 			if err != nil {
 				return err
+			}
+		}
+
+		signDetailsBytes := scopeBucket.Get(resolutionsSignDetailsKey)
+		if signDetailsBytes != nil {
+			r := bytes.NewReader(signDetailsBytes)
+			for i := uint32(0); i < numIncoming; i++ {
+				c.HtlcResolutions.IncomingHTLCs[i].SignDetails, err =
+					decodeSignDetails(r)
+				if err != nil {
+					return err
+				}
+			}
+
+			for i := uint32(0); i < numOutgoing; i++ {
+				c.HtlcResolutions.OutgoingHTLCs[i].SignDetails, err =
+					decodeSignDetails(r)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -905,6 +949,11 @@ func (b *boltArbitratorLog) WipeHistory() error {
 			return err
 		}
 
+		err = scopeBucket.Delete(resolutionsSignDetailsKey)
+		if err != nil {
+			return err
+		}
+
 		// We'll delete any chain actions that are still stored by
 		// removing the enclosing bucket.
 		err = scopeBucket.DeleteNestedBucket(actionsBucketKey)
@@ -942,6 +991,76 @@ func (b *boltArbitratorLog) checkpointContract(c ContractResolver,
 
 		return nil
 	})
+}
+
+func encodeSignDetails(w io.Writer, s *input.SignDetails) error {
+	if s == nil {
+		log.Infof("johan writing details false")
+		if err := binary.Write(w, endian, false); err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	log.Infof("johan writing details true")
+	if err := binary.Write(w, endian, true); err != nil {
+		return err
+	}
+
+	err := input.WriteSignDescriptor(w, &s.SignDesc)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(w, endian, uint32(s.SigHashType))
+	if err != nil {
+		return err
+	}
+
+	b := s.ReceiverSig.Serialize()
+	if err := wire.WriteVarBytes(w, 0, b); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func decodeSignDetails(r io.Reader) (*input.SignDetails, error) {
+
+	var present bool
+	if err := binary.Read(r, endian, &present); err != nil {
+		return nil, err
+	}
+	log.Infof("johan reading details %v", present)
+	if !present {
+		return nil, nil
+	}
+
+	s := input.SignDetails{}
+
+	err := input.ReadSignDescriptor(r, &s.SignDesc)
+	if err != nil {
+		return nil, err
+	}
+
+	var sigHash uint32
+	err = binary.Read(r, endian, &sigHash)
+	if err != nil {
+		return nil, err
+	}
+	s.SigHashType = txscript.SigHashType(sigHash)
+
+	rawSig, err := wire.ReadVarBytes(r, 0, 200, "signature")
+	if err != nil {
+		return nil, err
+	}
+	sig, err := btcec.ParseDERSignature(rawSig, btcec.S256())
+	if err != nil {
+		return nil, err
+	}
+	s.ReceiverSig = sig
+
+	return &s, nil
 }
 
 func encodeIncomingResolution(w io.Writer, i *lnwallet.IncomingHtlcResolution) error {
@@ -996,6 +1115,7 @@ func decodeIncomingResolution(r io.Reader, h *lnwallet.IncomingHtlcResolution) e
 		}
 	}
 
+	// TODO: could keep it 32 bit, just use a mask after reading the full value to extract the bits.
 	err := binary.Read(r, endian, &h.CsvDelay)
 	if err != nil {
 		return err

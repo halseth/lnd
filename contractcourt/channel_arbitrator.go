@@ -958,6 +958,25 @@ func (c *ChannelArbitrator) stateStep(
 			return StateError, closeTx, err
 		}
 
+		// Check if was a local force close.
+		// TODO. hide behinf ArbChannel interface?
+		//		if trigger == localCloseTrigger {
+		//			closeInfo, err := c.cfg.Channel.ForceCloseChan()
+		//			if err != nil {
+		//				log.Errorf("ChannelArbitrator(%v): unable to "+
+		//					"force close: %v", c.cfg.ChanPoint, err)
+		//				return StateError, closeTx, err
+		//			}
+		//			closeTx := closeInfo.CloseTx
+		//
+		//			contractResolutions = &ContractResolutions{
+		//				CommitHash:       closeTx.TxHash(),
+		//				CommitResolution: closeInfo.CommitResolution,
+		//				HtlcResolutions:  *closeInfo.HtlcResolutions,
+		//				AnchorResolution: closeInfo.AnchorResolution,
+		//			}
+		//		}
+
 		// If the resolution is empty, and we have no HTLCs at all to
 		// tend to, then we're done here. We don't need to launch any
 		// resolvers, and can go straight to our final state.
@@ -1017,12 +1036,16 @@ func (c *ChannelArbitrator) stateStep(
 	// This is our terminal state. We'll keep returning this state until
 	// all contracts are fully resolved.
 	case StateWaitingFullResolution:
-		log.Infof("ChannelArbitrator(%v): still awaiting contract "+
-			"resolution", c.cfg.ChanPoint)
-
 		numUnresolved, err := c.log.FetchUnresolvedContracts()
 		if err != nil {
 			return StateError, closeTx, err
+		}
+
+		log.Infof("ChannelArbitrator(%v): still awaiting contract "+
+			"resolution", c.cfg.ChanPoint)
+
+		for _, u := range numUnresolved {
+			log.Infof("Unresolved: %T", u)
 		}
 
 		// If we still have unresolved contracts, then we'll stay alive
@@ -1853,6 +1876,7 @@ func (c *ChannelArbitrator) prepContractResolutions(
 				resolver := newTimeoutResolver(
 					resolution, height, htlc, resolverCfg,
 				)
+
 				htlcResolvers = append(htlcResolvers, resolver)
 			}
 

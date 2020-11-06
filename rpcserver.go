@@ -3214,6 +3214,7 @@ func (r *rpcServer) arbitratorPopulateForceCloseResp(chanPoint *wire.OutPoint,
 		case contractcourt.ReportOutputIncomingHtlc,
 			contractcourt.ReportOutputOutgoingHtlc:
 
+			// TODO: must properly report limbo balance for HTLCs sent to sweeper.
 			// Don't report details on htlcs that are no longer in
 			// limbo.
 			if report.LimboBalance == 0 {

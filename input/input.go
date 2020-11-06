@@ -1,9 +1,12 @@
 package input
 
 import (
+	"fmt"
+
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 // Input represents an abstract UTXO which is to be spent using a sweeping
@@ -15,6 +18,10 @@ type Input interface {
 	// construct the corresponding transaction input.
 	OutPoint() *wire.OutPoint
 
+	RequiredTxOut() *wire.TxOut
+
+	RequiredLockTime() (uint32, bool)
+
 	// WitnessType returns an enum specifying the type of witness that must
 	// be generated in order to spend this output.
 	WitnessType() WitnessType
@@ -22,6 +29,7 @@ type Input interface {
 	// SignDesc returns a reference to a spendable output's sign
 	// descriptor, which is used during signing to compute a valid witness
 	// that spends this output.
+	// Can remove? We have craft input script
 	SignDesc() *SignDescriptor
 
 	// CraftInputScript returns a valid set of input scripts allowing this
@@ -73,6 +81,14 @@ type inputKit struct {
 // a transaction input.
 func (i *inputKit) OutPoint() *wire.OutPoint {
 	return &i.outpoint
+}
+
+func (i *inputKit) RequiredTxOut() *wire.TxOut {
+	return nil
+}
+
+func (i *inputKit) RequiredLockTime() (uint32, bool) {
+	return 0, false
 }
 
 // WitnessType returns the type of witness that must be generated to spend the
@@ -223,3 +239,210 @@ func (h *HtlcSucceedInput) CraftInputScript(signer Signer, txn *wire.MsgTx,
 // interface.
 var _ Input = (*BaseInput)(nil)
 var _ Input = (*HtlcSucceedInput)(nil)
+
+type HtlcSecondLevelAnchorInput struct {
+	//inputKit
+
+	TxInOut *SignDetails
+
+	SignedTx   *wire.MsgTx
+	heightHint uint32
+
+	//TxIn        *wire.TxIn
+
+	//	TxOut               *wire.TxOut
+	//SecondLevelSignDesc SignDescriptor
+	//ReceiverSig Signature
+}
+
+var _ Input = (*HtlcSecondLevelAnchorInput)(nil)
+
+type SignDetails struct {
+	SignDesc    SignDescriptor
+	SigHashType txscript.SigHashType
+	ReceiverSig Signature
+}
+
+func MakeHtlcSecondLevelAnchorInput(signedTx *wire.MsgTx,
+	inOut *SignDetails, heightHint,
+	blocksToMaturity uint32) HtlcSecondLevelAnchorInput {
+
+	return HtlcSecondLevelAnchorInput{
+		//	inputKit: inputKit{
+		//		//outpoint:        *outpoint,
+		//		witnessType:     HtlcAcceptedRemoteSuccess,
+		//		signDesc:        inOut.SignDesc,
+		//		heightHint:      heightHint,
+		//		blockToMaturity: blocksToMaturity,
+		//	},
+		TxInOut:    inOut,
+		SignedTx:   signedTx,
+		heightHint: heightHint,
+	}
+}
+
+// OutPoint returns the breached output's identifier that is to be included as
+// a transaction input.
+func (i *HtlcSecondLevelAnchorInput) OutPoint() *wire.OutPoint {
+	return &i.SignedTx.TxIn[0].PreviousOutPoint
+}
+
+func (i *HtlcSecondLevelAnchorInput) RequiredTxOut() *wire.TxOut {
+	return i.SignedTx.TxOut[0]
+}
+
+func (i *HtlcSecondLevelAnchorInput) RequiredLockTime() (uint32, bool) {
+	return i.SignedTx.LockTime, true
+}
+
+// WitnessType returns the type of witness that must be generated to spend the
+// breached output.
+func (i *HtlcSecondLevelAnchorInput) WitnessType() WitnessType {
+	// TODO: this is wrong
+	return HtlcOfferedTimeoutSecondLevel
+}
+
+// SignDesc returns the breached output's SignDescriptor, which is used during
+// signing to compute the witness.
+func (i *HtlcSecondLevelAnchorInput) SignDesc() *SignDescriptor {
+	return &i.TxInOut.SignDesc
+}
+
+// HeightHint returns the minimum height at which a confirmed spending
+// tx can occur.
+func (i *HtlcSecondLevelAnchorInput) HeightHint() uint32 {
+	return i.heightHint
+}
+
+// BlocksToMaturity returns the relative timelock, as a number of blocks, that
+// must be built on top of the confirmation height before the output can be
+// spent. For non-CSV locked inputs this is always zero.
+func (i *HtlcSecondLevelAnchorInput) BlocksToMaturity() uint32 {
+	return 1
+}
+
+// Cpfp returns information about a possibly unconfirmed parent tx.
+func (i *HtlcSecondLevelAnchorInput) UnconfParent() *TxInfo {
+	return nil
+}
+
+func (i *HtlcSecondLevelAnchorInput) CraftInputScript(signer Signer, txn *wire.MsgTx,
+	hashCache *txscript.TxSigHashes, txinIdx int) (*Script, error) {
+
+	desc := i.TxInOut.SignDesc
+	desc.SigHashes = txscript.NewTxSigHashes(txn)
+	//desc.InputIndex = txinIdx
+
+	witness, err := SenderHtlcSpendTimeout(
+		i.TxInOut.ReceiverSig, i.TxInOut.SigHashType, signer, &desc, txn,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Script{
+		Witness: witness,
+	}, nil
+}
+
+type HtlcSuccessSecondLevelAnchorInput struct {
+	//inputKit
+
+	TxInOut    *SignDetails
+	SignedTx   *wire.MsgTx
+	Preimage   lntypes.Preimage
+	heightHint uint32
+}
+
+var _ Input = (*HtlcSuccessSecondLevelAnchorInput)(nil)
+
+func MakeHtlcSuccessSecondLevelAnchorInput(signedTx *wire.MsgTx,
+	inOut *SignDetails, preimage lntypes.Preimage, heightHint,
+	blocksToMaturity uint32) HtlcSuccessSecondLevelAnchorInput {
+
+	return HtlcSuccessSecondLevelAnchorInput{
+		//inputKit: inputKit{
+		//outpoint:        *outpoint,
+		//			witnessType:     HtlcAcceptedRemoteSuccess,
+		//			signDesc:        inOut.SignDesc,
+		//			heightHint:      heightHint,
+		//			blockToMaturity: blocksToMaturity,
+		//		},
+		TxInOut:    inOut,
+		SignedTx:   signedTx,
+		Preimage:   preimage,
+		heightHint: heightHint,
+	}
+}
+
+// OutPoint returns the breached output's identifier that is to be included as
+// a transaction input.
+func (i *HtlcSuccessSecondLevelAnchorInput) OutPoint() *wire.OutPoint {
+	return &i.SignedTx.TxIn[0].PreviousOutPoint
+}
+
+func (i *HtlcSuccessSecondLevelAnchorInput) RequiredTxOut() *wire.TxOut {
+	return i.SignedTx.TxOut[0]
+}
+
+func (i *HtlcSuccessSecondLevelAnchorInput) RequiredLockTime() (uint32, bool) {
+	return i.SignedTx.LockTime, true
+}
+
+// WitnessType returns the type of witness that must be generated to spend the
+// breached output.
+func (i *HtlcSuccessSecondLevelAnchorInput) WitnessType() WitnessType {
+	// TODO: this is wrong
+	return HtlcOfferedTimeoutSecondLevel
+}
+
+// SignDesc returns the breached output's SignDescriptor, which is used during
+// signing to compute the witness.
+func (i *HtlcSuccessSecondLevelAnchorInput) SignDesc() *SignDescriptor {
+	return &i.TxInOut.SignDesc
+}
+
+// HeightHint returns the minimum height at which a confirmed spending
+// tx can occur.
+func (i *HtlcSuccessSecondLevelAnchorInput) HeightHint() uint32 {
+	return i.heightHint
+}
+
+// BlocksToMaturity returns the relative timelock, as a number of blocks, that
+// must be built on top of the confirmation height before the output can be
+// spent. For non-CSV locked inputs this is always zero.
+func (i *HtlcSuccessSecondLevelAnchorInput) BlocksToMaturity() uint32 {
+	return 1
+}
+
+// Cpfp returns information about a possibly unconfirmed parent tx.
+func (i *HtlcSuccessSecondLevelAnchorInput) UnconfParent() *TxInfo {
+	return nil
+}
+
+func (i *HtlcSuccessSecondLevelAnchorInput) CraftInputScript(signer Signer, txn *wire.MsgTx,
+	hashCache *txscript.TxSigHashes, txinIdx int) (*Script, error) {
+
+	desc := i.TxInOut.SignDesc
+	desc.SigHashes = hashCache
+	desc.InputIndex = txinIdx
+
+	zero := lntypes.Preimage{}
+	if i.Preimage == zero {
+		return nil, fmt.Errorf("empty preimage")
+
+	}
+
+	sigHashType := txscript.SigHashSingle | txscript.SigHashAnyOneCanPay
+	witness, err := ReceiverHtlcSpendRedeem(
+		i.TxInOut.ReceiverSig, sigHashType, i.Preimage[:], signer, &desc, txn,
+	)
+	if err != nil {
+
+		return nil, err
+	}
+
+	return &Script{
+		Witness: witness,
+	}, nil
+}

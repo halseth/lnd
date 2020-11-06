@@ -39,7 +39,8 @@ type txInputSetState struct {
 	inputTotal btcutil.Amount
 
 	// outputValue is the value of the tx output.
-	outputValue btcutil.Amount
+	changeOutput btcutil.Amount
+	reqOutput    btcutil.Amount
 
 	// inputs is the set of tx inputs.
 	inputs []input.Input
@@ -56,7 +57,8 @@ func (t *txInputSetState) clone() txInputSetState {
 	s := txInputSetState{
 		weightEstimate:   t.weightEstimate.clone(),
 		inputTotal:       t.inputTotal,
-		outputValue:      t.outputValue,
+		changeOutput:     t.changeOutput,
+		reqOutput:        t.reqOutput,
 		walletInputTotal: t.walletInputTotal,
 		force:            t.force,
 		inputs:           make([]input.Input, len(t.inputs)),
@@ -112,7 +114,20 @@ func newTxInputSet(wallet Wallet, feePerKW,
 // dustLimitReached returns true if we've accumulated enough inputs to meet the
 // dust limit.
 func (t *txInputSet) dustLimitReached() bool {
-	return t.outputValue >= t.dustLimit
+	//if t.changeOutput+t.reqOutput >= t.dustLimit {
+	//		return true
+	//	}
+	if t.changeOutput >= t.dustLimit {
+		return true
+	}
+
+	// TODO: go through each output. It is okay as long as one req output is above dust limit and change is positive (negativ echange means we cannot pay the fees)
+
+	//	if t.reqOutput >= t.dustLimit {
+	//		return true
+	//	}
+
+	return false
 }
 
 // add adds a new input to the set. It returns a bool indicating whether the
@@ -144,11 +159,19 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 	// Recalculate the tx fee.
 	fee := s.weightEstimate.fee()
 
+	log.Infof("estimated fee %v", fee)
+
+	var outputValue btcutil.Amount
+	if inp.RequiredTxOut() != nil {
+		outputValue = btcutil.Amount(inp.RequiredTxOut().Value)
+	}
+
 	// Calculate the new output value.
-	s.outputValue = s.inputTotal - fee
+	s.reqOutput += outputValue
+	s.changeOutput = s.inputTotal - s.reqOutput - fee
 
 	// Calculate the yield of this input from the change in tx output value.
-	inputYield := s.outputValue - t.outputValue
+	inputYield := (s.reqOutput + s.changeOutput) - (t.reqOutput + t.changeOutput)
 
 	switch constraints {
 
@@ -188,11 +211,11 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 		// value of the wallet input and what we get out of this
 		// transaction. To prevent attaching and locking a big utxo for
 		// very little benefit.
-		if !s.force && s.walletInputTotal >= s.outputValue {
+		if !s.force && s.walletInputTotal >= s.reqOutput+s.changeOutput {
 			log.Debugf("Rejecting wallet input of %v, because it "+
 				"would make a negative yielding transaction "+
 				"(%v)",
-				value, s.outputValue-s.walletInputTotal)
+				value, s.reqOutput+s.changeOutput-s.walletInputTotal)
 
 			return nil
 		}
@@ -248,6 +271,7 @@ func (t *txInputSet) addPositiveYieldInputs(sweepableInputs []txInput) {
 func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
 	// If we've already reached the dust limit, no action is needed.
 	if t.dustLimitReached() {
+		log.Infof("dust limit reached")
 		return nil
 	}
 
@@ -263,6 +287,7 @@ func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
 		if err != nil {
 			return err
 		}
+		log.Infof("adding wallet input!")
 
 		// If the wallet input isn't positively-yielding at this fee
 		// rate, skip it.

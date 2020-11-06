@@ -145,14 +145,18 @@ type txInputSet struct {
 	wallet Wallet
 }
 
+func dustLimit(relayFee chainfee.SatPerKWeight) btcutil.Amount {
+	return txrules.GetDustThreshold(
+		input.P2WPKHSize,
+		btcutil.Amount(relayFee.FeePerKVByte()),
+	)
+}
+
 // newTxInputSet constructs a new, empty input set.
 func newTxInputSet(wallet Wallet, feePerKW,
 	relayFee chainfee.SatPerKWeight, maxInputs int) *txInputSet {
 
-	dustLimit := txrules.GetDustThreshold(
-		input.P2WPKHSize,
-		btcutil.Amount(relayFee.FeePerKVByte()),
-	)
+	dustLimit := dustLimit(relayFee)
 
 	state := txInputSetState{
 		feeRate: feePerKW,

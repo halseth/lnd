@@ -358,8 +358,15 @@ const (
 	//      - preimage: 32 bytes
 	//      - witness_script_length: 1 byte
 	//      - witness_script (accepted_htlc_script)
+	//
+	// Input to second level success tx, spending non-delayed HTLC output.
 	AcceptedHtlcSuccessWitnessSize = 1 + 1 + 1 + 73 + 1 + 73 + 1 + 32 + 1 +
 		AcceptedHtlcScriptSize
+
+	// AcceptedHtlcSuccessWitnessSizeConfirmed 328 bytes
+	//
+	// Input to second level success tx, spending 1 CSV delayed HTLC output.
+	AcceptedHtlcSuccessWitnessSizeConfirmed = AcceptedHtlcSuccessWitnessSize + HtlcConfirmedScriptOverhead
 
 	// OfferedHtlcScriptSize 136 bytes
 	//      - OP_DUP: 1 byte
@@ -418,7 +425,14 @@ const (
 	//      - nil_length: 1 byte
 	//      - witness_script_length: 1 byte
 	//      - witness_script (offered_htlc_script)
+	//
+	// Input to second level timeout tx, spending non-delayed HTLC output.
 	OfferedHtlcTimeoutWitnessSize = 1 + 1 + 1 + 73 + 1 + 73 + 1 + 1 + OfferedHtlcScriptSize
+
+	// OfferedHtlcTimeoutWitnessSizeConfirmed 288 bytes
+	//
+	// Input to second level timeout tx, spending 1 CSV delayed HTLC output.
+	OfferedHtlcTimeoutWitnessSizeConfirmed = OfferedHtlcTimeoutWitnessSize + HtlcConfirmedScriptOverhead
 
 	// OfferedHtlcPenaltyWitnessSize 246 bytes
 	//      - number_of_witness_elements: 1 byte

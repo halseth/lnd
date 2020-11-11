@@ -1,6 +1,7 @@
 package input_test
 
 import (
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -11,8 +12,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
 const (
@@ -23,6 +26,8 @@ const (
 	// maxDERSignatureSize is the largest possible DER-encoded signature
 	// without the trailing sighash flag.
 	maxDERSignatureSize = 72
+
+	testAmt = btcutil.MaxSatoshi
 )
 
 var (
@@ -842,6 +847,193 @@ func TestWitnessSizes(t *testing.T) {
 			if size != test.expSize {
 				t.Fatalf("size mismatch, want: %v, got: %v",
 					test.expSize, size)
+			}
+		})
+	}
+}
+
+func genTimeoutTx(chanType channeldb.ChannelType) (*wire.MsgTx, error) {
+	// TODO: use createHtlcTimeout tx
+	timeoutTx := wire.NewMsgTx(2)
+	timeoutTx.LockTime = testCLTVExpiry
+
+	txin := &wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{}, // TODO: add data
+		Sequence:         testCSVDelay,
+	}
+
+	witScript, err := input.SenderHTLCScript(
+		testPubkey, testPubkey, testPubkey, testHash160,
+		chanType.HasAnchors(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	signDesc := &input.SignDescriptor{
+		WitnessScript: witScript,
+	}
+
+	sigHashType := lnwallet.HtlcSigHashType(chanType)
+	timeoutWitness, err := input.SenderHtlcSpendTimeout(
+		&maxDERSignature{}, sigHashType, &dummySigner{},
+		signDesc, timeoutTx,
+	)
+	if err != nil {
+		return nil, err
+	}
+	txin.Witness = timeoutWitness
+
+	timeoutTx.AddTxIn(txin)
+
+	witnessScript, err := input.SecondLevelHtlcScript(
+		testPubkey, testPubkey, testCSVDelay,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	pkScript, err := input.WitnessScriptHash(witnessScript)
+	if err != nil {
+		return nil, err
+	}
+
+	timeoutTx.AddTxOut(&wire.TxOut{
+		Value:    int64(testAmt),
+		PkScript: pkScript,
+	})
+
+	return timeoutTx, nil
+}
+
+func genSuccessTx(chanType channeldb.ChannelType) (*wire.MsgTx, error) {
+	successTx := wire.NewMsgTx(2)
+	txin := &wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{}, // TODO: add data
+		Sequence:         testCSVDelay,
+	}
+	witScript, err := input.ReceiverHTLCScript(
+		testCLTVExpiry, testPubkey, testPubkey,
+		testPubkey, testHash160, chanType.HasAnchors(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	signDesc := &input.SignDescriptor{
+		WitnessScript: witScript,
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: testPubkey,
+		},
+	}
+
+	sigHashType := lnwallet.HtlcSigHashType(channeldb.SingleFunderBit)
+	successWitness, err := input.ReceiverHtlcSpendRedeem(
+		&maxDERSignature{}, sigHashType, testPreimage,
+		&dummySigner{}, signDesc, successTx,
+	)
+	if err != nil {
+		return nil, err
+	}
+	txin.Witness = successWitness
+	successTx.AddTxIn(txin)
+
+	witnessScript, err := input.SecondLevelHtlcScript(
+		testPubkey, testPubkey, testCSVDelay,
+	)
+	if err != nil {
+		return nil, err
+	}
+	pkScript, err := input.WitnessScriptHash(witnessScript)
+	if err != nil {
+		return nil, err
+	}
+
+	// Finally, the output is simply the amount of the HTLC (minus the
+	// required fees), paying to the timeout script.
+	successTx.AddTxOut(&wire.TxOut{
+		Value:    int64(testAmt),
+		PkScript: pkScript,
+	})
+
+	// TODO: use createHtlcTimeout tx
+	return successTx, nil
+
+}
+
+type txSizeTest struct {
+	name      string
+	expWeight int64
+	genTx     func(t *testing.T) *wire.MsgTx
+}
+
+var txSizeTests = []txSizeTest{
+	{
+		name:      "htlc timeout regular ",
+		expWeight: input.HtlcTimeoutWeight,
+		genTx: func(t *testing.T) *wire.MsgTx {
+			tx, err := genTimeoutTx(channeldb.SingleFunderBit)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return tx
+		},
+	},
+	{
+		name:      "htlc timeout confirmed",
+		expWeight: input.HtlcTimeoutWeightConfirmed,
+		genTx: func(t *testing.T) *wire.MsgTx {
+			tx, err := genTimeoutTx(channeldb.AnchorOutputsBit)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return tx
+		},
+	},
+
+	{
+		name: "htlc success regular",
+		// The weight estimate from the spec is off by one, but it's
+		// okay since we overestimate the weight.
+		expWeight: input.HtlcSuccessWeight - 1,
+		genTx: func(t *testing.T) *wire.MsgTx {
+			tx, err := genSuccessTx(channeldb.SingleFunderBit)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return tx
+		},
+	},
+	{
+		name: "htlc success confirmed",
+		// The weight estimate from the spec is off by one, but it's
+		// okay since we overestimate the weight.
+		expWeight: input.HtlcSuccessWeightConfirmed - 1,
+		genTx: func(t *testing.T) *wire.MsgTx {
+			tx, err := genSuccessTx(channeldb.AnchorOutputsBit)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return tx
+		},
+	},
+}
+
+// TestWitnessSizes asserts the correctness of our magic tx size constants.
+func TestTxSizes(t *testing.T) {
+	for _, test := range txSizeTests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			tx := test.genTx(t)
+
+			weight := blockchain.GetTransactionWeight(btcutil.NewTx(tx))
+			if weight != test.expWeight {
+				t.Fatalf("size mismatch, want: %v, got: %v",
+					test.expWeight, weight)
 			}
 		})
 	}

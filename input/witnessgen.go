@@ -78,7 +78,8 @@ const (
 	// This HTLC output isn't directly on the commitment transaction, but
 	// is the result of a confirmed second-level HTLC transaction. As a
 	// result, we can only spend this after a CSV delay.
-	HtlcOfferedTimeoutSecondLevel StandardWitnessType = 5
+	HtlcOfferedTimeoutSecondLevel               StandardWitnessType = 5
+	HtlcOfferedTimeoutSecondLevelInputConfirmed StandardWitnessType = 15
 
 	// HtlcAcceptedSuccessSecondLevel is a witness that allows us to sweep
 	// an HTLC output that was offered to us, and for which we have a
@@ -86,6 +87,8 @@ const (
 	// transaction, but is the result of confirmed second-level HTLC
 	// transaction. As a result, we can only spend this after a CSV delay.
 	HtlcAcceptedSuccessSecondLevel StandardWitnessType = 6
+
+	HtlcAcceptedSuccessSecondLevelInputConfirmed StandardWitnessType = 16
 
 	// HtlcOfferedRemoteTimeout is a witness that allows us to sweep an
 	// HTLC that we offered to the remote party which lies in the
@@ -163,8 +166,14 @@ func (wt StandardWitnessType) String() string {
 	case HtlcOfferedTimeoutSecondLevel:
 		return "HtlcOfferedTimeoutSecondLevel"
 
+	case HtlcOfferedTimeoutSecondLevelInputConfirmed:
+		return "HtlcOfferedTimeoutSecondLevelInputConfirmed"
+
 	case HtlcAcceptedSuccessSecondLevel:
 		return "HtlcAcceptedSuccessSecondLevel"
+
+	case HtlcAcceptedSuccessSecondLevelInputConfirmed:
+		return "HtlcAcceptedSuccessSecondLevelInputConfirmed"
 
 	case HtlcOfferedRemoteTimeout:
 		return "HtlcOfferedRemoteTimeout"
@@ -375,11 +384,17 @@ func (wt StandardWitnessType) SizeUpperBound() (int, bool, error) {
 	case HtlcOfferedTimeoutSecondLevel:
 		return ToLocalTimeoutWitnessSize, false, nil
 
+	case HtlcOfferedTimeoutSecondLevelInputConfirmed:
+		return OfferedHtlcTimeoutWitnessSizeConfirmed, false, nil
+
 	// Incoming second layer HTLC's that have confirmed within the
 	// chain, and the output they produced is now mature enough to
 	// sweep.
 	case HtlcAcceptedSuccessSecondLevel:
 		return ToLocalTimeoutWitnessSize, false, nil
+
+	case HtlcAcceptedSuccessSecondLevelInputConfirmed:
+		return AcceptedHtlcSuccessWitnessSizeConfirmed, false, nil
 
 	// An HTLC on the commitment transaction of the remote party,
 	// that has had its absolute timelock expire.

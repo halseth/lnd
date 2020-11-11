@@ -347,7 +347,7 @@ const (
 	//      - witness_script (accepted_htlc_script)
 	AcceptedHtlcPenaltyWitnessSize = 1 + 1 + 73 + 1 + 33 + 1 + AcceptedHtlcScriptSize
 
-	// AcceptedHtlcSuccessWitnessSize 322 bytes
+	// AcceptedHtlcSuccessWitnessSize 327 bytes
 	//      - number_of_witness_elements: 1 byte
 	//      - nil_length: 1 byte
 	//      - sig_alice_length: 1 byte

@@ -1,13 +1,17 @@
 package contractcourt
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/labels"
@@ -50,6 +54,15 @@ type htlcSuccessResolver struct {
 	// htlc contains information on the htlc that we are resolving on-chain.
 	htlc channeldb.HTLC
 
+	// currentReport stores the current state of the resolver for reporting
+	// over the rpc interface. This should only be reported in case we have
+	// a non-nil SignDetails on the htlcResolution, otherwise the nursery
+	// will produce reports.
+	currentReport ContractReport
+
+	// reportLock prevents concurrent access to the resolver report.
+	reportLock sync.Mutex
+
 	contractResolverKit
 }
 
@@ -58,11 +71,30 @@ func newSuccessResolver(res lnwallet.IncomingHtlcResolution,
 	broadcastHeight uint32, htlc channeldb.HTLC,
 	resCfg ResolverConfig) *htlcSuccessResolver {
 
+	// We create the initial report. This will only be reported for
+	// resolvers not handled by the nursery.
+	finalAmt := htlc.Amt.ToSatoshis()
+	if res.SignedSuccessTx != nil {
+		finalAmt = btcutil.Amount(
+			res.SignedSuccessTx.TxOut[0].Value,
+		)
+	}
+
+	contract := ContractReport{
+		Outpoint:       res.ClaimOutpoint,
+		Type:           ReportOutputIncomingHtlc,
+		Amount:         finalAmt,
+		MaturityHeight: res.CsvDelay,
+		LimboBalance:   finalAmt,
+		Stage:          1,
+	}
+
 	return &htlcSuccessResolver{
 		contractResolverKit: *newContractResolverKit(resCfg),
 		htlcResolution:      res,
 		broadcastHeight:     broadcastHeight,
 		htlc:                htlc,
+		currentReport:       contract,
 	}
 }
 
@@ -102,9 +134,14 @@ func (h *htlcSuccessResolver) Resolve() (ContractResolver, error) {
 		return nil, nil
 	}
 
+	// Depending on the type of resolution, keep track of the ultimate
+	// claim outpoint.
+	claimOutpoint := h.htlcResolution.ClaimOutpoint
+
+	switch {
 	// If we don't have a success transaction, then this means that this is
 	// an output on the remote party's commitment transaction.
-	if h.htlcResolution.SignedSuccessTx == nil {
+	case h.htlcResolution.SignedSuccessTx == nil:
 		// If we don't already have the sweep transaction constructed,
 		// we'll do so and broadcast it.
 		if h.sweepTx == nil {
@@ -201,50 +238,168 @@ func (h *htlcSuccessResolver) Resolve() (ContractResolver, error) {
 			&sweepTXID,
 			channeldb.ResolverOutcomeClaimed,
 		)
-	}
 
-	log.Infof("%T(%x): broadcasting second-layer transition tx: %v",
-		h, h.htlc.RHash[:], spew.Sdump(h.htlcResolution.SignedSuccessTx))
+	// If we have non-nil SignDetails, this means that have a 2nd level
+	// HTLC transaction that is signed using sighash SINGLE|ANYONECANPAY
+	// (the case for anchor type channels). In this case we can re-sign it
+	// and attach fees at will. We let the sweeper handle this job.
+	case h.htlcResolution.SignDetails != nil:
+		log.Infof("%T(%x): offering second-layer transition tx to sweeper: %v",
+			h, h.htlc.RHash[:], spew.Sdump(h.htlcResolution.SignedSuccessTx))
 
-	// We'll now broadcast the second layer transaction so we can kick off
-	// the claiming process.
-	//
-	// TODO(roasbeef): after changing sighashes send to tx bundler
-	label := labels.MakeLabel(
-		labels.LabelTypeChannelClose, &h.ShortChanID,
-	)
-	err := h.PublishTx(h.htlcResolution.SignedSuccessTx, label)
-	if err != nil {
-		return nil, err
-	}
+		secondLevelInput := input.MakeHtlcSecondLevelSuccessAnchorInput(
+			h.htlcResolution.SignedSuccessTx, h.htlcResolution.SignDetails,
+			h.htlcResolution.Preimage, h.broadcastHeight,
+		)
+		_, err := h.Sweeper.SweepInput(
+			&secondLevelInput,
+			sweep.Params{
+				Fee: sweep.FeePreference{
+					ConfTarget: secondLevelConfTarget,
+				},
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
 
-	// Otherwise, this is an output on our commitment transaction. In this
-	// case, we'll send it to the incubator, but only if we haven't already
-	// done so.
-	if !h.outputIncubating {
-		log.Infof("%T(%x): incubating incoming htlc output",
-			h, h.htlc.RHash[:])
-
-		err := h.IncubateOutputs(
-			h.ChanPoint, nil, &h.htlcResolution,
+		// Wait for the second level transaction to confirm.
+		// TODO(halseth): could use sweeper result?
+		spendNtfn, err := h.Notifier.RegisterSpendNtfn(
+			&h.htlcResolution.SignedSuccessTx.TxIn[0].PreviousOutPoint,
+			h.htlcResolution.SignDetails.SignDesc.Output.PkScript,
 			h.broadcastHeight,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		h.outputIncubating = true
+		log.Infof("%T(%x): waiting for second-level HTLC to confirm",
+			h, h.htlc.RHash[:])
 
-		if err := h.Checkpoint(h); err != nil {
-			log.Errorf("unable to Checkpoint: %v", err)
+		var (
+			spend *chainntnfs.SpendDetail
+			ok    bool
+		)
+		select {
+		case spend, ok = <-spendNtfn.Spend:
+			if !ok {
+				return nil, errResolverShuttingDown
+			}
+
+		case <-h.quit:
+			return nil, errResolverShuttingDown
+		}
+
+		// Now that the second level transaction has confirmed, we
+		// report the resolver has moved the next stage.
+		h.reportLock.Lock()
+		h.currentReport.Stage = 2
+		h.reportLock.Unlock()
+
+		waitHeight := uint32(spend.SpendingHeight) +
+			h.htlcResolution.CsvDelay - 1
+		log.Infof("%T(%x): waiting for CSV lock to expire at height %v",
+			h, h.htlc.RHash[:], waitHeight)
+
+		if err := waitForHeight(waitHeight, h.Notifier, h.quit); err != nil {
 			return nil, err
+		}
+
+		// Find output index of the second-level, as the sweeper might
+		// have re-arranged outputs.
+		txOut := h.htlcResolution.SignedSuccessTx.TxOut[0]
+		index := -1
+		for i, o := range spend.SpendingTx.TxOut {
+			if bytes.Equal(o.PkScript, txOut.PkScript) {
+				index = i
+			}
+		}
+
+		if index == -1 {
+			err := fmt.Errorf("unable to find second-level "+
+				"output %v on spending tx %v", txOut,
+				spend.SpenderTxHash)
+			log.Error(err)
+			return nil, err
+		}
+
+		op := &wire.OutPoint{
+			Hash:  *spend.SpenderTxHash,
+			Index: uint32(index),
+		}
+
+		log.Infof("%T(%x): CSV lock expired, offering second-layer "+
+			"output to sweeper: %v", h, h.htlc.RHash[:], op)
+
+		inp := input.NewCsvInput(
+			op, input.HtlcAcceptedSuccessSecondLevel,
+			&h.htlcResolution.SweepSignDesc, h.broadcastHeight,
+			h.htlcResolution.CsvDelay,
+		)
+		_, err = h.Sweeper.SweepInput(
+			inp,
+			sweep.Params{
+				Fee: sweep.FeePreference{
+					ConfTarget: sweepConfTarget,
+				},
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO(halseth): need to checkpoint?
+
+		// Update the claim outpoint to the one created by the sweeper.
+		claimOutpoint = *op
+
+	// Otherwise we'll publihs the second-level transaction directly and
+	// offer the resolution to the nursery to handle.
+	default:
+		log.Infof("%T(%x): broadcasting second-layer transition tx: %v",
+			h, h.htlc.RHash[:], spew.Sdump(h.htlcResolution.SignedSuccessTx))
+
+		// We'll now broadcast the second layer transaction so we can kick off
+		// the claiming process.
+		//
+		// TODO(roasbeef): after changing sighashes send to tx bundler
+		label := labels.MakeLabel(
+			labels.LabelTypeChannelClose, &h.ShortChanID,
+		)
+		err := h.PublishTx(h.htlcResolution.SignedSuccessTx, label)
+		if err != nil {
+			return nil, err
+		}
+
+		// Otherwise, this is an output on our commitment transaction. In this
+		// case, we'll send it to the incubator, but only if we haven't already
+		// done so.
+		if !h.outputIncubating {
+			log.Infof("%T(%x): incubating incoming htlc output",
+				h, h.htlc.RHash[:])
+
+			err := h.IncubateOutputs(
+				h.ChanPoint, nil, &h.htlcResolution,
+				h.broadcastHeight,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			h.outputIncubating = true
+
+			if err := h.Checkpoint(h); err != nil {
+				log.Errorf("unable to Checkpoint: %v", err)
+				return nil, err
+			}
 		}
 	}
 
 	// To wrap this up, we'll wait until the second-level transaction has
 	// been spent, then fully resolve the contract.
 	spendNtfn, err := h.Notifier.RegisterSpendNtfn(
-		&h.htlcResolution.ClaimOutpoint,
+		&claimOutpoint,
 		h.htlcResolution.SweepSignDesc.Output.PkScript,
 		h.broadcastHeight,
 	)
@@ -266,6 +421,11 @@ func (h *htlcSuccessResolver) Resolve() (ContractResolver, error) {
 	case <-h.quit:
 		return nil, errResolverShuttingDown
 	}
+
+	h.reportLock.Lock()
+	h.currentReport.RecoveredBalance = h.currentReport.LimboBalance
+	h.currentReport.LimboBalance = 0
+	h.reportLock.Unlock()
 
 	h.resolved = true
 	return nil, h.checkpointClaim(
@@ -328,6 +488,20 @@ func (h *htlcSuccessResolver) Stop() {
 // NOTE: Part of the ContractResolver interface.
 func (h *htlcSuccessResolver) IsResolved() bool {
 	return h.resolved
+}
+
+// report returns a report on the resolution state of the contract.
+func (h *htlcSuccessResolver) report() *ContractReport {
+	// If the sign details are nil, the report will be created by handled
+	// by the nursery.
+	if h.htlcResolution.SignDetails == nil {
+		return nil
+	}
+
+	h.reportLock.Lock()
+	defer h.reportLock.Unlock()
+	copy := h.currentReport
+	return &copy
 }
 
 // Encode writes an encoded version of the ContractResolver into the passed

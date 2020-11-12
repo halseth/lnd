@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 // Input represents an abstract UTXO which is to be spent using a sweeping
@@ -32,6 +33,7 @@ type Input interface {
 	// SignDesc returns a reference to a spendable output's sign
 	// descriptor, which is used during signing to compute a valid witness
 	// that spends this output.
+	// Can remove? We have craft input script
 	SignDesc() *SignDescriptor
 
 	// CraftInputScript returns a valid set of input scripts allowing this
@@ -257,7 +259,89 @@ func (h *HtlcSucceedInput) CraftInputScript(signer Signer, txn *wire.MsgTx,
 	}, nil
 }
 
+// HtlcsSecondLevelAnchorInput is an input type used to spend HTLC outputs
+// using a re-signed second level transaction, either via the timeout or success
+// paths.
+type HtlcSecondLevelAnchorInput struct {
+	inputKit
+
+	// SignedTx is the original second level transaction signed by the
+	// channel peer.
+	SignedTx *wire.MsgTx
+
+	// createWitness creates a witness allowing the passed transaction to
+	// spend the input.
+	createWitness func(signer Signer, txn *wire.MsgTx,
+		hashCache *txscript.TxSigHashes, txinIdx int) (wire.TxWitness, error)
+}
+
+// RequiredTxOut returns the tx out needed to be present on the sweep tx for
+// the spend of the input to be valid.
+func (i *HtlcSecondLevelAnchorInput) RequiredTxOut() *wire.TxOut {
+	return i.SignedTx.TxOut[0]
+}
+
+// RequiredLockTime returns the locktime needed for the sweep tx for the spend
+// of the input to be valid. For a second level HTLC timeout this will be
+// present, for HTLC success no locktime is required.
+func (i *HtlcSecondLevelAnchorInput) RequiredLockTime() (uint32, bool) {
+	if i.witnessType == HtlcOfferedTimeoutSecondLevelInputConfirmed {
+		return i.SignedTx.LockTime, true
+	}
+
+	return 0, false
+}
+
+func (i *HtlcSecondLevelAnchorInput) CraftInputScript(signer Signer,
+	txn *wire.MsgTx, hashCache *txscript.TxSigHashes, txinIdx int) (*Script, error) {
+
+	witness, err := i.createWitness(signer, txn, hashCache, txinIdx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Script{
+		Witness: witness,
+	}, nil
+}
+
+func MakeHtlcSecondLevelSuccessAnchorInput(signedTx *wire.MsgTx,
+	signDetails *SignDetails, preimage lntypes.Preimage,
+	heightHint uint32) HtlcSecondLevelAnchorInput {
+
+	// Spend an HTLC output on our local commitment tx using the
+	// 2nd success transaction.
+	createWitness := func(signer Signer, txn *wire.MsgTx,
+		hashCache *txscript.TxSigHashes, txinIdx int) (wire.TxWitness, error) {
+
+		// TODO: is this needed?
+		desc := signDetails.SignDesc
+		desc.SigHashes = hashCache
+		desc.InputIndex = txinIdx
+
+		return ReceiverHtlcSpendRedeem(
+			signDetails.PeerSig, signDetails.SigHashType, preimage[:], signer, &desc, txn,
+		)
+
+	}
+
+	return HtlcSecondLevelAnchorInput{
+		inputKit: inputKit{
+			outpoint:    signedTx.TxIn[0].PreviousOutPoint,
+			witnessType: HtlcAcceptedSuccessSecondLevelInputConfirmed,
+			signDesc:    signDetails.SignDesc,
+			heightHint:  heightHint,
+
+			// CSV delay is always 1 for these inputs.
+			blockToMaturity: 1,
+		},
+		SignedTx:      signedTx,
+		createWitness: createWitness,
+	}
+}
+
 // Compile-time constraints to ensure each input struct implement the Input
 // interface.
 var _ Input = (*BaseInput)(nil)
 var _ Input = (*HtlcSucceedInput)(nil)
+var _ Input = (*HtlcSecondLevelAnchorInput)(nil)

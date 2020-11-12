@@ -282,14 +282,10 @@ func (i *HtlcSecondLevelAnchorInput) RequiredTxOut() *wire.TxOut {
 }
 
 // RequiredLockTime returns the locktime needed for the sweep tx for the spend
-// of the input to be valid. For a second level HTLC timeout this will be
-// present, for HTLC success no locktime is required.
+// of the input to be valid. For a second level HTLC timeout this will be the
+// CLTV expiry,for HTLC success it will be zero.
 func (i *HtlcSecondLevelAnchorInput) RequiredLockTime() (uint32, bool) {
-	if i.witnessType == HtlcOfferedTimeoutSecondLevelInputConfirmed {
-		return i.SignedTx.LockTime, true
-	}
-
-	return 0, false
+	return i.SignedTx.LockTime, true
 }
 
 func (i *HtlcSecondLevelAnchorInput) CraftInputScript(signer Signer,
@@ -303,6 +299,41 @@ func (i *HtlcSecondLevelAnchorInput) CraftInputScript(signer Signer,
 	return &Script{
 		Witness: witness,
 	}, nil
+}
+
+// MakeHtlcSecondLevelTimeoutAnchorInput creates an input allowing the sweeper
+// to spend the HTLC output on our commit using the second level timeout
+// transaction.
+func MakeHtlcSecondLevelTimeoutAnchorInput(signedTx *wire.MsgTx,
+	signDetails *SignDetails, heightHint uint32) HtlcSecondLevelAnchorInput {
+
+	// Spend an HTLC output on our local commitment tx using the
+	// 2nd timeout transaction.
+	createWitness := func(signer Signer, txn *wire.MsgTx,
+		hashCache *txscript.TxSigHashes, txinIdx int) (wire.TxWitness, error) {
+
+		// TODO: is this needed?
+		desc := signDetails.SignDesc
+		desc.SigHashes = txscript.NewTxSigHashes(txn)
+		//desc.InputIndex = txinIdx
+
+		return SenderHtlcSpendTimeout(
+			signDetails.PeerSig, signDetails.SigHashType, signer, &desc, txn,
+		)
+	}
+
+	return HtlcSecondLevelAnchorInput{
+		inputKit: inputKit{
+			outpoint:    signedTx.TxIn[0].PreviousOutPoint,
+			witnessType: HtlcOfferedTimeoutSecondLevelInputConfirmed,
+			signDesc:    signDetails.SignDesc,
+			heightHint:  heightHint,
+			// CSV delay is always 1 for these inputs.
+			blockToMaturity: 1,
+		},
+		SignedTx:      signedTx,
+		createWitness: createWitness,
+	}
 }
 
 func MakeHtlcSecondLevelSuccessAnchorInput(signedTx *wire.MsgTx,

@@ -74,6 +74,8 @@ type Params struct {
 	// a fee rate whenever we attempt to cluster inputs for a sweep.
 	Fee FeePreference
 
+	// Could add locktime, tx out here?
+
 	// Force indicates whether the input should be swept regardless of
 	// whether it is economical to do so.
 	Force bool
@@ -117,6 +119,8 @@ type pendingInput struct {
 
 	// minPublishHeight indicates the minimum block height at which this
 	// input may be (re)published.
+
+	// TODO: must be set
 	minPublishHeight int32
 
 	// publishAttempts records the number of attempts that have already been
@@ -1003,6 +1007,22 @@ func mergeClusters(a, b inputCluster) []inputCluster {
 	}
 
 	return []inputCluster{newCluster}
+}
+
+func printClusters(c []inputCluster) string {
+
+	s := "{\n"
+	for _, a := range c {
+		s += fmt.Sprintf(" {\nlocktime:%v\nsweeprate: %v\n", a.lockTime, a.sweepFeeRate)
+		for op := range a.inputs {
+			s += fmt.Sprintf("  input spending %v\n", op)
+		}
+
+		s += " }"
+	}
+	s += "}"
+
+	return s
 }
 
 // scheduleSweep starts the sweep timer to create an opportunity for more inputs

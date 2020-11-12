@@ -11066,6 +11066,7 @@ func getSpendingTxInMempool(t *harnessTest, miner *rpcclient.Client,
 			}
 
 			if len(mempool) == 0 {
+				fmt.Printf("mempool empty (looking for %v)\n", chanPoint)
 				continue
 			}
 
@@ -11077,6 +11078,8 @@ func getSpendingTxInMempool(t *harnessTest, miner *rpcclient.Client,
 
 				msgTx := tx.MsgTx()
 				for _, txIn := range msgTx.TxIn {
+					fmt.Printf("tx %v spending %v (lloking for %v)\n",
+						msgTx.TxHash(), txIn.PreviousOutPoint, chanPoint)
 					if txIn.PreviousOutPoint == chanPoint {
 						return msgTx
 					}

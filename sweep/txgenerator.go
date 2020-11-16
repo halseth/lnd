@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -111,7 +112,7 @@ func generateInputPartitionings(sweepableInputs []txInput,
 		// continuing with the remaining inputs will only lead to sets
 		// with an even lower output value.
 		if !txInputs.enoughInput() {
-			log.Debugf("Set value %v below dust "+
+			log.Debugf("johan Set value %v below dust "+
 				"limit of %v", txInputs.outputValue(),
 				txInputs.dustLimit)
 			return sets, nil
@@ -243,6 +244,11 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 			return err
 		}
 
+		if h, ok := tso.(*input.HtlcSecondLevelAnchorInput); ok {
+			log.Infof("crafted input witness %v", spew.Sdump(inputScript))
+			log.Infof("signed tx was %v", spew.Sdump(h.SignedTx))
+		}
+
 		sweepTx.TxIn[idx].Witness = inputScript.Witness
 
 		if len(inputScript.SigScript) != 0 {
@@ -269,6 +275,23 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 		len(estimator.parents), estimator.parentsFee,
 		estimator.parentsWeight,
 	)
+
+	log.Infof("Sweep: %v", spew.Sdump(sweepTx))
+	for i, input := range inputs {
+		vm, err := txscript.NewEngine(
+			input.SignDesc().Output.PkScript,
+			sweepTx, i, txscript.StandardVerifyFlags, nil,
+			nil,
+			input.SignDesc().Output.Value,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := vm.Execute(); err != nil {
+			log.Errorf("failed to validate input %d: %v", i, err)
+		}
+	}
 
 	return sweepTx, nil
 }

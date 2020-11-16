@@ -283,7 +283,7 @@ func (i *HtlcSecondLevelAnchorInput) RequiredTxOut() *wire.TxOut {
 
 // RequiredLockTime returns the locktime needed for the sweep tx for the spend
 // of the input to be valid. For a second level HTLC timeout this will be the
-// CLTV expiry,for HTLC success it will be zero.
+// CLTV expiry, for HTLC success it will be zero.
 func (i *HtlcSecondLevelAnchorInput) RequiredLockTime() (uint32, bool) {
 	return i.SignedTx.LockTime, true
 }
@@ -326,8 +326,9 @@ func MakeHtlcSecondLevelTimeoutAnchorInput(signedTx *wire.MsgTx,
 		inputKit: inputKit{
 			outpoint:    signedTx.TxIn[0].PreviousOutPoint,
 			witnessType: HtlcOfferedTimeoutSecondLevelInputConfirmed,
-			signDesc:    signDetails.SignDesc,
-			heightHint:  heightHint,
+			//			witnessType: HtlcOfferedTimeoutSecondLevel,
+			signDesc:   signDetails.SignDesc,
+			heightHint: heightHint,
 			// CSV delay is always 1 for these inputs.
 			blockToMaturity: 1,
 		},
@@ -359,7 +360,7 @@ func MakeHtlcSecondLevelSuccessAnchorInput(signedTx *wire.MsgTx,
 	return HtlcSecondLevelAnchorInput{
 		inputKit: inputKit{
 			outpoint:    signedTx.TxIn[0].PreviousOutPoint,
-			witnessType: HtlcAcceptedSuccessSecondLevelInputConfirmed,
+			witnessType: HtlcOfferedTimeoutSecondLevel,
 			signDesc:    signDetails.SignDesc,
 			heightHint:  heightHint,
 

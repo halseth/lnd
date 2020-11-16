@@ -304,6 +304,9 @@ func (wt StandardWitnessType) WitnessGenerator(signer Signer,
 				Witness: witness,
 			}, nil
 
+		case HtlcOfferedTimeoutSecondLevelInputConfirmed:
+			panic("nooo")
+
 		case HtlcAcceptedSuccessSecondLevel:
 			witness, err := HtlcSecondLevelSpend(signer, desc, tx)
 			if err != nil {
@@ -386,6 +389,7 @@ func (wt StandardWitnessType) SizeUpperBound() (int, bool, error) {
 
 	case HtlcOfferedTimeoutSecondLevelInputConfirmed:
 		return OfferedHtlcTimeoutWitnessSizeConfirmed, false, nil
+		//return ToLocalTimeoutWitnessSize, false, nil
 
 	// Incoming second layer HTLC's that have confirmed within the
 	// chain, and the output they produced is now mature enough to

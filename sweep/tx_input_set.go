@@ -256,6 +256,9 @@ func (t *txInputSet) enoughInput() bool {
 // input was added to the set. An input is rejected if it decreases the tx
 // output value after paying fees.
 func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *txInputSetState {
+	value := btcutil.Amount(inp.SignDesc().Output.Value)
+	log.Infof("johan adding input of value %v", value)
+
 	// Stop if max inputs is reached. Do not count additional wallet inputs,
 	// because we don't know in advance how many we may need.
 	if constraints != constraintsWallet &&
@@ -268,6 +271,7 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 	// won't add it.
 	reqOut := inp.RequiredTxOut()
 	if reqOut != nil && btcutil.Amount(reqOut.Value) < t.dustLimit {
+		log.Infof("johan dust req out")
 		return nil
 	}
 
@@ -278,8 +282,41 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 	s.inputs = append(s.inputs, inp)
 	s.inputConstraints[inp] = constraints
 
+	log.Infof("johan output value is %v", s.outputValue())
+
+	// Can ignore error, because it has already been checked when
+	// calculating the yields.
+	weightEstimate := s.weightEstimate(true)
+
+	// TODO: remove ref to weight estimate, only keep inputs.
+	//	_ = s.weightEstimate.add(inp)
+
+	// Add the value of the new input.
+	log.Infof("johan new input total %v", s.inputTotal())
+
+	// Calculate the new output value.
+	// If the new input commits to an output, add that to our weight
+	// estimate.
+	if reqOut != nil {
+		log.Infof("johan adding req out of val %v", btcutil.Amount(reqOut.Value))
+	}
+
+	log.Infof("johan required output %v", s.requiredOutput())
+
+	// Recalculate the tx fee.
+	fee := weightEstimate.fee()
+	log.Infof("johan fee %v", fee)
+	log.Infof("johan toatal output %v", s.outputValue())
+
 	// Calculate the yield of this input from the change in tx output value.
 	inputYield := s.outputValue() - t.outputValue()
+
+	// If the change output is negative at this point, it means the input
+	// cannot pay for its own fee. It would never be economical to add!
+	//	if s.changeOutput < 0 {
+	//		log.Infof("johan negative change output %v", s.changeOutput)
+	//		return nil
+	//	}
 
 	switch constraints {
 
@@ -303,7 +340,8 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 
 		// Calculate the total value that we spend in this tx from the
 		// wallet if we'd add this wallet input.
-		//
+		log.Infof("johan new wallet input total %v", s.walletInputTotal())
+
 		// In any case, we don't want to lose money by sweeping. If we
 		// don't get more out of the tx then we put in ourselves, do not
 		// add this wallet input. If there is at least one force sweep
@@ -328,6 +366,18 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 		}
 	}
 
+	// add test cases: anchor + extra wallet input
+	// in.out with output smaller than input:
+	//	- that cannot pay its own fee (not economical)
+	//	- that is econimocail but needs extrra input for fee.
+	// in.out with output equal to input:
+	//	- smalle output so not comocmical
+	//	- large output so economical
+	// in-out with output larger than input
+	//	- smalle output so not comocmical
+	//	- large output so economical
+
+	log.Infof("johan returning new state")
 	return &s
 }
 
@@ -335,11 +385,15 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 // input was added to the set. An input is rejected if it decreases the tx
 // output value after paying fees.
 func (t *txInputSet) add(input input.Input, constraints addConstraints) bool {
+	log.Infof("johan adding input to state")
+
 	newState := t.addToState(input, constraints)
 	if newState == nil {
+		log.Infof("johan input NOT added to state")
 		return false
 	}
 
+	log.Infof("johan input added to state!")
 	t.txInputSetState = *newState
 
 	return true
@@ -354,11 +408,14 @@ func (t *txInputSet) add(input input.Input, constraints addConstraints) bool {
 // minimizing any negative externalities we cause for the Bitcoin system as a
 // whole.
 func (t *txInputSet) addPositiveYieldInputs(sweepableInputs []txInput) {
+	log.Infof("johan adding positive yield inputs ")
+
 	for _, input := range sweepableInputs {
 		// Apply relaxed constraints for force sweeps.
 		constraints := constraintsRegular
 		if input.parameters().Force {
 			constraints = constraintsForce
+			log.Infof("adding force contraint")
 		}
 
 		// Try to add the input to the transaction. If that doesn't
@@ -366,19 +423,23 @@ func (t *txInputSet) addPositiveYieldInputs(sweepableInputs []txInput) {
 		// return. Assuming inputs are sorted by yield, any further
 		// inputs wouldn't increase the output value either.
 		if !t.add(input, constraints) {
+			log.Infof("johan adding positive yield inputs returning")
 			return
 		}
 	}
 
 	// We managed to add all inputs to the set.
+	log.Infof("johan added ALL positive yield inputs")
 }
 
 // tryAddWalletInputsIfNeeded retrieves utxos from the wallet and tries adding as
 // many as required to bring the tx output value above the given minimum.
 func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
+	log.Infof("johan try add wallet inputs")
 	// If we've already have enough to pay the transaction fees and have at
 	// least one output materialize, no action is needed.
 	if t.enoughInput() {
+		log.Infof("johan had enough input!")
 		return nil
 	}
 
@@ -397,12 +458,15 @@ func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
 
 		// If the wallet input isn't positively-yielding at this fee
 		// rate, skip it.
+		log.Infof("johan adding wallet input")
 		if !t.add(input, constraintsWallet) {
+			log.Infof("johan wallet input not added")
 			continue
 		}
 
 		// Return if we've reached the minimum output amount.
 		if t.enoughInput() {
+			log.Infof("johan NOW we have enough input")
 			return nil
 		}
 	}

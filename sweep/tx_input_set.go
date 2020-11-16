@@ -44,16 +44,25 @@ type txInputSetState struct {
 
 // weightEstimate is the (worst case) tx weight with the current set of
 // inputs.
-func (t *txInputSetState) weightEstimate() *weightEstimator {
+func (t *txInputSetState) weightEstimate(change bool) *weightEstimator {
 	weightEstimate := newWeightEstimator(t.feeRate)
 	for _, i := range t.inputs {
 		// Can ignore error, because it has already been checked when
 		// calculating the yields.
 		_ = weightEstimate.add(i)
+
+		r := i.RequiredTxOut()
+		if r == nil {
+			continue
+		}
+
+		weightEstimate.addOutput(r)
 	}
 
-	// Add the sweep tx output to the weight estimate.
-	weightEstimate.addP2WKHOutput()
+	// Add a change output to the weight estimate if requested.
+	if change {
+		weightEstimate.addP2WKHOutput()
+	}
 
 	return weightEstimate
 }
@@ -97,8 +106,41 @@ func (t *txInputSetState) force() bool {
 	return false
 }
 
-// outputValue is the value of the tx output.
-// NOTE: this can be dust.
+// requiredOutput is the sum of the outputs committed to by the inputs.
+func (t *txInputSetState) requiredOutput() btcutil.Amount {
+	var reqOut btcutil.Amount
+	for _, inp := range t.inputs {
+		r := inp.RequiredTxOut()
+		if r == nil {
+			continue
+		}
+
+		reqOut += btcutil.Amount(r.Value)
+	}
+
+	return reqOut
+}
+
+// change is the value that is left over after subtracting the requiredOutput
+// and the tx fee from the inputTotal.
+//
+// NOTE: This can be dust, or negative.
+func (t *txInputSetState) change() btcutil.Amount {
+	inputTotal := t.inputTotal()
+	requiredOutput := t.requiredOutput()
+
+	// Recalculate the tx fee with a change output present.
+	weightEstimate := t.weightEstimate(true)
+	fee := weightEstimate.fee()
+
+	return inputTotal - (requiredOutput + fee)
+}
+
+// outputValue is the estimated total value we get out of a sweep tx of this
+// input set. This is always estiamted having a change output, since that is
+// needed to compare yields when adding a new input to the set.
+//
+// NOTE: This can be dust, or negative.
 func (t *txInputSetState) outputValue() btcutil.Amount {
 	inputTotal := t.inputTotal()
 	if inputTotal <= 0 {
@@ -106,7 +148,7 @@ func (t *txInputSetState) outputValue() btcutil.Amount {
 	}
 
 	// Recalculate the tx fee.
-	weightEstimate := t.weightEstimate()
+	weightEstimate := t.weightEstimate(true)
 	fee := weightEstimate.fee()
 
 	// Calculate the new output value.
@@ -172,10 +214,42 @@ func newTxInputSet(wallet Wallet, feePerKW,
 	return &b
 }
 
-// dustLimitReached returns true if we've accumulated enough inputs to meet the
-// dust limit.
-func (t *txInputSet) dustLimitReached() bool {
-	return t.outputValue() >= t.dustLimit
+// enoughInput returns true if we've accumulated enough inputs to pay the fees
+// and have at least one output that meets the dust limit.
+func (t *txInputSet) enoughInput() bool {
+	// The sum of our inputs musy be larger than the sum of our required
+	// outputs.
+	input := t.inputTotal()
+	reqOut := t.requiredOutput()
+	if input < reqOut {
+		return false
+	}
+
+	// We need at least one output above the dustlimit. Check if the change
+	// output is.
+	if t.change() >= t.dustLimit {
+		return true
+	}
+
+	// We did not have enough input for a change output. Check if we have
+	// enough input to pay the fees for a transaction with no change
+	// output.
+	weightEstimate := t.weightEstimate(false)
+	fee := weightEstimate.fee()
+	if input < reqOut+fee {
+		return false
+	}
+
+	// We could pay the fees, but we still need at least one output to be
+	// above the dust limit for the tx to be valid (we assume that these
+	// required outputs only get added if they are above dust)
+	for _, inp := range t.inputs {
+		if inp.RequiredTxOut() != nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 // add adds a new input to the set. It returns a bool indicating whether the
@@ -187,6 +261,13 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 	if constraints != constraintsWallet &&
 		len(t.inputs) >= t.maxInputs {
 
+		return nil
+	}
+
+	// If the input comes with a required tx out that is below dust, we
+	// won't add it.
+	reqOut := inp.RequiredTxOut()
+	if reqOut != nil && btcutil.Amount(reqOut.Value) < t.dustLimit {
 		return nil
 	}
 
@@ -295,8 +376,9 @@ func (t *txInputSet) addPositiveYieldInputs(sweepableInputs []txInput) {
 // tryAddWalletInputsIfNeeded retrieves utxos from the wallet and tries adding as
 // many as required to bring the tx output value above the given minimum.
 func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
-	// If we've already reached the dust limit, no action is needed.
-	if t.dustLimitReached() {
+	// If we've already have enough to pay the transaction fees and have at
+	// least one output materialize, no action is needed.
+	if t.enoughInput() {
 		return nil
 	}
 
@@ -320,7 +402,7 @@ func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
 		}
 
 		// Return if we've reached the minimum output amount.
-		if t.dustLimitReached() {
+		if t.enoughInput() {
 			return nil
 		}
 	}

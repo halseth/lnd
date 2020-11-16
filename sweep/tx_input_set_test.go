@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/stretchr/testify/require"
 )
 
 // TestTxInputSet tests adding various sized inputs to the set.
@@ -39,7 +40,7 @@ func TestTxInputSet(t *testing.T) {
 	if set.outputValue() != 261 {
 		t.Fatal("unexpected output value")
 	}
-	if set.dustLimitReached() {
+	if set.enoughInput() {
 		t.Fatal("expected dust limit not yet to be reached")
 	}
 
@@ -51,7 +52,7 @@ func TestTxInputSet(t *testing.T) {
 	if set.outputValue() != 988 {
 		t.Fatal("unexpected output value")
 	}
-	if !set.dustLimitReached() {
+	if !set.enoughInput() {
 		t.Fatal("expected dust limit to be reached")
 	}
 }
@@ -73,7 +74,7 @@ func TestTxInputSetFromWallet(t *testing.T) {
 	if !set.add(createP2WKHInput(700), constraintsRegular) {
 		t.Fatal("expected add of positively yielding input to succeed")
 	}
-	if set.dustLimitReached() {
+	if set.enoughInput() {
 		t.Fatal("expected dust limit not yet to be reached")
 	}
 
@@ -92,7 +93,7 @@ func TestTxInputSetFromWallet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !set.dustLimitReached() {
+	if !set.enoughInput() {
 		t.Fatal("expected dust limit to be reached")
 	}
 }
@@ -116,4 +117,30 @@ func (m *mockWallet) ListUnspentWitness(minconfirms, maxconfirms int32) (
 			Value:       10000,
 		},
 	}, nil
+}
+
+func TestTxInputSetChangeOutput(t *testing.T) {
+	const (
+		feeRate   = 1000
+		relayFee  = 300
+		maxInputs = 10
+	)
+
+	testCases := []struct {
+		name           string
+		inputs         []*testInput
+		expectedChange btcutil.Amount
+	}{}
+
+	for _, test := range testCases {
+		set := newTxInputSet(nil, feeRate, relayFee, maxInputs)
+
+		for _, inp := range test.inputs {
+			if !set.add(inp, constraintsRegular) {
+				t.Fatal("failed adding input")
+			}
+		}
+
+		require.Equal(t, test.expectedChange, set.change())
+	}
 }

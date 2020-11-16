@@ -110,9 +110,10 @@ func generateInputPartitionings(sweepableInputs []txInput,
 		// the dust limit, stop sweeping. Because of the sorting,
 		// continuing with the remaining inputs will only lead to sets
 		// with an even lower output value.
-		if !txInputs.dustLimitReached() {
-			log.Debugf("Set value %v below dust limit of %v",
-				txInputs.outputValue, txInputs.dustLimit)
+		if !txInputs.enoughInput() {
+			log.Debugf("Set value %v below dust "+
+				"limit of %v", txInputs.outputValue(),
+				txInputs.dustLimit)
 			return sets, nil
 		}
 
@@ -120,7 +121,7 @@ func generateInputPartitionings(sweepableInputs []txInput,
 			"has yield=%v, weight=%v",
 			inputCount, len(txInputs.inputs)-inputCount,
 			txInputs.outputValue()-txInputs.walletInputTotal(),
-			txInputs.weightEstimate().weight())
+			txInputs.weightEstimate(true).weight())
 
 		sets = append(sets, txInputs.inputs)
 		sweepableInputs = sweepableInputs[inputCount:]

@@ -119,8 +119,8 @@ func generateInputPartitionings(sweepableInputs []txInput,
 		log.Infof("Candidate sweep set of size=%v (+%v wallet inputs), "+
 			"has yield=%v, weight=%v",
 			inputCount, len(txInputs.inputs)-inputCount,
-			txInputs.outputValue-txInputs.walletInputTotal,
-			txInputs.weightEstimate.weight())
+			txInputs.outputValue()-txInputs.walletInputTotal(),
+			txInputs.weightEstimate().weight())
 
 		sets = append(sets, txInputs.inputs)
 		sweepableInputs = sweepableInputs[inputCount:]

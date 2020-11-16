@@ -36,7 +36,7 @@ func TestTxInputSet(t *testing.T) {
 
 	// The tx output should now be 700-439 = 261 sats. The dust limit isn't
 	// reached yet.
-	if set.outputValue != 261 {
+	if set.outputValue() != 261 {
 		t.Fatal("unexpected output value")
 	}
 	if set.dustLimitReached() {
@@ -48,7 +48,7 @@ func TestTxInputSet(t *testing.T) {
 	if !set.add(createP2WKHInput(1000), constraintsRegular) {
 		t.Fatal("expected add of positively yielding input to succeed")
 	}
-	if set.outputValue != 988 {
+	if set.outputValue() != 988 {
 		t.Fatal("unexpected output value")
 	}
 	if !set.dustLimitReached() {

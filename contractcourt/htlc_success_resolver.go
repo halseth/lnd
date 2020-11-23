@@ -2,7 +2,9 @@ package contractcourt
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
+	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -30,7 +32,12 @@ type htlcSuccessResolver struct {
 	htlcResolution lnwallet.IncomingHtlcResolution
 
 	// outputIncubating returns true if we've sent the output to the output
-	// incubator (utxo nursery).
+	// incubator (utxo nursery). In case the htlcResolution has non-nil
+	// SignDetails, it means we will let the Sweeper handle broadcasting
+	// the secondd-level transaction, and sweeping its output. In this case
+	// we let this field indicate whether we need to broadcast the
+	// second-level tx (false) or if it has confirmed and we must sweep the
+	// second-level output (true).
 	outputIncubating bool
 
 	// resolved reflects if the contract has been fully resolved or not.
@@ -51,6 +58,15 @@ type htlcSuccessResolver struct {
 	// htlc contains information on the htlc that we are resolving on-chain.
 	htlc channeldb.HTLC
 
+	// currentReport stores the current state of the resolver for reporting
+	// over the rpc interface. This should only be reported in case we have
+	// a non-nil SignDetails on the htlcResolution, otherwise the nursery
+	// will produce reports.
+	currentReport ContractReport
+
+	// reportLock prevents concurrent access to the resolver report.
+	reportLock sync.Mutex
+
 	contractResolverKit
 }
 
@@ -59,11 +75,30 @@ func newSuccessResolver(res lnwallet.IncomingHtlcResolution,
 	broadcastHeight uint32, htlc channeldb.HTLC,
 	resCfg ResolverConfig) *htlcSuccessResolver {
 
+	// We create the initial report. This will only be reported for
+	// resolvers not handled by the nursery.
+	finalAmt := htlc.Amt.ToSatoshis()
+	if res.SignedSuccessTx != nil {
+		finalAmt = btcutil.Amount(
+			res.SignedSuccessTx.TxOut[0].Value,
+		)
+	}
+
+	contract := ContractReport{
+		Outpoint:       res.ClaimOutpoint,
+		Type:           ReportOutputIncomingHtlc,
+		Amount:         finalAmt,
+		MaturityHeight: res.CsvDelay,
+		LimboBalance:   finalAmt,
+		Stage:          1,
+	}
+
 	return &htlcSuccessResolver{
 		contractResolverKit: *newContractResolverKit(resCfg),
 		htlcResolution:      res,
 		broadcastHeight:     broadcastHeight,
 		htlc:                htlc,
+		currentReport:       contract,
 	}
 }
 
@@ -154,6 +189,11 @@ func (h *htlcSuccessResolver) Resolve() (ContractResolver, error) {
 		return nil, err
 	}
 
+	h.reportLock.Lock()
+	h.currentReport.RecoveredBalance = h.currentReport.LimboBalance
+	h.currentReport.LimboBalance = 0
+	h.reportLock.Unlock()
+
 	h.resolved = true
 	return nil, h.checkpointClaim(
 		spend.SpenderTxHash, channeldb.ResolverOutcomeClaimed,
@@ -165,6 +205,18 @@ func (h *htlcSuccessResolver) Resolve() (ContractResolver, error) {
 // outpoint of the second-level tx, that we must wait to be spent for the
 // resolver to be fully resolved.
 func (h *htlcSuccessResolver) broadcastSuccessTx() (*wire.OutPoint, error) {
+	// If we have non-nil SignDetails, this means that have a 2nd level
+	// HTLC transaction that is signed using sighash SINGLE|ANYONECANPAY
+	// (the case for anchor type channels). In this case we can re-sign it
+	// and attach fees at will. We let the sweeper handle this job.
+	// We use the checkpointed outputIncubating field to determine if we
+	// already swept the HTLC output into the second level transaction.
+	if h.htlcResolution.SignDetails != nil {
+		return h.broadcastReSignedSuccessTx()
+	}
+
+	// Otherwise we'll publish the second-level transaction directly and
+	// offer the resolution to the nursery to handle.
 	log.Infof("%T(%x): broadcasting second-layer transition tx: %v",
 		h, h.htlc.RHash[:], spew.Sdump(h.htlcResolution.SignedSuccessTx))
 
@@ -204,6 +256,148 @@ func (h *htlcSuccessResolver) broadcastSuccessTx() (*wire.OutPoint, error) {
 	}
 
 	return &h.htlcResolution.ClaimOutpoint, nil
+}
+
+// broadcastReSignedSuccessTx handles the case where we have non-nil
+// SignDetails, and offers the second level transaction to the Sweeper, that
+// will re-sign it and attach fees at will.
+func (h *htlcSuccessResolver) broadcastReSignedSuccessTx() (
+	*wire.OutPoint, error) {
+
+	// Keep track of the tx spending the HTLC output on the commitment, as
+	// this will be the confirmed second-level tx we'll ultimately sweep.
+	var commitSpend *chainntnfs.SpendDetail
+
+	// We will have to let the sweeper re-sign the success tx and wait for
+	// it to confirm, if we haven't already.
+	if !h.outputIncubating {
+		log.Infof("%T(%x): offering second-layer transition tx to "+
+			"sweeper: %v", h, h.htlc.RHash[:],
+			spew.Sdump(h.htlcResolution.SignedSuccessTx))
+
+		secondLevelInput := input.MakeHtlcSecondLevelSuccessAnchorInput(
+			h.htlcResolution.SignedSuccessTx,
+			h.htlcResolution.SignDetails, h.htlcResolution.Preimage,
+			h.broadcastHeight,
+		)
+		_, err := h.Sweeper.SweepInput(
+			&secondLevelInput,
+			sweep.Params{
+				Fee: sweep.FeePreference{
+					ConfTarget: secondLevelConfTarget,
+				},
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		log.Infof("%T(%x): waiting for second-level HTLC success "+
+			"transaction to confirm", h, h.htlc.RHash[:])
+
+		// Wait for the second level transaction to confirm.
+		commitSpend, err = h.waitForSpend(
+			&h.htlcResolution.SignedSuccessTx.TxIn[0].PreviousOutPoint,
+			h.htlcResolution.SignDetails.SignDesc.Output.PkScript,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Now that the second-level transaction has confirmed, we
+		// checkoint the state so we'll go to the next stage in case of
+		// restarts.
+		h.outputIncubating = true
+		if err := h.Checkpoint(h); err != nil {
+			log.Errorf("unable to Checkpoint: %v", err)
+			return nil, err
+		}
+
+		log.Infof("%T(%x): second-level HTLC success transaction "+
+			"confirmed!", h, h.htlc.RHash[:])
+	}
+
+	// Now that the sweeper has broadcasted the second-level transaction,
+	// it has confirmed, and we have checkpointed our state, we'll sweep
+	// the second level output. We report the resolver has moved the next
+	// stage.
+	h.reportLock.Lock()
+	h.currentReport.Stage = 2
+	h.reportLock.Unlock()
+
+	// If we ended up here after a restart, we must again get the
+	// spend notification.
+	if commitSpend == nil {
+		var err error
+		commitSpend, err = h.waitForSpend(
+			&h.htlcResolution.SignedSuccessTx.TxIn[0].PreviousOutPoint,
+			h.htlcResolution.SignDetails.SignDesc.Output.PkScript,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// The HTLC success tx has a CSV lock that we must wait for.
+	waitHeight := uint32(commitSpend.SpendingHeight) +
+		h.htlcResolution.CsvDelay - 1
+
+	log.Infof("%T(%x): waiting for CSV lock to expire at height %v",
+		h, h.htlc.RHash[:], waitHeight)
+
+	err := waitForHeight(waitHeight, h.Notifier, h.quit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find the input index of the second-level spend, as the sweeper
+	// might have re-arranged inputs and outputs.
+	prevOutPoint := h.htlcResolution.SignedSuccessTx.TxIn[0].PreviousOutPoint
+	ok, index := input.FindInputIndex(
+		commitSpend.SpendingTx, prevOutPoint,
+	)
+	if !ok {
+		err := fmt.Errorf("unable to find second-level "+
+			"input %v on spending tx %v", prevOutPoint,
+			commitSpend.SpenderTxHash)
+		log.Error(err)
+		return nil, err
+	}
+
+	// We'll use this input index to determine the second-level output
+	// index on the transaction, as the signatures requires the indexes to
+	// be the same. We don't look for the second-level output script
+	// directly, as there might be more than one HTLC output to the same
+	// pkScript.
+	op := &wire.OutPoint{
+		Hash:  *commitSpend.SpenderTxHash,
+		Index: index,
+	}
+
+	// Finally, let the sweeper sweep the second-level output.
+	log.Infof("%T(%x): CSV lock expired, offering second-layer "+
+		"output to sweeper: %v", h, h.htlc.RHash[:], op)
+
+	inp := input.NewCsvInput(
+		op, input.HtlcAcceptedSuccessSecondLevel,
+		&h.htlcResolution.SweepSignDesc, h.broadcastHeight,
+		h.htlcResolution.CsvDelay,
+	)
+	_, err = h.Sweeper.SweepInput(
+		inp,
+		sweep.Params{
+			Fee: sweep.FeePreference{
+				ConfTarget: sweepConfTarget,
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Will return this outpoint, when this is spent the resolver is fully
+	// resolved.
+	return op, nil
 }
 
 // resolveRemoteCommitOutput handles sweeping an HTLC output on the remote
@@ -362,6 +556,20 @@ func (h *htlcSuccessResolver) Stop() {
 // NOTE: Part of the ContractResolver interface.
 func (h *htlcSuccessResolver) IsResolved() bool {
 	return h.resolved
+}
+
+// report returns a report on the resolution state of the contract.
+func (h *htlcSuccessResolver) report() *ContractReport {
+	// If the sign details are nil, the report will be created by handled
+	// by the nursery.
+	if h.htlcResolution.SignDetails == nil {
+		return nil
+	}
+
+	h.reportLock.Lock()
+	defer h.reportLock.Unlock()
+	copy := h.currentReport
+	return &copy
 }
 
 // Encode writes an encoded version of the ContractResolver into the passed

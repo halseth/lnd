@@ -142,6 +142,21 @@ func FindScriptOutputIndex(tx *wire.MsgTx, script []byte) (bool, uint32) {
 	return found, index
 }
 
+// FindInputIndex finds the index of the input spending the given outpoint.
+// Additionally, a boolean is returned indicating if a matching input was found
+// at all.
+//
+// NOTE: The search stops after the first matching input is found.
+func FindInputIndex(tx *wire.MsgTx, op wire.OutPoint) (bool, uint32) {
+	for i, txIn := range tx.TxIn {
+		if txIn.PreviousOutPoint == op {
+			return true, uint32(i)
+		}
+	}
+
+	return false, 0
+}
+
 // Ripemd160H calculates the ripemd160 of the passed byte slice. This is used to
 // calculate the intermediate hash for payment pre-images. Payment hashes are
 // the result of ripemd160(sha256(paymentPreimage)). As a result, the value

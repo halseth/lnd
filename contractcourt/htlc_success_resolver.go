@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/labels"
@@ -84,6 +85,31 @@ func (h *htlcSuccessResolver) ResolverKey() []byte {
 
 	key := newResolverID(op)
 	return key[:]
+}
+
+// waitForSpend waits for the given outpoint to be spent, and returns the
+// details of the spending tx.
+func (h *htlcSuccessResolver) waitForSpend(op *wire.OutPoint,
+	pkScript []byte) (*chainntnfs.SpendDetail, error) {
+
+	spendNtfn, err := h.Notifier.RegisterSpendNtfn(
+		op, pkScript, h.broadcastHeight,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	select {
+	case spendDetail, ok := <-spendNtfn.Spend:
+		if !ok {
+			return nil, errResolverShuttingDown
+		}
+
+		return spendDetail, nil
+
+	case <-h.quit:
+		return nil, errResolverShuttingDown
+	}
 }
 
 // Resolve attempts to resolve an unresolved incoming HTLC that we know the
@@ -243,33 +269,20 @@ func (h *htlcSuccessResolver) Resolve() (ContractResolver, error) {
 
 	// To wrap this up, we'll wait until the second-level transaction has
 	// been spent, then fully resolve the contract.
-	spendNtfn, err := h.Notifier.RegisterSpendNtfn(
+	log.Infof("%T(%x): waiting for second-level HTLC output to be spent "+
+		"after csv_delay=%v", h, h.htlc.RHash[:], h.htlcResolution.CsvDelay)
+
+	spend, err := h.waitForSpend(
 		&h.htlcResolution.ClaimOutpoint,
 		h.htlcResolution.SweepSignDesc.Output.PkScript,
-		h.broadcastHeight,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Infof("%T(%x): waiting for second-level HTLC output to be spent "+
-		"after csv_delay=%v", h, h.htlc.RHash[:], h.htlcResolution.CsvDelay)
-
-	var spendTxid *chainhash.Hash
-	select {
-	case spend, ok := <-spendNtfn.Spend:
-		if !ok {
-			return nil, errResolverShuttingDown
-		}
-		spendTxid = spend.SpenderTxHash
-
-	case <-h.quit:
-		return nil, errResolverShuttingDown
-	}
-
 	h.resolved = true
 	return nil, h.checkpointClaim(
-		spendTxid, channeldb.ResolverOutcomeClaimed,
+		spend.SpenderTxHash, channeldb.ResolverOutcomeClaimed,
 	)
 }
 

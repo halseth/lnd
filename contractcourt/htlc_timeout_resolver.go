@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -14,6 +15,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/sweep"
 )
 
 // htlcTimeoutResolver is a ContractResolver that's capable of resolving an
@@ -45,6 +47,15 @@ type htlcTimeoutResolver struct {
 	// htlc contains information on the htlc that we are resolving on-chain.
 	htlc channeldb.HTLC
 
+	// currentReport stores the current state of the resolver for reporting
+	// over the rpc interface. This should only be reported in case we have
+	// a non-nil SignDetails on the htlcResolution, otherwise the nursery
+	// will produce reports.
+	currentReport ContractReport
+
+	// reportLock prevents concurrent access to the resolver report.
+	reportLock sync.Mutex
+
 	contractResolverKit
 }
 
@@ -53,11 +64,30 @@ func newTimeoutResolver(res lnwallet.OutgoingHtlcResolution,
 	broadcastHeight uint32, htlc channeldb.HTLC,
 	resCfg ResolverConfig) *htlcTimeoutResolver {
 
+	// We create the initial report. This will only be reported for
+	// resolvers not handled by the nursery.
+	finalAmt := htlc.Amt.ToSatoshis()
+	if res.SignedTimeoutTx != nil {
+		finalAmt = btcutil.Amount(
+			res.SignedTimeoutTx.TxOut[0].Value,
+		)
+	}
+
+	contract := ContractReport{
+		Outpoint:       res.ClaimOutpoint,
+		Type:           ReportOutputOutgoingHtlc,
+		Amount:         finalAmt,
+		MaturityHeight: res.Expiry,
+		LimboBalance:   finalAmt,
+		Stage:          1,
+	}
+
 	return &htlcTimeoutResolver{
 		contractResolverKit: *newContractResolverKit(resCfg),
 		htlcResolution:      res,
 		broadcastHeight:     broadcastHeight,
 		htlc:                htlc,
+		currentReport:       contract,
 	}
 }
 
@@ -312,7 +342,9 @@ func (h *htlcTimeoutResolver) Resolve() (ContractResolver, error) {
 		return nil, err
 	}
 
-	return h.sweepSecondLevelTransaction(commitSpend)
+	// Depending on whether this was a local or remote commit, we must
+	// handle the spending transaction accordingly.
+	return h.handleCommitSpend(commitSpend)
 }
 
 // spendHtlcOutput handles the initial spend of an HTLC output via the timeout
@@ -321,9 +353,37 @@ func (h *htlcTimeoutResolver) Resolve() (ContractResolver, error) {
 // commitment, the output will be swept directly without the timeout
 // transaction.
 func (h *htlcTimeoutResolver) spendHtlcOutput() (*chainntnfs.SpendDetail, error) {
-	// If we haven't already sent the output to the utxo nursery, then
-	// we'll do so now.
-	if !h.outputIncubating {
+	switch {
+
+	// If we have non-nil SignDetails, this means that have a 2nd level
+	// HTLC transaction that is signed using sighash SINGLE|ANYONECANPAY
+	// (the case for anchor type channels). In this case we can re-sign it
+	// and attach fees at will. We let the sweeper handle this job.
+	case h.htlcResolution.SignDetails != nil && !h.outputIncubating:
+		log.Infof("%T(%x): offering second-layer timeout tx to "+
+			"sweeper: %v", h, h.htlc.RHash[:],
+			spew.Sdump(h.htlcResolution.SignedTimeoutTx))
+
+		inp := input.MakeHtlcSecondLevelTimeoutAnchorInput(
+			h.htlcResolution.SignedTimeoutTx,
+			h.htlcResolution.SignDetails,
+			h.broadcastHeight,
+		)
+		_, err := h.Sweeper.SweepInput(
+			&inp,
+			sweep.Params{
+				Fee: sweep.FeePreference{
+					ConfTarget: secondLevelConfTarget,
+				},
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	// If we have no SignDetails, and we haven't already sent the output to
+	// the utxo nursery, then we'll do so now.
+	case h.htlcResolution.SignDetails == nil && !h.outputIncubating:
 		log.Tracef("%T(%v): incubating htlc output", h,
 			h.htlcResolution.ClaimOutpoint)
 
@@ -343,10 +403,10 @@ func (h *htlcTimeoutResolver) spendHtlcOutput() (*chainntnfs.SpendDetail, error)
 		}
 	}
 
-	// Now that we've handed off the HTLC to the nursery, we'll watch for a
-	// spend of the output, and make our next move off of that. Depending
-	// on if this is our commitment, or the remote party's commitment,
-	// we'll be watching a different outpoint and script.
+	// Now that we've handed off the HTLC to the nursery or sweeper, we'll
+	// watch for a spend of the output, and make our next move off of that.
+	// Depending on if this is our commitment, or the remote party's
+	// commitment, we'll be watching a different outpoint and script.
 	outpointToWatch, scriptToWatch, err := h.chainDetailsToWatch()
 	if err != nil {
 		return nil, err
@@ -365,16 +425,35 @@ func (h *htlcTimeoutResolver) spendHtlcOutput() (*chainntnfs.SpendDetail, error)
 		return nil, err
 	}
 
+	// If this was the second level transaction published by the sweeper,
+	// we can checkpoint the resolver now that it's confirmed.
+	if h.htlcResolution.SignDetails != nil {
+		h.outputIncubating = true
+		if err := h.Checkpoint(h); err != nil {
+			log.Errorf("unable to Checkpoint: %v", err)
+			return nil, err
+		}
+	}
+
 	return spend, err
 }
 
-// sweepSecondLevelTransaction sweeps the output of the confirmed second-level
-// timeout transaction into our wallet. The given SpendDetail should be the
-// confirmed timeout tx spending the HTLC output on the commitment tx.
-func (h *htlcTimeoutResolver) sweepSecondLevelTransaction(
+// handleCommitSpend handles the spend of the HTLC output on the commitment
+// transaction. If this was our local commitment, the spend will be he
+// confirmed second-level timeout transaction, and we'll sweep that into our
+// wallet. If the was a remote commitment, the resolver will resolve
+// immetiately.
+func (h *htlcTimeoutResolver) handleCommitSpend(
 	commitSpend *chainntnfs.SpendDetail) (ContractResolver, error) {
 
 	var (
+		// claimOutpoint will be the outpoint of the second level
+		// transaction, or on the remote commitment directly. It will
+		// start out as set in the resolution, but we'll update it if
+		// the second-level goes through the sweeper and changes its
+		// txid.
+		claimOutpoint = h.htlcResolution.ClaimOutpoint
+
 		// spendTxID will be the ultimate spend of the claimOutpoint.
 		// We set it to the commit spend for now, as this is the
 		// ultimate spend in case this is a remote commitment. If we go
@@ -385,14 +464,82 @@ func (h *htlcTimeoutResolver) sweepSecondLevelTransaction(
 		reports []*channeldb.ResolverReport
 	)
 
+	switch {
+
+	// If the sweeper is handling the second level transaction, wait for
+	// the CSV lock to expire, before sweeping the output on the
+	// second-level.
+	case h.htlcResolution.SignDetails != nil:
+		h.reportLock.Lock()
+		h.currentReport.Stage = 2
+		h.reportLock.Unlock()
+
+		waitHeight := uint32(commitSpend.SpendingHeight) +
+			h.htlcResolution.CsvDelay - 1
+
+		log.Infof("%T(%x): waiting for CSV lock to expire at height %v",
+			h, h.htlc.RHash[:], waitHeight)
+
+		err := waitForHeight(waitHeight, h.Notifier, h.quit)
+		if err != nil {
+			return nil, err
+		}
+
+		// Find output index of the second-level, as the sweeper might
+		// have re-arranged outputs.
+		pkScript := h.htlcResolution.SignedTimeoutTx.TxOut[0].PkScript
+		ok, index := input.FindScriptOutputIndex(
+			commitSpend.SpendingTx, pkScript,
+		)
+		if !ok {
+			err := fmt.Errorf("unable to find second-level "+
+				"output script %x on spending tx %v", pkScript,
+				commitSpend.SpenderTxHash)
+			log.Error(err)
+			return nil, err
+		}
+
+		op := &wire.OutPoint{
+			Hash:  *commitSpend.SpenderTxHash,
+			Index: index,
+		}
+
+		// Let the sweeper sweep the second-level output now that the
+		// CSV delay has passed.
+		log.Infof("%T(%x): CSV lock expired, offering second-layer "+
+			"output to sweeper: %v", h, h.htlc.RHash[:], op)
+
+		inp := input.NewCsvInput(
+			op, input.HtlcOfferedTimeoutSecondLevel,
+			&h.htlcResolution.SweepSignDesc,
+			h.broadcastHeight,
+			h.htlcResolution.CsvDelay,
+		)
+		_, err = h.Sweeper.SweepInput(
+			inp,
+			sweep.Params{
+				Fee: sweep.FeePreference{
+					ConfTarget: sweepConfTarget,
+				},
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Update the claim outpoint to point to the second-level
+		// transaction created by the sweeper.
+		claimOutpoint = *op
+		fallthrough
+
 	// Finally, if this was an output on our commitment transaction, we'll
 	// wait for the second-level HTLC output to be spent, and for that
 	// transaction itself to confirm.
-	if h.htlcResolution.SignedTimeoutTx != nil {
-		log.Infof("%T(%v): waiting for nursery to spend CSV delayed "+
-			"output", h, h.htlcResolution.ClaimOutpoint)
+	case h.htlcResolution.SignedTimeoutTx != nil:
+		log.Infof("%T(%v): waiting for nursery/sweeper to spend CSV "+
+			"delayed output", h, claimOutpoint)
 		sweep, err := h.waitForSpend(
-			&h.htlcResolution.ClaimOutpoint,
+			&claimOutpoint,
 			h.htlcResolution.SweepSignDesc.Output.PkScript,
 		)
 		if err != nil {
@@ -417,12 +564,17 @@ func (h *htlcTimeoutResolver) sweepSecondLevelTransaction(
 	}
 
 	// With the clean up message sent, we'll now mark the contract
-	// resolved, record the timeout and the sweep txid on disk, and wait.
+	// resolved, update the recovered balance, record the timeout and the
+	// sweep txid on disk, and wait.
 	h.resolved = true
+	h.reportLock.Lock()
+	h.currentReport.RecoveredBalance = h.currentReport.LimboBalance
+	h.currentReport.LimboBalance = 0
+	h.reportLock.Unlock()
 
 	amt := btcutil.Amount(h.htlcResolution.SweepSignDesc.Output.Value)
 	reports = append(reports, &channeldb.ResolverReport{
-		OutPoint:        h.htlcResolution.ClaimOutpoint,
+		OutPoint:        claimOutpoint,
 		Amount:          amt,
 		ResolverType:    channeldb.ResolverTypeOutgoingHtlc,
 		ResolverOutcome: channeldb.ResolverOutcomeTimeout,
@@ -446,6 +598,20 @@ func (h *htlcTimeoutResolver) Stop() {
 // NOTE: Part of the ContractResolver interface.
 func (h *htlcTimeoutResolver) IsResolved() bool {
 	return h.resolved
+}
+
+// report returns a report on the resolution state of the contract.
+func (h *htlcTimeoutResolver) report() *ContractReport {
+	// If the sign details are nil, the report will be created by handled
+	// by the nursery.
+	if h.htlcResolution.SignDetails == nil {
+		return nil
+	}
+
+	h.reportLock.Lock()
+	defer h.reportLock.Unlock()
+	copy := h.currentReport
+	return &copy
 }
 
 // Encode writes an encoded version of the ContractResolver into the passed

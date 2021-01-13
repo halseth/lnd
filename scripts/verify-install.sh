@@ -1,6 +1,6 @@
 #!/bin/bash
 
-REPO=lightningnetwork
+REPO=guggero
 PROJECT=lnd
 
 RELEASE_URL=https://github.com/$REPO/$PROJECT/releases

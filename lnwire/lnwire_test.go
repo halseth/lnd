@@ -366,15 +366,24 @@ func TestLightningWireProtocol(t *testing.T) {
 			}
 
 			// 1/2 chance empty upfront shutdown script.
+			var shutdownScript DeliveryAddress
 			if r.Intn(2) == 0 {
-				req.UpfrontShutdownScript, err = randDeliveryAddress(r)
+				shutdownScript, err = randDeliveryAddress(r)
 				if err != nil {
 					t.Fatalf("unable to generate delivery address: %v", err)
 					return
 				}
 			} else {
-				req.UpfrontShutdownScript = []byte{}
+				shutdownScript = []byte{}
 			}
+
+			var extraData ExtraOpaqueData
+			err = extraData.PackRecords(shutdownScript.NewRecord())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req.ExtraData = extraData
 
 			v[0] = reflect.ValueOf(req)
 		},
@@ -427,15 +436,24 @@ func TestLightningWireProtocol(t *testing.T) {
 			}
 
 			// 1/2 chance empty upfront shutdown script.
+			var shutdownScript DeliveryAddress
 			if r.Intn(2) == 0 {
-				req.UpfrontShutdownScript, err = randDeliveryAddress(r)
+				shutdownScript, err = randDeliveryAddress(r)
 				if err != nil {
 					t.Fatalf("unable to generate delivery address: %v", err)
 					return
 				}
 			} else {
-				req.UpfrontShutdownScript = []byte{}
+				shutdownScript = []byte{}
 			}
+
+			var extraData ExtraOpaqueData
+			err = extraData.PackRecords(shutdownScript.NewRecord())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req.ExtraData = extraData
 
 			v[0] = reflect.ValueOf(req)
 		},

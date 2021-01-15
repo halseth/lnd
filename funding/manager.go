@@ -1388,10 +1388,29 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	}
 	reservation.SetOurUpfrontShutdown(shutdown)
 
+	// Pack it into the ExtraData of the message as a TLV record.
+	var extraData lnwire.ExtraOpaqueData
+	err = extraData.PackRecords(shutdown.NewRecord())
+	if err != nil {
+		log.Errorf("unable to pack upfront shutdown script as TLV "+
+			"record: %v", err)
+		f.failFundingFlow(peer, msg.PendingChannelID, err)
+		return
+	}
+
+	// Get the remote's upfront shutdown script from the message if any.
+	remoteShutdownScript, err := msg.UpfrontShutdownScript()
+	if err != nil {
+		log.Errorf("unable to extract upfront shutdown "+
+			"script from remote message:: %v", err)
+		f.failFundingFlow(peer, msg.PendingChannelID, err)
+		return
+	}
+
 	log.Infof("Requiring %v confirmations for pendingChan(%x): "+
 		"amt=%v, push_amt=%v, committype=%v, upfrontShutdown=%x", numConfsReq,
 		msg.PendingChannelID, amt, msg.PushAmount,
-		commitType, msg.UpfrontShutdownScript)
+		commitType, remoteShutdownScript)
 
 	// Generate our required constraints for the remote party, using the
 	// values provided by the channel acceptor if they are non-zero.
@@ -1476,7 +1495,7 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 				PubKey: copyPubKey(msg.HtlcPoint),
 			},
 		},
-		UpfrontShutdown: msg.UpfrontShutdownScript,
+		UpfrontShutdown: remoteShutdownScript,
 	}
 	err = reservation.ProcessSingleContribution(remoteContribution)
 	if err != nil {
@@ -1494,21 +1513,21 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	// contribution in the next message of the workflow.
 	ourContribution := reservation.OurContribution()
 	fundingAccept := lnwire.AcceptChannel{
-		PendingChannelID:      msg.PendingChannelID,
-		DustLimit:             ourContribution.DustLimit,
-		MaxValueInFlight:      remoteMaxValue,
-		ChannelReserve:        chanReserve,
-		MinAcceptDepth:        uint32(numConfsReq),
-		HtlcMinimum:           minHtlc,
-		CsvDelay:              remoteCsvDelay,
-		MaxAcceptedHTLCs:      maxHtlcs,
-		FundingKey:            ourContribution.MultiSigKey.PubKey,
-		RevocationPoint:       ourContribution.RevocationBasePoint.PubKey,
-		PaymentPoint:          ourContribution.PaymentBasePoint.PubKey,
-		DelayedPaymentPoint:   ourContribution.DelayBasePoint.PubKey,
-		HtlcPoint:             ourContribution.HtlcBasePoint.PubKey,
-		FirstCommitmentPoint:  ourContribution.FirstCommitmentPoint,
-		UpfrontShutdownScript: ourContribution.UpfrontShutdown,
+		PendingChannelID:     msg.PendingChannelID,
+		DustLimit:            ourContribution.DustLimit,
+		MaxValueInFlight:     remoteMaxValue,
+		ChannelReserve:       chanReserve,
+		MinAcceptDepth:       uint32(numConfsReq),
+		HtlcMinimum:          minHtlc,
+		CsvDelay:             remoteCsvDelay,
+		MaxAcceptedHTLCs:     maxHtlcs,
+		FundingKey:           ourContribution.MultiSigKey.PubKey,
+		RevocationPoint:      ourContribution.RevocationBasePoint.PubKey,
+		PaymentPoint:         ourContribution.PaymentBasePoint.PubKey,
+		DelayedPaymentPoint:  ourContribution.DelayBasePoint.PubKey,
+		HtlcPoint:            ourContribution.HtlcBasePoint.PubKey,
+		FirstCommitmentPoint: ourContribution.FirstCommitmentPoint,
+		ExtraData:            extraData,
 	}
 
 	if err := peer.SendMessage(true, &fundingAccept); err != nil {
@@ -1578,6 +1597,14 @@ func (f *Manager) handleFundingAccept(peer lnpeer.Peer,
 	// reservation.
 	chanReserve := f.cfg.RequiredRemoteChanReserve(resCtx.chanAmt, msg.DustLimit)
 
+	// Retrieve the remote's upfront shutdown script, if any.
+	upfrontShutdownScript, err := msg.UpfrontShutdownScript()
+	if err != nil {
+		log.Errorf("Unable to extract upfront shutdown script: %v", err)
+		f.failFundingFlow(peer, msg.PendingChannelID, err)
+		return
+	}
+
 	// The remote node has responded with their portion of the channel
 	// contribution. At this point, we can process their contribution which
 	// allows us to construct and sign both the commitment transaction, and
@@ -1609,7 +1636,7 @@ func (f *Manager) handleFundingAccept(peer lnpeer.Peer,
 				PubKey: copyPubKey(msg.HtlcPoint),
 			},
 		},
-		UpfrontShutdown: msg.UpfrontShutdownScript,
+		UpfrontShutdown: upfrontShutdownScript,
 	}
 	err = resCtx.reservation.ProcessContribution(remoteContribution)
 
@@ -3165,6 +3192,16 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		return
 	}
 
+	// Pack the shutdown script within the message's ExtraData.
+	var extraData lnwire.ExtraOpaqueData
+	err = extraData.PackRecords(shutdown.NewRecord())
+	if err != nil {
+		log.Errorf("Unable to pack shutdown script in ExtraData: %v",
+			err)
+		msg.Err <- err
+		return
+	}
+
 	// Initialize a funding reservation with the local wallet. If the
 	// wallet doesn't have enough funds to commit to this channel, then the
 	// request will fail, and be aborted.
@@ -3290,25 +3327,25 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		"committype=%v", msg.Peer.Address(), chanID, commitType)
 
 	fundingOpen := lnwire.OpenChannel{
-		ChainHash:             *f.cfg.Wallet.Cfg.NetParams.GenesisHash,
-		PendingChannelID:      chanID,
-		FundingAmount:         capacity,
-		PushAmount:            msg.PushAmt,
-		DustLimit:             ourContribution.DustLimit,
-		MaxValueInFlight:      maxValue,
-		ChannelReserve:        chanReserve,
-		HtlcMinimum:           minHtlcIn,
-		FeePerKiloWeight:      uint32(commitFeePerKw),
-		CsvDelay:              remoteCsvDelay,
-		MaxAcceptedHTLCs:      maxHtlcs,
-		FundingKey:            ourContribution.MultiSigKey.PubKey,
-		RevocationPoint:       ourContribution.RevocationBasePoint.PubKey,
-		PaymentPoint:          ourContribution.PaymentBasePoint.PubKey,
-		HtlcPoint:             ourContribution.HtlcBasePoint.PubKey,
-		DelayedPaymentPoint:   ourContribution.DelayBasePoint.PubKey,
-		FirstCommitmentPoint:  ourContribution.FirstCommitmentPoint,
-		ChannelFlags:          channelFlags,
-		UpfrontShutdownScript: shutdown,
+		ChainHash:            *f.cfg.Wallet.Cfg.NetParams.GenesisHash,
+		PendingChannelID:     chanID,
+		FundingAmount:        capacity,
+		PushAmount:           msg.PushAmt,
+		DustLimit:            ourContribution.DustLimit,
+		MaxValueInFlight:     maxValue,
+		ChannelReserve:       chanReserve,
+		HtlcMinimum:          minHtlcIn,
+		FeePerKiloWeight:     uint32(commitFeePerKw),
+		CsvDelay:             remoteCsvDelay,
+		MaxAcceptedHTLCs:     maxHtlcs,
+		FundingKey:           ourContribution.MultiSigKey.PubKey,
+		RevocationPoint:      ourContribution.RevocationBasePoint.PubKey,
+		PaymentPoint:         ourContribution.PaymentBasePoint.PubKey,
+		HtlcPoint:            ourContribution.HtlcBasePoint.PubKey,
+		DelayedPaymentPoint:  ourContribution.DelayBasePoint.PubKey,
+		FirstCommitmentPoint: ourContribution.FirstCommitmentPoint,
+		ChannelFlags:         channelFlags,
+		ExtraData:            extraData,
 	}
 	if err := msg.Peer.SendMessage(true, &fundingOpen); err != nil {
 		e := fmt.Errorf("unable to send funding request message: %v",

@@ -38,15 +38,21 @@ func TestDecodeAcceptChannel(t *testing.T) {
 			}
 			pk := priv.PubKey()
 
+			var extraData ExtraOpaqueData
+			err = extraData.PackRecords(test.shutdownScript.NewRecord())
+			if err != nil {
+				t.Fatal(err)
+			}
+
 			encoded := &AcceptChannel{
-				PendingChannelID:      [32]byte{},
-				FundingKey:            pk,
-				RevocationPoint:       pk,
-				PaymentPoint:          pk,
-				DelayedPaymentPoint:   pk,
-				HtlcPoint:             pk,
-				FirstCommitmentPoint:  pk,
-				UpfrontShutdownScript: test.shutdownScript,
+				PendingChannelID:     [32]byte{},
+				FundingKey:           pk,
+				RevocationPoint:      pk,
+				PaymentPoint:         pk,
+				DelayedPaymentPoint:  pk,
+				HtlcPoint:            pk,
+				FirstCommitmentPoint: pk,
+				ExtraData:            extraData,
 			}
 
 			buf := &bytes.Buffer{}
@@ -60,11 +66,20 @@ func TestDecodeAcceptChannel(t *testing.T) {
 			}
 
 			decoded := msg.(*AcceptChannel)
-			if !bytes.Equal(
-				decoded.UpfrontShutdownScript, encoded.UpfrontShutdownScript,
-			) {
+
+			addr1, err := decoded.UpfrontShutdownScript()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			addr2, err := encoded.UpfrontShutdownScript()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(addr1, addr2) {
 				t.Fatalf("decoded script: %x does not equal encoded script: %x",
-					decoded.UpfrontShutdownScript, encoded.UpfrontShutdownScript)
+					addr1, addr2)
 			}
 		})
 	}

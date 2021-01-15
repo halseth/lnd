@@ -123,11 +123,10 @@ type OpenChannel struct {
 	// initiator of the channel wishes to advertise this channel publicly.
 	ChannelFlags FundingFlag
 
-	// UpfrontShutdownScript is the script to which the channel funds should
-	// be paid when mutually closing the channel. This field is optional, and
-	// and has a length prefix, so a zero will be written if it is not set
-	// and its length followed by the script will be written if it is set.
-	UpfrontShutdownScript DeliveryAddress
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // A compile time check to ensure OpenChannel implements the lnwire.Message
@@ -159,7 +158,7 @@ func (o *OpenChannel) Encode(w io.Writer, pver uint32) error {
 		o.HtlcPoint,
 		o.FirstCommitmentPoint,
 		o.ChannelFlags,
-		o.UpfrontShutdownScript,
+		o.ExtraData,
 	)
 }
 
@@ -169,7 +168,7 @@ func (o *OpenChannel) Encode(w io.Writer, pver uint32) error {
 //
 // This is part of the lnwire.Message interface.
 func (o *OpenChannel) Decode(r io.Reader, pver uint32) error {
-	if err := ReadElements(r,
+	return ReadElements(r,
 		o.ChainHash[:],
 		o.PendingChannelID[:],
 		&o.FundingAmount,
@@ -188,18 +187,28 @@ func (o *OpenChannel) Decode(r io.Reader, pver uint32) error {
 		&o.HtlcPoint,
 		&o.FirstCommitmentPoint,
 		&o.ChannelFlags,
-	); err != nil {
-		return err
+		&o.ExtraData,
+	)
+}
+
+// UpfrontShutdownScript is the script to which the channel funds should be
+// paid when mutually closing the channel. This field is optional, and and has
+// a length prefix, so a zero will be written if it is not set and its length
+// followed by the script will be written if it is set.
+func (o *OpenChannel) UpfrontShutdownScript() (DeliveryAddress, error) {
+	var addr DeliveryAddress
+
+	tlvs, err := o.ExtraData.ExtractRecords(addr.NewRecord())
+	if err != nil {
+		return nil, err
 	}
 
-	// Check for the optional upfront shutdown script field. If it is not there,
-	// silence the EOF error.
-	err := ReadElement(r, &o.UpfrontShutdownScript)
-	if err != nil && err != io.EOF {
-		return err
+	// Not among TLV records, return nil.
+	if _, ok := tlvs[DeliveryAddrType]; !ok {
+		return nil, nil
 	}
 
-	return nil
+	return addr, nil
 }
 
 // MsgType returns the MessageType code which uniquely identifies this message
@@ -215,11 +224,5 @@ func (o *OpenChannel) MsgType() MessageType {
 //
 // This is part of the lnwire.Message interface.
 func (o *OpenChannel) MaxPayloadLength(uint32) uint32 {
-	// (32 * 2) + (8 * 6) + (4 * 1) + (2 * 2) + (33 * 6) + 1
-	var length uint32 = 319 // base length
-
-	// Upfront shutdown script max length.
-	length += 2 + deliveryAddressMaxSize
-
-	return length
+	return MaxMsgBody
 }

@@ -2,14 +2,19 @@ package migration21
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	lnwire "github.com/lightningnetwork/lnd/channeldb/migration/lnwire21"
+	"github.com/lightningnetwork/lnd/channeldb/migration21/common"
 	"github.com/lightningnetwork/lnd/channeldb/migration21/current"
 	"github.com/lightningnetwork/lnd/channeldb/migration21/legacy"
 )
 
 var (
+	byteOrder = binary.BigEndian
+
 	// openChanBucket stores all the currently open channels. This bucket
 	// has a second, nested bucket which is keyed by a node's ID. Within
 	// that node ID bucket, all attributes required to track, update, and
@@ -34,6 +39,11 @@ var (
 	// for in one of our remote commits.
 	unsignedAckedUpdatesKey = []byte("unsigned-acked-updates-key")
 
+	// remoteUnsignedLocalUpdatesKey is an entry in the channel bucket that
+	// contains the local updates that the remote party has acked, but
+	// has not yet signed for in one of their local commits.
+	remoteUnsignedLocalUpdatesKey = []byte("remote-unsigned-local-updates-key")
+
 	// networkResultStoreBucketKey is used for the root level bucket that
 	// stores the network result for each payment ID.
 	networkResultStoreBucketKey = []byte("network-result-store-bucket")
@@ -41,6 +51,11 @@ var (
 	// closedChannelBucket stores summarization information concerning
 	// previously open, but now closed channels.
 	closedChannelBucket = []byte("closed-chan-bucket")
+
+	// fwdPackagesKey is the root-level bucket that all forwarding packages
+	// are written. This bucket is further subdivided based on the short
+	// channel ID of each channel.
+	fwdPackagesKey = []byte("fwd-packages")
 )
 
 // MigrateDatabaseWireMessages performs a migration in all areas that we
@@ -60,6 +75,12 @@ func MigrateDatabaseWireMessages(tx kvdb.RwTx) error {
 
 	// Next, we'll update all the present close channel summaries as well.
 	if err := migrateCloseChanSummaries(tx); err != nil {
+		return err
+	}
+
+	// We'll migrate forwarding packages, which have log updates as part of
+	// their serialized data.
+	if err := migrateForwardingPackages(tx); err != nil {
 		return err
 	}
 
@@ -177,28 +198,49 @@ func migrateOpenChanBucket(tx kvdb.RwTx) error {
 		// With the commit diff migrated, we'll now check to see if
 		// there're any un-acked updates we need to migrate as well.
 		updateBytes := chanBucket.Get(unsignedAckedUpdatesKey)
-		if updateBytes == nil {
-			return nil
+		if updateBytes != nil {
+			// We have un-acked updates we need to migrate so we'll
+			// decode then re-encode them here using the new
+			// format.
+			legacyUnackedUpdates, err := legacy.DeserializeLogUpdates(
+				bytes.NewReader(updateBytes),
+			)
+			if err != nil {
+				return err
+			}
+
+			var b bytes.Buffer
+			err = current.SerializeLogUpdates(&b, legacyUnackedUpdates)
+			if err != nil {
+				return err
+			}
+
+			err = chanBucket.Put(unsignedAckedUpdatesKey, b.Bytes())
+			if err != nil {
+				return err
+			}
 		}
 
-		// We have un-acked updates we need to migrate so we'll decode
-		// then re-encode them here using the new format.
-		legacyUnackedUpdates, err := legacy.DeserializeLogUpdates(
-			bytes.NewReader(updateBytes),
-		)
-		if err != nil {
-			return err
-		}
+		// Remote unsiged updates as well.
+		updateBytes = chanBucket.Get(remoteUnsignedLocalUpdatesKey)
+		if updateBytes != nil {
+			legacyUnsignedUpdates, err := legacy.DeserializeLogUpdates(
+				bytes.NewReader(updateBytes),
+			)
+			if err != nil {
+				return err
+			}
 
-		var ub bytes.Buffer
-		err = current.SerializeLogUpdates(&ub, legacyUnackedUpdates)
-		if err != nil {
-			return err
-		}
+			var b bytes.Buffer
+			err = current.SerializeLogUpdates(&b, legacyUnsignedUpdates)
+			if err != nil {
+				return err
+			}
 
-		err = chanBucket.Put(unsignedAckedUpdatesKey, ub.Bytes())
-		if err != nil {
-			return err
+			err = chanBucket.Put(remoteUnsignedLocalUpdatesKey, b.Bytes())
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -252,6 +294,49 @@ func migrateCloseChanSummaries(tx kvdb.RwTx) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func migrateForwardingPackages(tx kvdb.RwTx) error {
+	fwdPkgBkt := tx.ReadWriteBucket(fwdPackagesKey)
+
+	// Exit early if bucket is not found.
+	if fwdPkgBkt == nil {
+		return nil
+	}
+
+	// We Go through the bucket and fetches all short channel IDs.
+	var sources []lnwire.ShortChannelID
+	err := fwdPkgBkt.ForEach(func(k, v []byte) error {
+		source := lnwire.NewShortChanIDFromInt(byteOrder.Uint64(k))
+		sources = append(sources, source)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Now load all forwading packages using the legacy encoding.
+	var pkgsToMigrate []*common.FwdPkg
+	for _, source := range sources {
+		packager := legacy.NewChannelPackager(source)
+		fwdPkgs, err := packager.LoadFwdPkgs(tx)
+		if err != nil {
+			return err
+		}
+
+		pkgsToMigrate = append(pkgsToMigrate, fwdPkgs...)
+	}
+
+	// Add back the packages using the current encoding.
+	for _, pkg := range pkgsToMigrate {
+		packager := current.NewChannelPackager(pkg.Source)
+		err := packager.AddFwdPkg(tx, pkg)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

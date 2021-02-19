@@ -123,6 +123,50 @@ var (
 	}
 
 	netResultKey = []byte{3}
+
+	chanID = lnwire.NewChanIDFromOutPoint(&wire.OutPoint{})
+
+	adds = []common.LogUpdate{
+		{
+			LogIndex: 0,
+			UpdateMsg: &lnwire.UpdateAddHTLC{
+				ChanID:      chanID,
+				ID:          1,
+				Amount:      100,
+				Expiry:      1000,
+				PaymentHash: [32]byte{0},
+			},
+		},
+		{
+			LogIndex: 1,
+			UpdateMsg: &lnwire.UpdateAddHTLC{
+				ChanID:      chanID,
+				ID:          1,
+				Amount:      101,
+				Expiry:      1001,
+				PaymentHash: [32]byte{1},
+			},
+		},
+	}
+
+	settleFails = []common.LogUpdate{
+		{
+			LogIndex: 2,
+			UpdateMsg: &lnwire.UpdateFulfillHTLC{
+				ChanID:          chanID,
+				ID:              0,
+				PaymentPreimage: [32]byte{0},
+			},
+		},
+		{
+			LogIndex: 3,
+			UpdateMsg: &lnwire.UpdateFailHTLC{
+				ChanID: chanID,
+				ID:     1,
+				Reason: []byte{},
+			},
+		},
+	}
 )
 
 // TestMigrateDatabaseWireMessages tests that we're able to properly migrate
@@ -182,9 +226,16 @@ func TestMigrateDatabaseWireMessages(t *testing.T) {
 			}
 
 			// We'll re-use the same log updates to insert as a set
-			// of un-acked pending log updateas we well.
+			// of un-acked and unsigned pending log updateas as well.
 			err = chanBucket.Put(
 				unsignedAckedUpdatesKey, logUpdateBuf.Bytes(),
+			)
+			if err != nil {
+				return err
+			}
+
+			err = chanBucket.Put(
+				remoteUnsignedLocalUpdatesKey, logUpdateBuf.Bytes(),
 			)
 			if err != nil {
 				return err
@@ -210,6 +261,17 @@ func TestMigrateDatabaseWireMessages(t *testing.T) {
 			err = closedChanBucket.Put(key[:], summaryBuf.Bytes())
 			if err != nil {
 				return err
+			}
+
+			// Create a few forwarding packages to migrate.
+			for i := uint64(100); i < 200; i++ {
+				shortChanID := lnwire.NewShortChanIDFromInt(i)
+				packager := legacy.NewChannelPackager(shortChanID)
+				fwdPkg := common.NewFwdPkg(shortChanID, 0, adds, settleFails)
+
+				if err := packager.AddFwdPkg(tx, fwdPkg); err != nil {
+					return err
+				}
 			}
 
 			// Finally, we need to insert a sample network result
@@ -288,6 +350,27 @@ func TestMigrateDatabaseWireMessages(t *testing.T) {
 					spew.Sdump(newUpdates))
 			}
 
+			updateBytes = chanBucket.Get(remoteUnsignedLocalUpdatesKey)
+			if updateBytes == nil {
+				return fmt.Errorf("no update bytes found")
+			}
+
+			newUpdates, err = current.DeserializeLogUpdates(
+				bytes.NewReader(updateBytes),
+			)
+			if err != nil {
+				return err
+			}
+
+			if !reflect.DeepEqual(
+				newUpdates, testCommitDiff.LogUpdates,
+			) {
+				return fmt.Errorf("updates mismatch: expected "+
+					"%v, got %v",
+					spew.Sdump(testCommitDiff.LogUpdates),
+					spew.Sdump(newUpdates))
+			}
+
 			// Next, we'll ensure that the inserted close channel
 			// summary bytes also mach up with what we inserted in
 			// the prior step.
@@ -323,6 +406,31 @@ func TestMigrateDatabaseWireMessages(t *testing.T) {
 					"%v, got %v",
 					spew.Sdump(testChanCloseSummary),
 					spew.Sdump(newChanCloseSummary))
+			}
+
+			// Fetch all forwarding packages.
+			for i := uint64(100); i < 200; i++ {
+				shortChanID := lnwire.NewShortChanIDFromInt(i)
+				packager := current.NewChannelPackager(shortChanID)
+
+				fwdPkgs, err := packager.LoadFwdPkgs(tx)
+				if err != nil {
+					return err
+				}
+
+				if len(fwdPkgs) != 1 {
+					return fmt.Errorf("expected 1 pkg")
+				}
+
+				og := common.NewFwdPkg(shortChanID, 0, adds, settleFails)
+
+				// Check that we deserialized the packages correctly.
+				if !reflect.DeepEqual(fwdPkgs[0], og) {
+					return fmt.Errorf("res mismatch: expected "+
+						"%v, got %v",
+						spew.Sdump(fwdPkgs[0]),
+						spew.Sdump(og))
+				}
 			}
 
 			// Finally, we'll check the network results to ensure

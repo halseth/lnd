@@ -13,6 +13,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
@@ -35,6 +37,8 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
@@ -645,10 +649,55 @@ func Main(lisCfg ListenerCfg) error {
 		defer tower.Stop()
 	}
 
+	// Print the channel backups.
+	chanBackup, err := rpcServer.ExportAllChannelBackups(
+		context.Background(), &lnrpc.ChanBackupExportRequest{},
+	)
+	if err == nil {
+		var chanPoints []string
+		for _, chanPoint := range chanBackup.MultiChanBackup.ChanPoints {
+			txid, err := chainhash.NewHash(chanPoint.GetFundingTxidBytes())
+			if err != nil {
+				return err
+			}
+
+			chanPoints = append(chanPoints, wire.OutPoint{
+				Hash:  *txid,
+				Index: chanPoint.OutputIndex,
+			}.String())
+		}
+
+		printJSON(struct {
+			ChanPoints      []string `json:"chan_points"`
+			MultiChanBackup string   `json:"multi_chan_backup"`
+		}{
+			ChanPoints: chanPoints,
+			MultiChanBackup: hex.EncodeToString(
+				chanBackup.MultiChanBackup.MultiChanBackup,
+			),
+		},
+		)
+
+	}
+
 	// Wait for shutdown signal from either a graceful server stop or from
 	// the interrupt handler.
 	<-signal.ShutdownChannel()
 	return nil
+}
+
+func printJSON(resp interface{}) {
+	b, err := json.Marshal(resp)
+	if err != nil {
+		ltndLog.Errorf("failed json unmarshal: %v", err)
+		return
+	}
+
+	var out bytes.Buffer
+	json.Indent(&out, b, "", "\t")
+	out.WriteString("\n")
+
+	ltndLog.Infof("SCB:\n%v\n", string(out.Bytes()))
 }
 
 // getTLSConfig returns a TLS configuration for the gRPC server and credentials

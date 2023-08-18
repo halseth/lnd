@@ -239,7 +239,7 @@ type MessageSignerRing interface {
 	// hashing it first, with the private key described in the key locator
 	// and the optional Taproot tweak applied to the private key.
 	SignMessageSchnorr(keyLoc KeyLocator, msg []byte,
-		doubleHash bool, taprootTweak []byte) (*schnorr.Signature,
+		doubleHash bool, singleTweak, taprootTweak []byte) (*schnorr.Signature,
 		error)
 }
 
